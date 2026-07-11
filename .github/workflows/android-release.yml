@@ -1,0 +1,70 @@
+name: Android Release Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Generate Gradle Wrapper
+        run: gradle wrapper --gradle-version 8.9
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x ./gradlew
+
+      - name: Build debug APK
+        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Build release (unsigned) APK
+        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Rename APKs
+        run: |
+          VERSION="${GITHUB_REF_NAME:-manual}"
+          mkdir -p artifacts
+          cp app/build/outputs/apk/debug/app-debug.apk \
+             "artifacts/HomeworkBuddy-${VERSION}-debug.apk"
+          RELEASE_APK=$(ls app/build/outputs/apk/release/*.apk | head -n 1)
+          cp "$RELEASE_APK" \
+             "artifacts/HomeworkBuddy-${VERSION}-release-unsigned.apk"
+          ls -lh artifacts/
+
+      - name: Upload APKs as workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: apks-${{ github.ref_name }}
+          path: artifacts/*.apk
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: artifacts/*.apk
