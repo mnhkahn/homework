@@ -21,6 +21,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material.icons.outlined.Star
@@ -181,7 +184,7 @@ private fun HomeworkBuddyApp() {
             }.onFailure { connectionError = it.message ?: "同步当天作业失败" }
             pendingStore.items().forEach { pending ->
                 runCatching { api.submit(pending.taskId, pending.photoPath?.let(android.net.Uri::parse), pending.isOvertime, pending.submissionId) }
-                    .onSuccess { pendingStore.remove(pending.taskId) }
+                    .onSuccess { pendingStore.remove(pending.taskId); refreshRequest++ }
             }
             refreshing = false
             delay(60_000)
@@ -251,6 +254,7 @@ private fun HomeworkBuddyApp() {
                         runCatching { api.submit(current.id, null, current.status == TaskStatus.OVERTIME, submissionId) }
                             .onSuccess {
                                 advanceAfterCompletion(current.id)
+                                refreshRequest++
                             }
                             .onFailure {
                                 pendingStore.add(PendingSubmission(current.id, null, current.status == TaskStatus.OVERTIME, submissionId))
@@ -289,6 +293,7 @@ private fun HomeworkBuddyApp() {
                         runCatching { api.submit(current.id, photo, current.status == TaskStatus.OVERTIME, submissionId) }
                             .onSuccess {
                                 advanceAfterCompletion(current.id, photo.toString())
+                                refreshRequest++
                                 showCameraConfirm = false; pendingPhoto = null
                             }
                             .onFailure {
@@ -334,7 +339,8 @@ private fun HomeworkBuddyApp() {
 @Composable
 private fun HomeworkHome(name: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, remainingSeconds: Int, running: Boolean, submitting: Boolean, refreshing: Boolean, syncError: String?, onRefresh: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onComplete: () -> Unit, onFinish: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, onRetake: () -> Unit) {
     val complete = tasks.count { it.status == TaskStatus.COMPLETED }
-    val waiting = tasks.filter { it.status != TaskStatus.COMPLETED }
+    val waiting = tasks.filter { it.status != TaskStatus.COMPLETED && it.id != selected?.id }
+    val completedTasks = tasks.filter { it.status == TaskStatus.COMPLETED }
     BoxWithConstraints(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(24.dp)) {
         Column(Modifier.fillMaxSize()) {
             Header(name, complete, tasks.size, refreshing, onRefresh)
@@ -344,14 +350,14 @@ private fun HomeworkHome(name: String, tasks: List<HomeworkTask>, selected: Home
                 EmptyTaskState(Modifier.fillMaxSize())
             } else if (this@BoxWithConstraints.maxWidth >= 700.dp) Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(22.dp)) {
                 CurrentTask(Modifier.weight(1.45f).fillMaxHeight(), selected, remainingSeconds, running, submitting, onStart, onComplete, onFinish)
-                TaskQueue(Modifier.weight(.8f).fillMaxHeight(), waiting, selected.id, onSelect)
+                TaskQueue(Modifier.weight(.8f).fillMaxHeight(), waiting, completedTasks, onSelect)
             } else {
                 CurrentTask(Modifier.fillMaxWidth(), selected, remainingSeconds, running, submitting, onStart, onComplete, onFinish)
-                Spacer(Modifier.height(16.dp)); TaskQueue(Modifier.fillMaxWidth(), waiting, selected.id, onSelect)
+                Spacer(Modifier.height(16.dp)); TaskQueue(Modifier.fillMaxWidth(), waiting, completedTasks, onSelect)
             }
         }
     }
-    if (showCameraConfirm) AlertDialog(onDismissRequest = { if (!submitting) onRetake() }, icon = { Icon(Icons.Outlined.CameraAlt, null) }, title = { Text("作业拍清楚了吗？") }, text = { Text(if (submitting) "正在上传照片并完成任务…" else "确认后会把这张作业照片记录到当前任务。") }, confirmButton = { Button(onClick = onSubmit, enabled = !submitting) { if (submitting) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)); Text("提交中…") } else Text("提交") } }, dismissButton = { TextButton(onClick = onRetake, enabled = !submitting) { Text("重拍") } })
+    if (showCameraConfirm) AlertDialog(onDismissRequest = { if (!submitting) onRetake() }, icon = { Icon(Icons.Outlined.CameraAlt, null) }, title = { Text("上传作业照片") }, text = { Text(if (submitting) "正在上传照片并完成任务…" else "将这张照片上传到 Trello，并把当前任务标记为完成。") }, confirmButton = { Button(onClick = onSubmit, enabled = !submitting) { if (submitting) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)); Text("正在上传…") } else Text("上传并完成") } }, dismissButton = { TextButton(onClick = onRetake, enabled = !submitting) { Text("取消") } })
 }
 
 @Composable private fun Header(name: String, complete: Int, total: Int, refreshing: Boolean, onRefresh: () -> Unit) {
@@ -379,8 +385,47 @@ private fun HomeworkHome(name: String, tasks: List<HomeworkTask>, selected: Home
     }
 }
 
-@Composable private fun TaskQueue(modifier: Modifier, tasks: List<HomeworkTask>, selectedId: String, onSelect: (HomeworkTask) -> Unit) {
-    Column(modifier) { Text("还要完成", fontSize = 20.sp, fontWeight = FontWeight.Medium); Spacer(Modifier.height(10.dp)); tasks.forEach { task -> Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(19.dp)).background(if (task.id == selectedId) Sky else MaterialTheme.colorScheme.surface).clickable { onSelect(task) }.padding(16.dp)) { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(task.subject, color = MaterialTheme.colorScheme.onSurfaceVariant); Text(if (task.status == TaskStatus.OVERTIME) "已超时" else if (task.id == selectedId) "现在做" else "下一项", color = if (task.status == TaskStatus.OVERTIME) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant) }; Spacer(Modifier.height(7.dp)); Text(task.title, fontSize = 18.sp, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis); Spacer(Modifier.height(4.dp)); Text("${task.estimatedMinutes} 分钟 · ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))} 前", color = MaterialTheme.colorScheme.onSurfaceVariant); Spacer(Modifier.height(10.dp)) }; Spacer(Modifier.height(11.dp)) }
-        Spacer(Modifier.weight(1f)); Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Leaf).padding(17.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Outlined.Star, null, tint = Primary); Spacer(Modifier.width(12.dp)); Column { Text("一步一步来", fontWeight = FontWeight.Medium); Text("完成一项，就离星星更近一点。", color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+@Composable private fun TaskQueue(modifier: Modifier, tasks: List<HomeworkTask>, completedTasks: List<HomeworkTask>, onSelect: (HomeworkTask) -> Unit) {
+    Column(modifier) {
+        Text("接下来 · ${tasks.size} 项", fontSize = 20.sp, fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(8.dp))
+        LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(tasks, key = { it.id }) { task ->
+                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(17.dp)).background(MaterialTheme.colorScheme.surface).clickable { onSelect(task) }.padding(horizontal = 14.dp, vertical = 11.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(task.subject, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                        Text(if (task.status == TaskStatus.OVERTIME) "已超时" else "下一项", color = if (task.status == TaskStatus.OVERTIME) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(task.title, fontSize = 17.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.height(3.dp))
+                    Text("${task.estimatedMinutes} 分钟 · ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))} 前", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                }
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        if (completedTasks.isNotEmpty()) {
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Leaf).padding(13.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.Star, null, tint = Primary, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("今天已完成 · ${completedTasks.size} 项", fontWeight = FontWeight.Medium)
+                }
+                Spacer(Modifier.height(9.dp))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(completedTasks, key = { "completed-${it.id}" }) { task ->
+                        Surface(shape = RoundedCornerShape(14.dp), color = Color.White) {
+                            Text("✓ ${task.title}", modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 13.sp, color = Primary)
+                        }
+                    }
+                }
+            }
+        } else {
+            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(17.dp)).background(Leaf).padding(13.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.Star, null, tint = Primary)
+                Spacer(Modifier.width(10.dp))
+                Text("一步一步来，完成一项就离星星更近一点。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+            }
+        }
     }
 }
