@@ -16,6 +16,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.contract.ActivityResultContract
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -26,6 +28,9 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CameraAlt
+import androidx.compose.material.icons.outlined.Apps
+import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -56,7 +61,15 @@ private val Primary = Color(0xFF3769D9)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        setShowWhenLocked(true)
+        setTurnScreenOn(true)
+        KioskPolicy(this).scheduleNextTransitions()
         setContent { HomeworkBuddyApp() }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        KioskPolicy(this).applyForCurrentTime(this)
     }
 }
 
@@ -84,6 +97,7 @@ private class DeviceAwareTakePicture(private val preferFrontCamera: Boolean) : A
 private fun HomeworkBuddyApp() {
     val context = androidx.compose.ui.platform.LocalContext.current
     val api = remember(context) { HomeworkApi(context) }
+    val kioskPolicy = remember(context) { KioskPolicy(context) }
     val pendingStore = remember(context) { PendingSubmissionStore(context) }
     val scope = rememberCoroutineScope()
     var childName by remember { mutableStateOf(context.getSharedPreferences("profile", Context.MODE_PRIVATE).getString("child_name", "") ?: "") }
@@ -171,7 +185,12 @@ private fun HomeworkBuddyApp() {
                 val local = tasks.associateBy { it.id }
                 val remoteIds = remote.mapTo(mutableSetOf()) { it.id }
                 val completedLocal = tasks.filter { it.status == TaskStatus.COMPLETED && it.id !in remoteIds }
-                val merged = remote.map { fresh -> local[fresh.id]?.let { old -> fresh.copy(status = old.status, photoPath = old.photoPath) } ?: fresh } + completedLocal
+                val merged = remote.map { fresh ->
+                    local[fresh.id]?.let { old ->
+                        if (fresh.status == TaskStatus.COMPLETED) fresh.copy(photoPath = old.photoPath)
+                        else fresh.copy(status = old.status, photoPath = old.photoPath)
+                    } ?: fresh
+                } + completedLocal
                 tasks = merged
                 val selected = merged.firstOrNull { it.id == selectedId && it.status != TaskStatus.COMPLETED }
                     ?: merged.firstOrNull { it.status != TaskStatus.COMPLETED }
@@ -241,8 +260,12 @@ private fun HomeworkBuddyApp() {
             running = running,
             submitting = selected?.id == submittingTaskId,
             refreshing = refreshing,
+            studyLocked = kioskPolicy.isDeviceOwner && kioskPolicy.mode() == KioskMode.STUDY,
+            hasStudyApps = kioskPolicy.studyPackages.isNotEmpty(),
             syncError = if (connected) connectionError else null,
             onRefresh = { refreshRequest++ },
+            onParent = { context.startActivity(Intent(context, KioskSettingsActivity::class.java)) },
+            onStudyApps = kioskPolicy::openStudyLauncher,
             onSelect = { task -> selectedId = task.id; remainingSeconds = task.estimatedMinutes * 60; running = false },
             onStart = { running = !running; tasks = tasks.map { if (it.id == selectedId) it.copy(status = TaskStatus.RUNNING) else it } },
             onComplete = {
@@ -337,13 +360,13 @@ private fun HomeworkBuddyApp() {
 }
 
 @Composable
-private fun HomeworkHome(name: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, remainingSeconds: Int, running: Boolean, submitting: Boolean, refreshing: Boolean, syncError: String?, onRefresh: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onComplete: () -> Unit, onFinish: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, onRetake: () -> Unit) {
+private fun HomeworkHome(name: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, remainingSeconds: Int, running: Boolean, submitting: Boolean, refreshing: Boolean, studyLocked: Boolean, hasStudyApps: Boolean, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onComplete: () -> Unit, onFinish: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, onRetake: () -> Unit) {
     val complete = tasks.count { it.status == TaskStatus.COMPLETED }
     val waiting = tasks.filter { it.status != TaskStatus.COMPLETED && it.id != selected?.id }
     val completedTasks = tasks.filter { it.status == TaskStatus.COMPLETED }
     BoxWithConstraints(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(24.dp)) {
         Column(Modifier.fillMaxSize()) {
-            Header(name, complete, tasks.size, refreshing, onRefresh)
+            Header(name, complete, tasks.size, refreshing, studyLocked, hasStudyApps, onRefresh, onParent, onStudyApps)
             if (syncError != null) Text(syncError, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
             Spacer(Modifier.height(20.dp))
             if (selected == null) {
@@ -360,13 +383,24 @@ private fun HomeworkHome(name: String, tasks: List<HomeworkTask>, selected: Home
     if (showCameraConfirm) AlertDialog(onDismissRequest = { if (!submitting) onRetake() }, icon = { Icon(Icons.Outlined.CameraAlt, null) }, title = { Text("上传作业照片") }, text = { Text(if (submitting) "正在上传照片并完成任务…" else "将这张照片上传到 Trello，并把当前任务标记为完成。") }, confirmButton = { Button(onClick = onSubmit, enabled = !submitting) { if (submitting) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)); Text("正在上传…") } else Text("上传并完成") } }, dismissButton = { TextButton(onClick = onRetake, enabled = !submitting) { Text("取消") } })
 }
 
-@Composable private fun Header(name: String, complete: Int, total: Int, refreshing: Boolean, onRefresh: () -> Unit) {
+@OptIn(ExperimentalFoundationApi::class)
+@Composable private fun Header(name: String, complete: Int, total: Int, refreshing: Boolean, studyLocked: Boolean, hasStudyApps: Boolean, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit) {
     val percent = if (total == 0) 0 else complete * 100 / total
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-        Column { Text("今天的作业", fontSize = 30.sp, fontWeight = FontWeight.Medium); Text(if (name.isBlank()) "按顺序完成就好！" else "$name，按顺序完成就好！", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onRefresh, enabled = !refreshing) { Text(if (refreshing) "刷新中…" else "刷新") }
-            Column(Modifier.widthIn(min = 220.dp).clip(RoundedCornerShape(18.dp)).background(Sky).padding(14.dp)) { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("已完成 $complete / $total"); Text("$percent%", fontWeight = FontWeight.Medium) }; Spacer(Modifier.height(8.dp)); LinearProgressIndicator(progress = { if (total == 0) 0f else complete.toFloat() / total }, modifier = Modifier.fillMaxWidth().clip(CircleShape)) }
+        Column(Modifier.combinedClickable(onClick = {}, onLongClick = onParent)) { Text("今天的作业", fontSize = 30.sp, fontWeight = FontWeight.Medium); Text(if (name.isBlank()) "按顺序完成就好！" else "$name，按顺序完成就好！", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (studyLocked) Surface(shape = RoundedCornerShape(18.dp), color = Leaf, contentColor = Color(0xFF24733A)) {
+                Row(Modifier.padding(horizontal = 13.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.Lock, null, modifier = Modifier.size(19.dp)); Spacer(Modifier.width(6.dp)); Text("学习锁定中", fontWeight = FontWeight.Medium)
+                }
+            }
+            if (studyLocked && hasStudyApps) FilledTonalButton(onClick = onStudyApps, shape = RoundedCornerShape(18.dp), contentPadding = PaddingValues(horizontal = 13.dp, vertical = 9.dp)) {
+                Icon(Icons.Outlined.Apps, null, modifier = Modifier.size(19.dp)); Spacer(Modifier.width(6.dp)); Text("学习应用")
+            }
+            FilledTonalButton(onClick = onRefresh, enabled = !refreshing, shape = RoundedCornerShape(18.dp), contentPadding = PaddingValues(horizontal = 13.dp, vertical = 9.dp)) {
+                Icon(Icons.Outlined.Refresh, null, modifier = Modifier.size(19.dp)); Spacer(Modifier.width(6.dp)); Text(if (refreshing) "刷新中…" else "刷新")
+            }
+            Column(Modifier.width(245.dp).clip(RoundedCornerShape(18.dp)).background(Sky).padding(horizontal = 14.dp, vertical = 11.dp)) { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("已完成 $complete / $total"); Text("$percent%", fontWeight = FontWeight.Medium) }; Spacer(Modifier.height(7.dp)); LinearProgressIndicator(progress = { if (total == 0) 0f else complete.toFloat() / total }, modifier = Modifier.fillMaxWidth().height(7.dp).clip(CircleShape)) }
         }
     }
 }

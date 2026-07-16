@@ -51,13 +51,14 @@ class HomeworkApi(private val context: Context) {
     }
 
     suspend fun todayTasks(): List<HomeworkTask> {
-        val value = requestArray("GET", "/api/homework/tasks?date=${java.time.LocalDate.now()}", auth = true)
+        val value = requestArray("GET", "/api/homework/tasks?date=${java.time.LocalDate.now()}&include_completed=true", auth = true)
         return (0 until value.length()).map { index ->
             val item = value.getJSONObject(index)
             HomeworkTask(
                 id = item.getString("id"), subject = item.optString("subject", "作业"),
                 title = item.getString("title"), estimatedMinutes = item.optInt("estimated_minutes", 20),
                 deadline = OffsetDateTime.parse(item.getString("deadline")).atZoneSameInstant(ZoneId.systemDefault()).toLocalTime(),
+                status = if (item.optBoolean("completed")) TaskStatus.COMPLETED else TaskStatus.TODO,
             )
         }
     }
