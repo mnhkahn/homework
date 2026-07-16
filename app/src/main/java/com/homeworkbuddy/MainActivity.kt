@@ -367,7 +367,6 @@ private fun HomeworkHome(name: String, tasks: List<HomeworkTask>, selected: Home
     BoxWithConstraints(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(24.dp)) {
         Column(Modifier.fillMaxSize()) {
             Header(name, complete, tasks.size, refreshing, studyLocked, hasStudyApps, onRefresh, onParent, onStudyApps)
-            if (syncError != null) Text(syncError, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
             Spacer(Modifier.height(20.dp))
             if (selected == null) {
                 EmptyTaskState(Modifier.fillMaxSize())
@@ -378,6 +377,16 @@ private fun HomeworkHome(name: String, tasks: List<HomeworkTask>, selected: Home
                 CurrentTask(Modifier.fillMaxWidth(), selected, remainingSeconds, running, submitting, onStart, onComplete, onFinish)
                 Spacer(Modifier.height(16.dp)); TaskQueue(Modifier.fillMaxWidth(), waiting, completedTasks, onSelect)
             }
+        }
+        if (syncError != null) Surface(
+            modifier = Modifier.align(Alignment.BottomEnd).widthIn(max = 420.dp),
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.errorContainer,
+            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+            tonalElevation = 5.dp,
+            shadowElevation = 5.dp
+        ) {
+            Text(syncError, modifier = Modifier.padding(horizontal = 16.dp, vertical = 11.dp), fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
     }
     if (showCameraConfirm) AlertDialog(onDismissRequest = { if (!submitting) onRetake() }, icon = { Icon(Icons.Outlined.CameraAlt, null) }, title = { Text("上传作业照片") }, text = { Text(if (submitting) "正在上传照片并完成任务…" else "将这张照片上传到 Trello，并把当前任务标记为完成。") }, confirmButton = { Button(onClick = onSubmit, enabled = !submitting) { if (submitting) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)); Text("正在上传…") } else Text("上传并完成") } }, dismissButton = { TextButton(onClick = onRetake, enabled = !submitting) { Text("取消") } })

@@ -8,7 +8,10 @@ import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -32,6 +35,9 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -39,6 +45,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -46,11 +53,24 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.MenuBook
+import androidx.compose.material.icons.outlined.Alarm
+import androidx.compose.material.icons.outlined.Apps
+import androidx.compose.material.icons.outlined.Face
+import androidx.compose.material.icons.outlined.LockOpen
+import androidx.compose.material.icons.outlined.RestartAlt
+import androidx.compose.material.icons.outlined.Save
+import androidx.core.content.ContextCompat
+import androidx.core.graphics.drawable.toBitmap
+import androidx.fragment.app.FragmentActivity
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
@@ -80,7 +100,7 @@ private class ParentPinStore(context: Context) {
     }
 }
 
-class KioskSettingsActivity : ComponentActivity() {
+class KioskSettingsActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -97,6 +117,39 @@ private fun ParentGate(activity: KioskSettingsActivity) {
     var pin by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
+    val biometricAvailable = remember {
+        BiometricManager.from(activity).canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_WEAK) == BiometricManager.BIOMETRIC_SUCCESS
+    }
+    val promptInfo = remember {
+        BiometricPrompt.PromptInfo.Builder()
+            .setTitle("家长验证")
+            .setSubtitle("请使用系统人脸或指纹进入家长设置")
+            .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_WEAK)
+            .setNegativeButtonText("使用家长 PIN")
+            .build()
+    }
+    val biometricPrompt = remember(activity) {
+        BiometricPrompt(activity, ContextCompat.getMainExecutor(activity), object : BiometricPrompt.AuthenticationCallback() {
+            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                authenticated = true
+                error = null
+            }
+
+            override fun onAuthenticationFailed() {
+                error = "未识别，请重试或使用家长 PIN"
+            }
+
+            override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                if (errorCode != BiometricPrompt.ERROR_NEGATIVE_BUTTON && errorCode != BiometricPrompt.ERROR_USER_CANCELED) {
+                    error = errString.toString()
+                }
+            }
+        })
+    }
+
+    LaunchedEffect(hasPin, biometricAvailable) {
+        if (hasPin && biometricAvailable) biometricPrompt.authenticate(promptInfo)
+    }
 
     if (authenticated) {
         KioskSettingsScreen(activity)
@@ -104,8 +157,22 @@ private fun ParentGate(activity: KioskSettingsActivity) {
     }
     Surface(Modifier.fillMaxSize()) {
         Box(Modifier.fillMaxSize().padding(28.dp), contentAlignment = Alignment.Center) {
+            FilledTonalIconButton(
+                onClick = activity::finish,
+                modifier = Modifier.align(Alignment.TopStart).size(58.dp),
+                colors = IconButtonDefaults.filledTonalIconButtonColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+            ) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回", modifier = Modifier.size(32.dp)) }
             Column(Modifier.fillMaxWidth(.55f), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(if (hasPin) "家长验证" else "设置家长 PIN", fontSize = 28.sp, fontWeight = FontWeight.Medium)
+                if (hasPin && biometricAvailable) {
+                    Spacer(Modifier.height(14.dp))
+                    OutlinedButton(onClick = { biometricPrompt.authenticate(promptInfo) }) {
+                        Icon(Icons.Outlined.Face, null)
+                        Spacer(Modifier.size(8.dp))
+                        Text("使用人脸或指纹")
+                    }
+                    Text("也可以使用家长 PIN", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp))
+                }
                 Spacer(Modifier.height(18.dp))
                 OutlinedTextField(pin, { pin = it.filter(Char::isDigit).take(8) }, label = { Text("4–8 位数字 PIN") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
                 if (!hasPin) {
@@ -123,7 +190,6 @@ private fun ParentGate(activity: KioskSettingsActivity) {
                         else -> { store.set(pin); hasPin = true; authenticated = true }
                     }
                 }) { Text(if (hasPin) "进入家长设置" else "保存并进入") }
-                TextButton(onClick = activity::finish) { Text("取消") }
             }
         }
     }
@@ -143,12 +209,17 @@ private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
 
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 28.dp), contentPadding = PaddingValues(vertical = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                FilledTonalIconButton(
+                    onClick = activity::finish,
+                    modifier = Modifier.size(58.dp),
+                    colors = IconButtonDefaults.filledTonalIconButtonColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+                ) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回作业", modifier = Modifier.size(32.dp)) }
+                Spacer(Modifier.size(16.dp))
                 Column {
                     Text("家长设置", fontSize = 30.sp, fontWeight = FontWeight.Medium)
                     Text(if (policy.isDeviceOwner) "设备管控已启用" else "尚未成为 Device Owner", color = if (policy.isDeviceOwner) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error)
                 }
-                TextButton(onClick = activity::finish) { Text("完成") }
             }
         }
         if (!policy.isDeviceOwner) item {
@@ -158,6 +229,19 @@ private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
                     Spacer(Modifier.height(8.dp))
                     Text("adb shell dpm set-device-owner --user 0 com.homeworkbuddy/.HomeworkDeviceAdminReceiver", fontSize = 13.sp)
                     Text("设置成功前，下面的锁定按钮不会生效。", modifier = Modifier.padding(top = 8.dp))
+                }
+            }
+        }
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFEAF4FF)), shape = RoundedCornerShape(20.dp)) {
+                Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                    Text("管控与紧急出口", fontSize = 21.sp, fontWeight = FontWeight.Medium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 10.dp)) {
+                        Button(enabled = policy.isDeviceOwner, onClick = { policy.pause(15, activity); message = "已临时开放 15 分钟" }) { Icon(Icons.Outlined.LockOpen, null); Spacer(Modifier.size(7.dp)); Text("临时开放 15 分钟") }
+                        OutlinedButton(enabled = policy.isDeviceOwner, onClick = { policy.resume(activity) }) { Icon(Icons.Outlined.RestartAlt, null); Spacer(Modifier.size(7.dp)); Text("立即应用当前策略") }
+                        OutlinedButton(enabled = policy.isDeviceOwner, onClick = policy::openStudyLauncher) { Icon(Icons.Outlined.Apps, null); Spacer(Modifier.size(7.dp)); Text("查看学习应用") }
+                    }
+                    message?.let { Text(it, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 10.dp)) }
                 }
             }
         }
@@ -175,10 +259,10 @@ private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
                     val start = (startHour.toIntOrNull() ?: -1) * 60 + (startMinute.toIntOrNull() ?: -1)
                     val end = (endHour.toIntOrNull() ?: -1) * 60 + (endMinute.toIntOrNull() ?: -1)
                     runCatching { policy.saveSchedule(start, end); message = "时间已保存" }.onFailure { message = "时间格式不正确" }
-                }) { Text("保存") }
+                }) { Icon(Icons.Outlined.Save, null); Spacer(Modifier.size(7.dp)); Text("保存") }
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !alarm.canScheduleExactAlarms()) {
-                OutlinedButton(onClick = { activity.startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)) }, modifier = Modifier.padding(top = 8.dp)) { Text("允许精确闹钟") }
+                OutlinedButton(onClick = { activity.startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)) }, modifier = Modifier.padding(top = 8.dp)) { Icon(Icons.Outlined.Alarm, null); Spacer(Modifier.size(7.dp)); Text("允许精确闹钟") }
             }
         }
         item {
@@ -193,17 +277,6 @@ private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
                 })
                 Column { Text(app.label, fontWeight = FontWeight.Medium); Text(app.packageName, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
-        }
-        item {
-            HorizontalDivider()
-            Spacer(Modifier.height(8.dp))
-            Text("管控测试与紧急出口", fontSize = 21.sp, fontWeight = FontWeight.Medium)
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 10.dp)) {
-                Button(enabled = policy.isDeviceOwner, onClick = { policy.resume(activity) }) { Text("立即应用当前时间策略") }
-                OutlinedButton(enabled = policy.isDeviceOwner, onClick = policy::openStudyLauncher) { Text("查看学习应用") }
-                OutlinedButton(enabled = policy.isDeviceOwner, onClick = { policy.pause(15, activity); message = "已临时开放 15 分钟" }) { Text("临时开放 15 分钟") }
-            }
-            message?.let { Text(it, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 10.dp)) }
         }
     }
 }
@@ -237,17 +310,26 @@ private fun ChildLauncher(activity: ChildLauncherActivity) {
     val apps = policy.studyPackages.mapNotNull(available::get).sortedBy { it.label }
     Surface(Modifier.fillMaxSize(), color = Color(0xFFFFFBFF)) {
         Column(Modifier.fillMaxSize().padding(28.dp)) {
-            Text("学习应用", fontSize = 32.sp, fontWeight = FontWeight.Medium, modifier = Modifier.combinedClickable(onClick = {}, onLongClick = {
-                activity.startActivity(Intent(activity, KioskSettingsActivity::class.java))
-            }))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                FilledTonalIconButton(
+                    onClick = { activity.startActivity(Intent(activity, MainActivity::class.java)) },
+                    modifier = Modifier.size(58.dp),
+                    colors = IconButtonDefaults.filledTonalIconButtonColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+                ) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回作业", modifier = Modifier.size(32.dp)) }
+                Spacer(Modifier.size(16.dp))
+                Text("学习应用", fontSize = 32.sp, fontWeight = FontWeight.Medium, modifier = Modifier.combinedClickable(onClick = {}, onLongClick = {
+                    activity.startActivity(Intent(activity, KioskSettingsActivity::class.java))
+                }))
+            }
             Text("学习时间只可以打开这里的应用 · 长按标题进入家长设置", color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(22.dp))
             LazyVerticalGrid(columns = GridCells.Adaptive(180.dp), modifier = Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 item(key = "homework") {
-                    LauncherCard("📚", "作业小伙伴") { activity.startActivity(Intent(activity, MainActivity::class.java)) }
+                    LauncherCard("作业小伙伴", icon = { Icon(Icons.AutoMirrored.Outlined.MenuBook, null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary) }) { activity.startActivity(Intent(activity, MainActivity::class.java)) }
                 }
                 items(apps, key = { it.packageName }) { app ->
-                    LauncherCard("⭐", app.label) {
+                    val icon = remember(app.packageName) { activity.packageManager.getApplicationIcon(app.packageName).toBitmap(96, 96).asImageBitmap() }
+                    LauncherCard(app.label, icon = { Image(icon, null, modifier = Modifier.size(48.dp)) }) {
                         activity.packageManager.getLaunchIntentForPackage(app.packageName)?.let(activity::startActivity)
                     }
                 }
@@ -257,10 +339,10 @@ private fun ChildLauncher(activity: ChildLauncherActivity) {
 }
 
 @Composable
-private fun LauncherCard(icon: String, label: String, onClick: () -> Unit) {
+private fun LauncherCard(label: String, icon: @Composable () -> Unit, onClick: () -> Unit) {
     Card(onClick = onClick, shape = RoundedCornerShape(24.dp), modifier = Modifier.height(150.dp)) {
         Column(Modifier.fillMaxSize().padding(18.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-            Text(icon, fontSize = 44.sp)
+            icon()
             Spacer(Modifier.height(8.dp))
             Text(label, fontSize = 18.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center)
         }
