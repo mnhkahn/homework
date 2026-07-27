@@ -70,12 +70,14 @@ class KioskPolicy(private val context: Context) {
         if (!isDeviceOwner) return
         val current = mode()
         if (current != KioskMode.STUDY) {
+            StudySessionService.stop(context)
             releaseLockTask(activity)
             if (navigate) openSystemHome()
             return
         }
         configureAsHome()
         applyAllowlist(current)
+        StudySessionService.start(context)
         activity?.let { startLockTaskSafely(it) }
         if (navigate) openMode(current)
     }
@@ -85,12 +87,14 @@ class KioskPolicy(private val context: Context) {
         prefs.edit().remove("paused_until").apply()
         configureAsHome()
         applyAllowlist(KioskMode.STUDY)
+        StudySessionService.start(context)
         if (activity is MainActivity) startLockTaskSafely(activity) else openMode(KioskMode.STUDY)
     }
 
     fun exitStudyMode(activity: Activity? = null) {
         if (!isDeviceOwner) return
         prefs.edit().remove("paused_until").apply()
+        StudySessionService.stop(context)
         releaseLockTask(activity)
         openSystemHome()
     }
@@ -104,6 +108,7 @@ class KioskPolicy(private val context: Context) {
 
     fun pause(minutes: Int, activity: Activity? = null) {
         prefs.edit().putLong("paused_until", System.currentTimeMillis() + minutes * 60_000L).apply()
+        StudySessionService.stop(context)
         releaseLockTask(activity)
         scheduleNextTransitions()
     }
@@ -168,6 +173,18 @@ class KioskPolicy(private val context: Context) {
     private fun releaseLockTask(activity: Activity?) {
         if (!isDeviceOwner) return
         runCatching { dpm.setLockTaskPackages(admin, emptyArray()) }
+        // Lock-task features are policy state on MIUI too. Explicitly restore the
+        // normal system navigation controls when study time ends; merely removing
+        // the package allowlist can leave the bottom navigation area hidden.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val normalFeatures = DevicePolicyManager.LOCK_TASK_FEATURE_SYSTEM_INFO or
+                DevicePolicyManager.LOCK_TASK_FEATURE_NOTIFICATIONS or
+                DevicePolicyManager.LOCK_TASK_FEATURE_HOME or
+                DevicePolicyManager.LOCK_TASK_FEATURE_OVERVIEW or
+                DevicePolicyManager.LOCK_TASK_FEATURE_GLOBAL_ACTIONS or
+                DevicePolicyManager.LOCK_TASK_FEATURE_KEYGUARD
+            runCatching { dpm.setLockTaskFeatures(admin, normalFeatures) }
+        }
         runCatching { dpm.clearPackagePersistentPreferredActivities(admin, context.packageName) }
         if (activity != null) runCatching { activity.stopLockTask() }
         setStudyLauncherEnabled(false)
@@ -191,6 +208,8 @@ class KioskPolicy(private val context: Context) {
         const val ACTION_STUDY = "com.homeworkbuddy.action.ENTER_STUDY"
         const val ACTION_NORMAL = "com.homeworkbuddy.action.ENTER_NORMAL"
         const val ACTION_REEVALUATE = "com.homeworkbuddy.action.REEVALUATE"
+        /** Sent after an alarm transition so a foreground Activity can stop Lock Task. */
+        const val ACTION_MODE_CHANGED = "com.homeworkbuddy.action.MODE_CHANGED"
         private const val REQUEST_STUDY = 1700
         private const val REQUEST_NORMAL = 2130
         private const val REQUEST_RESUME = 1515
@@ -210,6 +229,7 @@ class KioskScheduleReceiver : BroadcastReceiver() {
                 else -> policy.applyForCurrentTime(navigate = true)
             }
             policy.scheduleNextTransitions()
+            context.sendBroadcast(Intent(KioskPolicy.ACTION_MODE_CHANGED).setPackage(context.packageName))
         } finally {
             if (lock.isHeld) lock.release()
         }
@@ -221,6 +241,17 @@ class KioskSystemReceiver : BroadcastReceiver() {
         KioskPolicy(context).apply {
             scheduleNextTransitions()
             if (isDeviceOwner) applyForCurrentTime(navigate = true)
+        }
+    }
+}
+
+/** Opens the homework home after the child unlocks the tablet during study time. */
+class KioskUnlockReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action != Intent.ACTION_USER_PRESENT) return
+        val policy = KioskPolicy(context)
+        if (policy.isDeviceOwner && policy.mode() == KioskMode.STUDY) {
+            policy.applyForCurrentTime(navigate = true)
         }
     }
 }

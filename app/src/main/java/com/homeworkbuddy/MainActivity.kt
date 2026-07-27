@@ -2,19 +2,35 @@ package com.homeworkbuddy
 
 import android.Manifest
 import android.app.Activity
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
+import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
+import android.view.MotionEvent
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.contract.ActivityResultContract
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -38,10 +54,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
@@ -51,25 +70,183 @@ import kotlinx.coroutines.launch
 import java.io.File
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
+import kotlin.math.cos
+import kotlin.math.sin
 
 private val Sky = Color(0xFFEAF4FF)
 private val Sun = Color(0xFFFFF3CE)
 private val Leaf = Color(0xFFE6F7E9)
 private val Ink = Color(0xFF263238)
 private val Primary = Color(0xFF3769D9)
+private val TodoSurface = Color(0xFFEAF4FF)
+private val OverdueSurface = Color(0xFFFFE8E6)
+private val OverdueInk = Color(0xFFB3261E)
+private const val MAX_HOMEWORK_PHOTOS = 4
+
+private data class MelodyNote(val frequency: Double, val durationMs: Int)
+
+private fun shortFanfare(vararg notes: Double) = notes.map { MelodyNote(it, 180) }
+
+// Original C-major "all done" melody: a rising phrase, a small answer, then a bright resolution.
+private val AllDoneMelody = listOf(
+    MelodyNote(392.00, 220), MelodyNote(523.25, 220), MelodyNote(659.25, 260), MelodyNote(783.99, 420),
+    MelodyNote(659.25, 180), MelodyNote(698.46, 180), MelodyNote(783.99, 260), MelodyNote(1_046.50, 520),
+    MelodyNote(880.00, 180), MelodyNote(783.99, 180), MelodyNote(659.25, 220), MelodyNote(783.99, 220),
+    MelodyNote(1_046.50, 700),
+)
+
+private data class CelebrationVariant(
+    val headline: String,
+    val encouragement: String,
+    val melody: List<MelodyNote>,
+    val colors: List<Color>,
+)
+
+private data class CelebrationEvent(val taskTitle: String, val allTasksComplete: Boolean)
+
+private val CelebrationVariants = listOf(
+    CelebrationVariant("太棒啦！", "宝贝，你完成了《%s》！", shortFanfare(523.25, 659.25, 783.99, 1_046.50), listOf(Color(0xFFFFD166), Color(0xFFFF70A6), Color(0xFF70D6FF))),
+    CelebrationVariant("闯关成功！", "《%s》完成，给你一颗闪亮小星星！", shortFanfare(659.25, 783.99, 1_046.50, 783.99), listOf(Color(0xFF9BEEA0), Color(0xFFFFB86B), Color(0xFFA0C4FF))),
+    CelebrationVariant("你真厉害！", "宝贝，又完成一项，今天的你超有力量！", shortFanfare(392.00, 523.25, 659.25, 783.99), listOf(Color(0xFFFF9FB2), Color(0xFFFFD166), Color(0xFFCDB4DB))),
+    CelebrationVariant("耶！完成啦！", "《%s》拿下！继续保持这个好状态！", shortFanfare(523.25, 783.99, 659.25, 1_046.50), listOf(Color(0xFF70D6FF), Color(0xFFFF70A6), Color(0xFFB9FBC0))),
+    CelebrationVariant("掌声送给你！", "宝贝，认真完成《%s》的你最闪耀！", shortFanfare(440.00, 554.37, 659.25, 880.00), listOf(Color(0xFFFFC857), Color(0xFFBDB2FF), Color(0xFF8EECF5))),
+)
+
+private val AllDoneCelebrationVariants = listOf(
+    CelebrationVariant("全部作业完成！", "宝贝，今天的作业全都写完啦！你太了不起了！", AllDoneMelody, listOf(Color(0xFFFFD166), Color(0xFFFF70A6), Color(0xFF70D6FF), Color(0xFFB9FBC0), Color(0xFFCDB4DB))),
+    CelebrationVariant("今日小冠军！", "耶！全部闯关成功，快给自己一个大大的拥抱！", AllDoneMelody, listOf(Color(0xFFFFC857), Color(0xFF8EECF5), Color(0xFFFF9FB2), Color(0xFF9BEEA0), Color(0xFFBDB2FF))),
+    CelebrationVariant("星星都为你鼓掌！", "宝贝，今天的努力圆满收官，真为你骄傲！", AllDoneMelody, listOf(Color(0xFFFFB86B), Color(0xFFA0C4FF), Color(0xFFFF70A6), Color(0xFFB9FBC0), Color(0xFFFFD166))),
+)
+
+/** A short, gentle fanfare generated locally so the celebration needs no media asset or network. */
+private object CelebrationSound {
+    private const val sampleRate = 44_100
+    private var activeTrack: AudioTrack? = null
+
+    @Synchronized
+    fun play(melody: List<MelodyNote>) {
+        activeTrack?.runCatching { stop(); release() }
+        val noteSamples = melody.map { (sampleRate * it.durationMs / 1_000.0).toInt() }
+        val samples = ByteArray(noteSamples.sum() * 2)
+        var startSample = 0
+        melody.forEachIndexed { noteIndex, note ->
+            val samplesForNote = noteSamples[noteIndex]
+            repeat(samplesForNote) { sampleIndex ->
+                val envelope = (1f - sampleIndex.toFloat() / samplesForNote) * .22f
+                val phase = 2.0 * Math.PI * note.frequency * sampleIndex / sampleRate
+                val wave = (sin(phase) + .25 * sin(phase * 2.0)) * envelope
+                val value = (wave * Short.MAX_VALUE).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+                val offset = (startSample + sampleIndex) * 2
+                samples[offset] = (value.toInt() and 0xff).toByte()
+                samples[offset + 1] = (value.toInt() shr 8).toByte()
+            }
+            startSample += samplesForNote
+        }
+        val track = AudioTrack.Builder()
+            .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
+            .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(sampleRate).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
+            .setBufferSizeInBytes(samples.size)
+            .setTransferMode(AudioTrack.MODE_STATIC)
+            .build()
+        track.write(samples, 0, samples.size)
+        track.play()
+        activeTrack = track
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (activeTrack === track) {
+                track.runCatching { stop(); release() }
+                activeTrack = null
+            }
+        }, melody.sumOf { it.durationMs }.toLong() + 150)
+    }
+}
 
 class MainActivity : ComponentActivity() {
+    private val screenTimeoutHandler = Handler(Looper.getMainLooper())
+    private val clearKeepScreenOn = Runnable {
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
+    /**
+     * Study mode is deliberately easier to read than the system default: every
+     * touch keeps the screen awake for another three minutes.  Once that grace
+     * period expires we clear the flag, letting MIUI dim and turn the screen off
+     * using its ordinary user-selected timeout instead of changing it globally.
+     */
+    private fun extendStudyScreenTimeout() {
+        if (KioskPolicy(this).mode() != KioskMode.STUDY) {
+            clearStudyScreenTimeout()
+            return
+        }
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        screenTimeoutHandler.removeCallbacks(clearKeepScreenOn)
+        screenTimeoutHandler.postDelayed(clearKeepScreenOn, STUDY_SCREEN_AWAKE_MS)
+    }
+
+    private fun clearStudyScreenTimeout() {
+        screenTimeoutHandler.removeCallbacks(clearKeepScreenOn)
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
+    private val modeChangeReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == KioskPolicy.ACTION_MODE_CHANGED) {
+                // We are the foreground activity, so this can reliably invoke
+                // stopLockTask right when the scheduled study period ends.
+                KioskPolicy(this@MainActivity).applyForCurrentTime(this@MainActivity)
+                extendStudyScreenTimeout()
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        HomeworkApi.saveAuthorizationResult(this, intent?.data)
         setShowWhenLocked(true)
         setTurnScreenOn(true)
         KioskPolicy(this).scheduleNextTransitions()
+        if (XiaoliDeviceStore.config(this) != null) XiaoliConnectionService.connect(this)
         setContent { HomeworkBuddyApp() }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        HomeworkApi.saveAuthorizationResult(this, intent.data)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        ContextCompat.registerReceiver(
+            this,
+            modeChangeReceiver,
+            IntentFilter(KioskPolicy.ACTION_MODE_CHANGED),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+    }
+
+    override fun onStop() {
+        unregisterReceiver(modeChangeReceiver)
+        super.onStop()
     }
 
     override fun onResume() {
         super.onResume()
         KioskPolicy(this).applyForCurrentTime(this)
+        extendStudyScreenTimeout()
+    }
+
+    override fun onPause() {
+        clearStudyScreenTimeout()
+        super.onPause()
+    }
+
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) extendStudyScreenTimeout()
+        return super.dispatchTouchEvent(event)
+    }
+
+    companion object {
+        private const val STUDY_SCREEN_AWAKE_MS = 3 * 60 * 1_000L
     }
 }
 
@@ -96,23 +273,25 @@ private class DeviceAwareTakePicture(private val preferFrontCamera: Boolean) : A
 @Composable
 private fun HomeworkBuddyApp() {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val activity = context as? Activity
     val api = remember(context) { HomeworkApi(context) }
     val kioskPolicy = remember(context) { KioskPolicy(context) }
     val pendingStore = remember(context) { PendingSubmissionStore(context) }
+    val remoteNoticeStore = remember(context) { RemoteNoticeStore(context) }
+    val pianoPracticeStore = remember(context) { PianoPracticeStore(context) }
     val scope = rememberCoroutineScope()
     var childName by remember { mutableStateOf(context.getSharedPreferences("profile", Context.MODE_PRIVATE).getString("child_name", "") ?: "") }
-    var tasks by remember { mutableStateOf(PreviewTaskSource().let { source -> listOf(
-        HomeworkTask("chinese", "语文", "抄写生字第 1—3 课", 15, LocalTime.of(18, 30), TaskStatus.COMPLETED),
-        HomeworkTask("math", "数学", "完成口算练习册第 12 页", 20, LocalTime.of(19, 0)),
-        HomeworkTask("english", "英语", "朗读 Unit 3 单词", 25, LocalTime.of(20, 0)),
-    ) } ) }
-    var selectedId by remember { mutableStateOf(tasks.first { it.status != TaskStatus.COMPLETED }.id) }
-    var remainingSeconds by remember { mutableIntStateOf(tasks.first { it.id == selectedId }.estimatedMinutes * 60) }
+    // The home screen must only show work returned by the family service.  Keeping
+    // preview tasks here made a fictional completed homework item survive a sync
+    // with an otherwise empty board.
+    var tasks by remember { mutableStateOf<List<HomeworkTask>>(emptyList()) }
+    var selectedId by remember { mutableStateOf("") }
+    var remainingSeconds by remember { mutableIntStateOf(0) }
     var running by remember { mutableStateOf(false) }
     var showNameDialog by remember { mutableStateOf(childName.isBlank()) }
     var connected by remember { mutableStateOf(api.isConnected) }
     var showConnectionDialog by remember { mutableStateOf(childName.isNotBlank() && !api.isConnected) }
-    var pairing by remember { mutableStateOf<Pairing?>(null) }
+    var authorizationStarted by remember { mutableStateOf(api.hasAuthorization) }
     var trelloBoards by remember { mutableStateOf<List<TrelloOption>>(emptyList()) }
     var selectedBoardId by remember { mutableStateOf("") }
     var connectionError by remember { mutableStateOf<String?>(null) }
@@ -120,8 +299,48 @@ private fun HomeworkBuddyApp() {
     var refreshRequest by remember { mutableIntStateOf(0) }
     var refreshing by remember { mutableStateOf(false) }
     var showCameraConfirm by remember { mutableStateOf(false) }
-    var pendingPhoto by remember { mutableStateOf<Uri?>(null) }
+    var capturePhoto by remember { mutableStateOf<Uri?>(null) }
+    var pendingPhotos by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var submittingTaskId by remember { mutableStateOf<String?>(null) }
+    var celebration by remember { mutableStateOf<CelebrationEvent?>(null) }
+    var kioskMode by remember { mutableStateOf(kioskPolicy.mode()) }
+    var remoteNotice by remember { mutableStateOf(remoteNoticeStore.current()) }
+
+    DisposableEffect(remoteNoticeStore) {
+        val listener = remoteNoticeStore.addChangeListener { remoteNotice = remoteNoticeStore.current() }
+        onDispose { remoteNoticeStore.removeChangeListener(listener) }
+    }
+
+    // A message is intentionally only for the current day. Recheck at local midnight
+    // even if the home screen stays open all night.
+    LaunchedEffect(remoteNoticeStore) {
+        while (true) {
+            val now = java.time.ZonedDateTime.now()
+            val nextMidnight = now.toLocalDate().plusDays(1).atStartOfDay(now.zone)
+            delay(java.time.Duration.between(now, nextMidnight).toMillis().coerceAtLeast(1_000L))
+            remoteNotice = remoteNoticeStore.current()
+        }
+    }
+
+    // Exact alarms handle the normal case. This keeps an already-open home
+    // screen accurate too, including on devices that decline exact alarms.
+    LaunchedEffect(kioskPolicy) {
+        while (true) {
+            val next = kioskPolicy.mode()
+            if (next != kioskMode) {
+                kioskMode = next
+                // The app can remain foregrounded across the scheduled end time.
+                // Pass its Activity so releaseLockTask also calls stopLockTask and
+                // restores Android's native Home gesture/navigation immediately.
+                kioskPolicy.applyForCurrentTime(activity)
+            }
+            delay(30_000)
+        }
+    }
+
+    LaunchedEffect(tasks, selectedId, remainingSeconds, running) {
+        HomeworkStatusStore(context).save(tasks, selectedId, remainingSeconds, running)
+    }
 
     fun advanceAfterCompletion(taskId: String, photoPath: String? = null) {
         val currentIndex = tasks.indexOfFirst { it.id == taskId }
@@ -138,28 +357,25 @@ private fun HomeworkBuddyApp() {
         running = false
     }
 
-    LaunchedEffect(running, selectedId) {
-        while (running && remainingSeconds > 0) { delay(1_000); remainingSeconds-- }
-        if (running && remainingSeconds == 0) {
-            running = false
-            tasks = tasks.map { if (it.id == selectedId) it.copy(status = TaskStatus.OVERTIME) else it }
-        }
-    }
-
     val isTablet = context.resources.configuration.smallestScreenWidthDp >= 600
     val takePhoto = rememberLauncherForActivityResult(remember(isTablet) { DeviceAwareTakePicture(isTablet) }) { captured ->
-        if (captured) showCameraConfirm = true else pendingPhoto = null
+        val photo = capturePhoto
+        if (captured && photo != null) {
+            pendingPhotos = (pendingPhotos + photo).take(MAX_HOMEWORK_PHOTOS)
+            showCameraConfirm = true
+        }
+        capturePhoto = null
     }
     val requestCameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        val photo = pendingPhoto
+        val photo = capturePhoto
         if (granted && photo != null) {
             runCatching { takePhoto.launch(photo) }
                 .onFailure {
-                    pendingPhoto = null
+                    capturePhoto = null
                     connectionError = "无法打开相机，请检查系统相机是否可用。"
                 }
         } else {
-            pendingPhoto = null
+            capturePhoto = null
             connectionError = "需要相机权限才能拍照记录作业。"
         }
     }
@@ -188,7 +404,7 @@ private fun HomeworkBuddyApp() {
                 val merged = remote.map { fresh ->
                     local[fresh.id]?.let { old ->
                         if (fresh.status == TaskStatus.COMPLETED) fresh.copy(photoPath = old.photoPath)
-                        else fresh.copy(status = old.status, photoPath = old.photoPath)
+                        else fresh.copy(status = if (old.status == TaskStatus.RUNNING) TaskStatus.RUNNING else fresh.status, photoPath = old.photoPath)
                     } ?: fresh
                 } + completedLocal
                 tasks = merged
@@ -200,9 +416,15 @@ private fun HomeworkBuddyApp() {
                     selectedId = selected.id; remainingSeconds = selected.estimatedMinutes * 60; running = false
                 }
                 connectionError = null
-            }.onFailure { connectionError = it.message ?: "同步当天作业失败" }
+            }.onFailure { error ->
+                // LaunchedEffect is cancelled when this screen leaves composition (for
+                // example while the tablet sleeps). That is normal lifecycle behavior,
+                // not a sync failure, so do not surface it as an error to the child.
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                connectionError = error.message ?: "同步当天作业失败"
+            }
             pendingStore.items().forEach { pending ->
-                runCatching { api.submit(pending.taskId, pending.photoPath?.let(android.net.Uri::parse), pending.isOvertime, pending.submissionId) }
+                runCatching { api.submit(pending.taskId, pending.photoPaths.map(android.net.Uri::parse), pending.isOvertime, pending.submissionId) }
                     .onSuccess { pendingStore.remove(pending.taskId); refreshRequest++ }
             }
             refreshing = false
@@ -215,73 +437,84 @@ private fun HomeworkBuddyApp() {
             onSaved = { name -> context.getSharedPreferences("profile", Context.MODE_PRIVATE).edit().putString("child_name", name).apply(); childName = name; showNameDialog = false; if (!connected) showConnectionDialog = true }
         )
         if (showConnectionDialog) ConnectionDialog(
-            pairing = pairing,
+            authorizationStarted = authorizationStarted,
             boards = trelloBoards,
             selectedBoardId = selectedBoardId,
             error = connectionError,
             onConnect = {
-                scope.launch {
-                    connectionError = null
-                    trelloBoards = emptyList(); selectedBoardId = ""
-                    runCatching { api.createPairing() }.onSuccess { created -> pairing = created; api.openAuthorization(created) }.onFailure { connectionError = it.message ?: "无法连接服务" }
-                }
+                connectionError = null
+                trelloBoards = emptyList(); selectedBoardId = ""
+                authorizationStarted = true
+                api.openAuthorization()
             },
             onCheck = {
-                pairing?.let { current ->
-                    scope.launch {
-                        runCatching { api.pairingStatus(current) }.onSuccess { status ->
-                            when {
-                                status.configured -> { api.finishPairing(current); connected = true; showConnectionDialog = false }
-                                status.authorized -> runCatching { api.boards(current) }.onSuccess { values ->
-                                    trelloBoards = values; selectedBoardId = values.firstOrNull()?.id.orEmpty()
-                                    connectionError = if (values.isEmpty()) "这个 Trello 账户还没有看板，请先创建看板。" else null
-                                }.onFailure { connectionError = it.message ?: "无法读取看板" }
-                                else -> connectionError = "Trello 还没有授权成功，请完成授权后再试。"
-                            }
-                        }.onFailure { connectionError = it.message ?: "无法确认关联状态" }
-                    }
+                if (!api.hasAuthorization) {
+                    connectionError = "还没有收到 Trello 授权，请在浏览器中点击允许后返回应用。"
+                } else scope.launch {
+                    runCatching { api.boards() }.onSuccess { values ->
+                        trelloBoards = values; selectedBoardId = values.firstOrNull()?.id.orEmpty()
+                        connectionError = if (values.isEmpty()) "这个 Trello 账户还没有看板，请先创建看板。" else null
+                    }.onFailure { connectionError = it.message ?: "无法读取看板" }
                 }
             },
             onSelectBoard = { selectedBoardId = it },
             onFinishSetup = {
-                pairing?.let { current -> scope.launch {
-                    runCatching { api.initialize(current, selectedBoardId) }
+                scope.launch {
+                    runCatching { api.initialize(selectedBoardId) }
                         .onSuccess { connected = true; showConnectionDialog = false }
                         .onFailure { connectionError = it.message ?: "保存看板设置失败" }
-                } }
+                }
             },
         )
         val selected = tasks.firstOrNull { it.id == selectedId }
+        val selectedIsPiano = selected?.title?.contains("钢琴") == true
+        var pianoPractice by remember(selected?.id) {
+            mutableStateOf(selected?.takeIf { it.title.contains("钢琴") }?.let { pianoPracticeStore.status(it.id) })
+        }
+        LaunchedEffect(selected?.id, selectedIsPiano) {
+            val pianoTaskId = selected?.takeIf { it.title.contains("钢琴") }?.id ?: return@LaunchedEffect
+            while (true) {
+                pianoPractice = pianoPracticeStore.status(pianoTaskId)
+                delay(1_000)
+            }
+        }
         HomeworkHome(
             name = childName,
             tasks = tasks,
             selected = selected,
             remainingSeconds = remainingSeconds,
             running = running,
+            pianoPractice = pianoPractice,
             submitting = selected?.id == submittingTaskId,
             refreshing = refreshing,
-            studyLocked = kioskPolicy.isDeviceOwner && kioskPolicy.mode() == KioskMode.STUDY,
+            studyLocked = kioskPolicy.isDeviceOwner && kioskMode == KioskMode.STUDY,
             hasStudyApps = kioskPolicy.studyPackages.isNotEmpty(),
+            remoteNotice = remoteNotice,
             syncError = if (connected) connectionError else null,
             onRefresh = { refreshRequest++ },
             onParent = { context.startActivity(Intent(context, KioskSettingsActivity::class.java)) },
             onStudyApps = kioskPolicy::openStudyLauncher,
             onSelect = { task -> selectedId = task.id; remainingSeconds = task.estimatedMinutes * 60; running = false },
-            onStart = { running = !running; tasks = tasks.map { if (it.id == selectedId) it.copy(status = TaskStatus.RUNNING) else it } },
+            onStart = { running = true; tasks = tasks.map { if (it.id == selectedId) it.copy(status = TaskStatus.RUNNING) else it } },
+            onPianoRecord = {
+                selected?.takeIf { it.title.contains("钢琴") }?.let { pianoPractice = pianoPracticeStore.record(it.id) }
+            },
             onComplete = {
                 selected?.takeIf { submittingTaskId == null }?.let { current ->
                     running = false
                     submittingTaskId = current.id
                     val submissionId = java.util.UUID.randomUUID().toString()
                     scope.launch {
-                        runCatching { api.submit(current.id, null, current.status == TaskStatus.OVERTIME, submissionId) }
+                        runCatching { api.submit(current.id, emptyList(), current.status == TaskStatus.OVERTIME, submissionId) }
                             .onSuccess {
                                 advanceAfterCompletion(current.id)
+                                celebration = CelebrationEvent(current.title, tasks.all { it.status == TaskStatus.COMPLETED })
                                 refreshRequest++
                             }
                             .onFailure {
-                                pendingStore.add(PendingSubmission(current.id, null, current.status == TaskStatus.OVERTIME, submissionId))
+                                pendingStore.add(PendingSubmission(current.id, emptyList(), current.status == TaskStatus.OVERTIME, submissionId))
                                 advanceAfterCompletion(current.id)
+                                celebration = CelebrationEvent(current.title, tasks.all { it.status == TaskStatus.COMPLETED })
                                 connectionError = "网络不可用，已保存，联网后会自动同步完成状态。"
                             }
                         submittingTaskId = null
@@ -291,12 +524,13 @@ private fun HomeworkBuddyApp() {
             onFinish = {
                 selected?.let { current ->
                     running = false
+                    pendingPhotos = emptyList()
                     val file = File(context.cacheDir, "photos/${current.id}-${System.currentTimeMillis()}.jpg").also { it.parentFile?.mkdirs() }
-                    pendingPhoto = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                    capturePhoto = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
                     if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-                        runCatching { takePhoto.launch(pendingPhoto!!) }
+                        runCatching { takePhoto.launch(capturePhoto!!) }
                             .onFailure {
-                                pendingPhoto = null
+                                capturePhoto = null
                                 connectionError = "无法打开相机，请检查系统相机是否可用。"
                             }
                     } else {
@@ -305,24 +539,26 @@ private fun HomeworkBuddyApp() {
                 }
             },
             onSubmit = {
-                val photo = pendingPhoto
+                val photos = pendingPhotos
                 val current = selected
-                if (photo == null || !connected || current == null) {
+                if (photos.isEmpty() || !connected || current == null) {
                     connectionError = "请先关联 Trello 后再提交作业。"
                 } else if (submittingTaskId == null) {
                     submittingTaskId = current.id
                     val submissionId = java.util.UUID.randomUUID().toString()
                     scope.launch {
-                        runCatching { api.submit(current.id, photo, current.status == TaskStatus.OVERTIME, submissionId) }
+                        runCatching { api.submit(current.id, photos, current.status == TaskStatus.OVERTIME, submissionId) }
                             .onSuccess {
-                                advanceAfterCompletion(current.id, photo.toString())
+                                advanceAfterCompletion(current.id, photos.first().toString())
+                                celebration = CelebrationEvent(current.title, tasks.all { it.status == TaskStatus.COMPLETED })
                                 refreshRequest++
-                                showCameraConfirm = false; pendingPhoto = null
+                                showCameraConfirm = false; pendingPhotos = emptyList()
                             }
                             .onFailure {
-                                pendingStore.add(PendingSubmission(current.id, photo.toString(), current.status == TaskStatus.OVERTIME, submissionId))
-                                advanceAfterCompletion(current.id, photo.toString())
-                                showCameraConfirm = false; pendingPhoto = null
+                                pendingStore.add(PendingSubmission(current.id, photos.map(Uri::toString), current.status == TaskStatus.OVERTIME, submissionId))
+                                advanceAfterCompletion(current.id, photos.first().toString())
+                                celebration = CelebrationEvent(current.title, tasks.all { it.status == TaskStatus.COMPLETED })
+                                showCameraConfirm = false; pendingPhotos = emptyList()
                                 connectionError = "网络不可用，已保存，联网后会自动提交。"
                             }
                         submittingTaskId = null
@@ -330,28 +566,90 @@ private fun HomeworkBuddyApp() {
                 }
             },
             showCameraConfirm = showCameraConfirm,
-            onRetake = { showCameraConfirm = false; pendingPhoto = null },
+            photoCount = pendingPhotos.size,
+            onAddPhoto = {
+                selected?.takeIf { pendingPhotos.size < MAX_HOMEWORK_PHOTOS }?.let { current ->
+                    val file = File(context.cacheDir, "photos/${current.id}-${System.currentTimeMillis()}.jpg").also { it.parentFile?.mkdirs() }
+                    capturePhoto = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) takePhoto.launch(capturePhoto!!)
+                    else requestCameraPermission.launch(Manifest.permission.CAMERA)
+                }
+            },
+            onRetake = { showCameraConfirm = false; capturePhoto = null; pendingPhotos = emptyList() },
         )
+        celebration?.let { event -> CelebrationDialog(event.taskTitle, event.allTasksComplete) { celebration = null } }
+    }
+}
+
+@Composable
+private fun CelebrationDialog(taskTitle: String, allTasksComplete: Boolean, onDismiss: () -> Unit) {
+    val celebration = remember(allTasksComplete) { (if (allTasksComplete) AllDoneCelebrationVariants else CelebrationVariants).random() }
+    LaunchedEffect(celebration) { CelebrationSound.play(celebration.melody) }
+    val animation = rememberInfiniteTransition(label = "fireworks")
+    val progress by animation.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(1_500, easing = LinearEasing), RepeatMode.Restart),
+        label = "firework progress",
+    )
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(dismissOnBackPress = true, dismissOnClickOutside = false)) {
+        Surface(shape = RoundedCornerShape(if (allTasksComplete) 36.dp else 30.dp), color = Color(0xFF18264B), contentColor = Color.White, tonalElevation = 8.dp) {
+            Box(
+                modifier = Modifier.widthIn(min = if (allTasksComplete) 360.dp else 300.dp, max = if (allTasksComplete) 660.dp else 520.dp).padding(horizontal = if (allTasksComplete) 40.dp else 28.dp, vertical = if (allTasksComplete) 42.dp else 30.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Canvas(Modifier.matchParentSize()) {
+                    val positions = if (allTasksComplete) listOf(.12f to .23f, .38f to .13f, .72f to .2f, .88f to .5f, .24f to .67f) else listOf(.2f to .25f, .78f to .23f, .5f to .6f)
+                    val bursts = positions.mapIndexed { index, (x, y) -> Triple(x, y, celebration.colors[index % celebration.colors.size]) }
+                    bursts.forEachIndexed { burstIndex, (x, y, color) ->
+                        val phase = (progress + burstIndex / 3f) % 1f
+                        val centerX = size.width * x
+                        val centerY = size.height * y
+                        val radius = size.minDimension * (.05f + phase * .25f)
+                        repeat(12) { index ->
+                            val angle = index * (Math.PI * 2 / 12)
+                            val start = radius * .25f
+                            drawLine(
+                                color = color.copy(alpha = 1f - phase),
+                                start = androidx.compose.ui.geometry.Offset(centerX + cos(angle).toFloat() * start, centerY + sin(angle).toFloat() * start),
+                                end = androidx.compose.ui.geometry.Offset(centerX + cos(angle).toFloat() * radius, centerY + sin(angle).toFloat() * radius),
+                                strokeWidth = 5f,
+                            )
+                        }
+                        drawCircle(color.copy(alpha = 1f - phase), radius = radius * .16f, center = androidx.compose.ui.geometry.Offset(centerX, centerY), style = Stroke(width = 3f))
+                    }
+                }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(if (allTasksComplete) "🏆" else "🎉", fontSize = if (allTasksComplete) 92.sp else 68.sp)
+                    Spacer(Modifier.height(8.dp))
+                    Text(celebration.headline, fontSize = if (allTasksComplete) 38.sp else 32.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(8.dp))
+                    Text(celebration.encouragement.format(taskTitle), fontSize = 18.sp, color = Color(0xFFE0E9FF), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.height(24.dp))
+                    Button(onClick = onDismiss, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFC857), contentColor = Ink)) { Text(if (allTasksComplete) "今天真棒！" else "继续加油") }
+                }
+            }
+        }
     }
 }
 
 @Composable private fun ConnectionDialog(
-    pairing: Pairing?, boards: List<TrelloOption>, selectedBoardId: String, error: String?,
+    authorizationStarted: Boolean, boards: List<TrelloOption>, selectedBoardId: String, error: String?,
     onConnect: () -> Unit, onCheck: () -> Unit, onSelectBoard: (String) -> Unit,
     onFinishSetup: () -> Unit,
 ) {
     val selectingBoard = boards.isNotEmpty()
     AlertDialog(onDismissRequest = {}, icon = { Text("🔗", fontSize = 38.sp) }, title = { Text("请家长关联 Trello") }, text = {
         Column(Modifier.heightIn(max = 430.dp).verticalScroll(rememberScrollState())) {
-            Text(when { pairing == null -> "关联后可以同步今天的作业。"; selectingBoard -> "请选择这台平板使用的看板。系统固定使用“待完成”和“已完成”两个列表，缺少时会自动创建。"; else -> "浏览器只负责 Trello 授权；授权后回到这里继续选择看板。" })
+            Text(when { !authorizationStarted -> "家长授权后，这台平板会直接读取 Trello 作业。授权 token 仅加密保存在平板。"; selectingBoard -> "请选择这台平板使用的看板。系统固定使用“待完成”和“已完成”两个列表，缺少时会自动创建。"; else -> "浏览器只负责 Trello 授权；授权后会自动回到这里，再点击继续。" })
             if (selectingBoard) boards.forEach { item -> Row(Modifier.fillMaxWidth().clickable { onSelectBoard(item.id) }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) { RadioButton(selectedBoardId == item.id, { onSelectBoard(item.id) }); Text(item.name) } }
             if (error != null) { Spacer(Modifier.height(10.dp)); Text(error, color = MaterialTheme.colorScheme.error) }
         }
     }, confirmButton = { Button(
         enabled = !selectingBoard || selectedBoardId.isNotEmpty(),
-        onClick = when { pairing == null -> onConnect; selectingBoard -> onFinishSetup; else -> onCheck }
-    ) { Text(when { pairing == null -> "关联 Trello"; selectingBoard -> "绑定看板"; else -> "我已完成授权" }) } },
-        dismissButton = { if (pairing != null && !selectingBoard) TextButton(onClick = onConnect) { Text("重新关联") } })
+        onClick = when { !authorizationStarted -> onConnect; selectingBoard -> onFinishSetup; else -> onCheck }
+    ) { Text(when { !authorizationStarted -> "授权 Trello"; selectingBoard -> "绑定看板"; else -> "继续" }) } },
+        dismissButton = { if (authorizationStarted && !selectingBoard) TextButton(onClick = onConnect) { Text("重新授权") } })
 }
 
 @Composable private fun NameDialog(onSaved: (String) -> Unit) {
@@ -360,21 +658,26 @@ private fun HomeworkBuddyApp() {
 }
 
 @Composable
-private fun HomeworkHome(name: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, remainingSeconds: Int, running: Boolean, submitting: Boolean, refreshing: Boolean, studyLocked: Boolean, hasStudyApps: Boolean, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onComplete: () -> Unit, onFinish: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, onRetake: () -> Unit) {
+private fun HomeworkHome(name: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, remainingSeconds: Int, running: Boolean, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, studyLocked: Boolean, hasStudyApps: Boolean, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onComplete: () -> Unit, onFinish: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photoCount: Int, onAddPhoto: () -> Unit, onRetake: () -> Unit) {
     val complete = tasks.count { it.status == TaskStatus.COMPLETED }
     val waiting = tasks.filter { it.status != TaskStatus.COMPLETED && it.id != selected?.id }
     val completedTasks = tasks.filter { it.status == TaskStatus.COMPLETED }
+    val overdue = tasks.count { it.status == TaskStatus.OVERTIME }
     BoxWithConstraints(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(24.dp)) {
         Column(Modifier.fillMaxSize()) {
-            Header(name, complete, tasks.size, refreshing, studyLocked, hasStudyApps, onRefresh, onParent, onStudyApps)
+            Header(name, complete, tasks.size, overdue, refreshing, studyLocked, hasStudyApps, onRefresh, onParent, onStudyApps)
+            if (remoteNotice != null) {
+                Spacer(Modifier.height(14.dp))
+                RemoteNoticeCard(remoteNotice)
+            }
             Spacer(Modifier.height(20.dp))
             if (selected == null) {
                 EmptyTaskState(Modifier.fillMaxSize())
             } else if (this@BoxWithConstraints.maxWidth >= 700.dp) Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(22.dp)) {
-                CurrentTask(Modifier.weight(1.45f).fillMaxHeight(), selected, remainingSeconds, running, submitting, onStart, onComplete, onFinish)
+                CurrentTask(Modifier.weight(1.45f).fillMaxHeight(), selected, running, pianoPractice, submitting, onStart, onPianoRecord, onComplete, onFinish)
                 TaskQueue(Modifier.weight(.8f).fillMaxHeight(), waiting, completedTasks, onSelect)
             } else {
-                CurrentTask(Modifier.fillMaxWidth(), selected, remainingSeconds, running, submitting, onStart, onComplete, onFinish)
+                CurrentTask(Modifier.fillMaxWidth(), selected, running, pianoPractice, submitting, onStart, onPianoRecord, onComplete, onFinish)
                 Spacer(Modifier.height(16.dp)); TaskQueue(Modifier.fillMaxWidth(), waiting, completedTasks, onSelect)
             }
         }
@@ -389,11 +692,33 @@ private fun HomeworkHome(name: String, tasks: List<HomeworkTask>, selected: Home
             Text(syncError, modifier = Modifier.padding(horizontal = 16.dp, vertical = 11.dp), fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
     }
-    if (showCameraConfirm) AlertDialog(onDismissRequest = { if (!submitting) onRetake() }, icon = { Icon(Icons.Outlined.CameraAlt, null) }, title = { Text("上传作业照片") }, text = { Text(if (submitting) "正在上传照片并完成任务…" else "将这张照片上传到 Trello，并把当前任务标记为完成。") }, confirmButton = { Button(onClick = onSubmit, enabled = !submitting) { if (submitting) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)); Text("正在上传…") } else Text("上传并完成") } }, dismissButton = { TextButton(onClick = onRetake, enabled = !submitting) { Text("取消") } })
+    if (showCameraConfirm) AlertDialog(onDismissRequest = { if (!submitting) onRetake() }, icon = { Icon(Icons.Outlined.CameraAlt, null) }, title = { Text("上传作业照片") }, text = { Column { Text(if (submitting) "正在上传照片并完成任务…" else "已拍 $photoCount 张，将作为附件上传到 Trello。") ; if (!submitting && photoCount < MAX_HOMEWORK_PHOTOS) { Spacer(Modifier.height(12.dp)); OutlinedButton(onClick = onAddPhoto) { Icon(Icons.Outlined.CameraAlt, null); Spacer(Modifier.width(8.dp)); Text("再拍一张（最多 $MAX_HOMEWORK_PHOTOS 张）") } } } }, confirmButton = { Button(onClick = onSubmit, enabled = !submitting) { if (submitting) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)); Text("正在上传…") } else Text("上传并完成") } }, dismissButton = { TextButton(onClick = onRetake, enabled = !submitting) { Text("取消") } })
+}
+
+@Composable
+private fun RemoteNoticeCard(notice: RemoteNotice) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        color = Color(0xFFE8F0FF),
+        contentColor = Ink,
+    ) {
+        Row(Modifier.padding(horizontal = 18.dp, vertical = 14.dp), verticalAlignment = Alignment.Top) {
+            Text("📩", fontSize = 24.sp)
+            Spacer(Modifier.width(12.dp))
+            Column {
+                Text(notice.title, fontSize = 17.sp, fontWeight = FontWeight.Medium)
+                if (notice.body.isNotBlank()) {
+                    Spacer(Modifier.height(3.dp))
+                    Text(notice.body, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
-@Composable private fun Header(name: String, complete: Int, total: Int, refreshing: Boolean, studyLocked: Boolean, hasStudyApps: Boolean, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit) {
+@Composable private fun Header(name: String, complete: Int, total: Int, overdue: Int, refreshing: Boolean, studyLocked: Boolean, hasStudyApps: Boolean, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit) {
     val percent = if (total == 0) 0 else complete * 100 / total
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.combinedClickable(onClick = {}, onLongClick = onParent)) { Text("今天的作业", fontSize = 30.sp, fontWeight = FontWeight.Medium); Text(if (name.isBlank()) "按顺序完成就好！" else "$name，按顺序完成就好！", color = MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -409,7 +734,11 @@ private fun HomeworkHome(name: String, tasks: List<HomeworkTask>, selected: Home
             FilledTonalButton(onClick = onRefresh, enabled = !refreshing, shape = RoundedCornerShape(18.dp), contentPadding = PaddingValues(horizontal = 13.dp, vertical = 9.dp)) {
                 Icon(Icons.Outlined.Refresh, null, modifier = Modifier.size(19.dp)); Spacer(Modifier.width(6.dp)); Text(if (refreshing) "刷新中…" else "刷新")
             }
-            Column(Modifier.width(245.dp).clip(RoundedCornerShape(18.dp)).background(Sky).padding(horizontal = 14.dp, vertical = 11.dp)) { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("已完成 $complete / $total"); Text("$percent%", fontWeight = FontWeight.Medium) }; Spacer(Modifier.height(7.dp)); LinearProgressIndicator(progress = { if (total == 0) 0f else complete.toFloat() / total }, modifier = Modifier.fillMaxWidth().height(7.dp).clip(CircleShape)) }
+            Column(Modifier.width(245.dp).clip(RoundedCornerShape(18.dp)).background(Sky).padding(horizontal = 14.dp, vertical = 11.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("已完成 $complete / $total"); Text("$percent%", fontWeight = FontWeight.Medium) }
+                if (overdue > 0) Text("还有 $overdue 项已超期", color = OverdueInk, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                Spacer(Modifier.height(7.dp)); LinearProgressIndicator(progress = { if (total == 0) 0f else complete.toFloat() / total }, modifier = Modifier.fillMaxWidth().height(7.dp).clip(CircleShape))
+            }
         }
     }
 }
@@ -420,29 +749,50 @@ private fun HomeworkHome(name: String, tasks: List<HomeworkTask>, selected: Home
     }
 }
 
-@Composable private fun CurrentTask(modifier: Modifier, task: HomeworkTask, seconds: Int, running: Boolean, submitting: Boolean, onStart: () -> Unit, onComplete: () -> Unit, onFinish: () -> Unit) {
-    Column(modifier.clip(RoundedCornerShape(26.dp)).background(Sun).padding(28.dp), horizontalAlignment = Alignment.Start) {
-        AssistChip(onClick = {}, label = { Text(task.subject) }); Spacer(Modifier.height(14.dp)); Text(task.title, fontSize = 30.sp, fontWeight = FontWeight.Medium); Text("预计 ${task.estimatedMinutes} 分钟 · 截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(Modifier.weight(1f)); Box(Modifier.size(166.dp).align(Alignment.CenterHorizontally).clip(CircleShape).background(Color.White).padding(10.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(progress = { (seconds.toFloat() / (task.estimatedMinutes * 60)).coerceIn(0f, 1f) }, modifier = Modifier.fillMaxSize(), strokeWidth = 9.dp); Text("%02d:%02d".format(seconds / 60, seconds % 60), fontSize = 31.sp, fontWeight = FontWeight.Medium) }
-        Spacer(Modifier.weight(1f)); Button(onClick = onStart, modifier = Modifier.align(Alignment.CenterHorizontally), enabled = task.status != TaskStatus.COMPLETED && !submitting) { Text(if (running) "暂停计时" else "开始做") }; Spacer(Modifier.height(10.dp)); Row(Modifier.align(Alignment.CenterHorizontally), horizontalArrangement = Arrangement.spacedBy(10.dp)) { FilledTonalButton(onClick = onComplete, enabled = task.status != TaskStatus.COMPLETED && !submitting) { if (submitting) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)); Text("提交中…") } else Text("直接完成") }; FilledTonalButton(onClick = onFinish, enabled = task.status != TaskStatus.COMPLETED && !submitting) { Icon(Icons.Outlined.CameraAlt, null); Spacer(Modifier.width(8.dp)); Text("完成并拍照") } }
+@Composable private fun CurrentTask(modifier: Modifier, task: HomeworkTask, running: Boolean, pianoPractice: PianoPracticeStatus?, submitting: Boolean, onStart: () -> Unit, onPianoRecord: () -> Unit, onComplete: () -> Unit, onFinish: () -> Unit) {
+    val overdue = task.status == TaskStatus.OVERTIME
+    Column(modifier.clip(RoundedCornerShape(26.dp)).background(if (overdue) OverdueSurface else Sun).padding(28.dp), horizontalAlignment = Alignment.Start) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (task.subject != "作业") AssistChip(onClick = {}, label = { Text(task.subject) })
+            TaskStatusPill(task.status)
+        }
+        Spacer(Modifier.height(14.dp)); Text(task.title, fontSize = 30.sp, fontWeight = FontWeight.Medium)
+        Text(if (overdue) "已超过截止时间，请优先完成" else "截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", color = if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = if (overdue) FontWeight.Medium else FontWeight.Normal)
+        Spacer(Modifier.weight(1f)); Box(Modifier.size(166.dp).align(Alignment.CenterHorizontally).clip(CircleShape).background(Color.White).padding(10.dp), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(if (overdue) "已超期" else "截止", fontSize = 15.sp, color = if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(task.deadline.format(DateTimeFormatter.ofPattern("HH:mm")), fontSize = 31.sp, fontWeight = FontWeight.Medium)
+            }
+        }
+        Spacer(Modifier.weight(1f)); Button(onClick = onStart, modifier = Modifier.align(Alignment.CenterHorizontally), enabled = task.status != TaskStatus.COMPLETED && !submitting && !running) { Text(if (running) "正在做" else "开始做") }
+        if (pianoPractice != null) {
+            Spacer(Modifier.height(10.dp))
+            FilledTonalButton(onClick = onPianoRecord, modifier = Modifier.align(Alignment.CenterHorizontally), enabled = pianoPractice.cooldownSeconds == 0 && task.status != TaskStatus.COMPLETED && !submitting) {
+                Text(if (pianoPractice.cooldownSeconds > 0) "已记 ${pianoPractice.count} 次 · ${pianoPractice.cooldownSeconds} 秒后可再记" else "🎹 练琴记一次（已记 ${pianoPractice.count} 次）")
+            }
+        }
+        Spacer(Modifier.height(10.dp)); Row(Modifier.align(Alignment.CenterHorizontally), horizontalArrangement = Arrangement.spacedBy(10.dp)) { FilledTonalButton(onClick = onComplete, enabled = task.status != TaskStatus.COMPLETED && !submitting) { if (submitting) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)); Text("提交中…") } else Text("直接完成") }; FilledTonalButton(onClick = onFinish, enabled = task.status != TaskStatus.COMPLETED && !submitting) { Icon(Icons.Outlined.CameraAlt, null); Spacer(Modifier.width(8.dp)); Text("完成并拍照") } }
     }
 }
 
 @Composable private fun TaskQueue(modifier: Modifier, tasks: List<HomeworkTask>, completedTasks: List<HomeworkTask>, onSelect: (HomeworkTask) -> Unit) {
     Column(modifier) {
         Text("接下来 · ${tasks.size} 项", fontSize = 20.sp, fontWeight = FontWeight.Medium)
-        Spacer(Modifier.height(8.dp))
-        LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Spacer(Modifier.height(6.dp))
+        LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             items(tasks, key = { it.id }) { task ->
-                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(17.dp)).background(MaterialTheme.colorScheme.surface).clickable { onSelect(task) }.padding(horizontal = 14.dp, vertical = 11.dp)) {
+                val overdue = task.status == TaskStatus.OVERTIME
+                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(if (overdue) OverdueSurface else TodoSurface).clickable { onSelect(task) }.padding(horizontal = 12.dp, vertical = 8.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text(task.subject, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
-                        Text(if (task.status == TaskStatus.OVERTIME) "已超时" else "下一项", color = if (task.status == TaskStatus.OVERTIME) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                        if (task.subject != "作业") Text(task.subject, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                        TaskStatusPill(task.status)
                     }
-                    Spacer(Modifier.height(4.dp))
-                    Text(task.title, fontSize = 17.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Spacer(Modifier.height(3.dp))
-                    Text("${task.estimatedMinutes} 分钟 · ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))} 前", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                    Spacer(Modifier.height(2.dp))
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(task.title, modifier = Modifier.weight(1f), fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Spacer(Modifier.width(8.dp))
+                        Text("截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", color = if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                    }
                 }
             }
         }
@@ -470,5 +820,17 @@ private fun HomeworkHome(name: String, tasks: List<HomeworkTask>, selected: Home
                 Text("一步一步来，完成一项就离星星更近一点。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
             }
         }
+    }
+}
+
+@Composable private fun TaskStatusPill(status: TaskStatus) {
+    val (label, surface, content) = when (status) {
+        TaskStatus.OVERTIME -> Triple("⚠ 已超期", OverdueSurface, OverdueInk)
+        TaskStatus.RUNNING -> Triple("正在完成", Color(0xFFFFF3CE), Ink)
+        TaskStatus.COMPLETED -> Triple("✓ 已完成", Leaf, Color(0xFF24733A))
+        TaskStatus.TODO -> Triple("待完成", TodoSurface, Primary)
+    }
+    Surface(shape = RoundedCornerShape(10.dp), color = surface, contentColor = content) {
+        Text(label, modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp), fontSize = 11.sp, fontWeight = FontWeight.Medium)
     }
 }

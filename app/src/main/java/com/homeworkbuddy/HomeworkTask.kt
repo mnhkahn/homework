@@ -14,10 +14,7 @@ data class HomeworkTask(
     val photoPath: String? = null,
 )
 
-/**
- * All remote calls belong behind this interface. A production implementation should call a
- * family-owned service which holds the Trello token; never place a Trello token in this app.
- */
+/** Legacy preview abstraction; production homework sync is implemented by [HomeworkApi]. */
 interface HomeworkTaskSource {
     suspend fun today(): List<HomeworkTask>
     suspend fun submit(task: HomeworkTask, photoPath: String?): HomeworkTask

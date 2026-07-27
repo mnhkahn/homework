@@ -25,3 +25,28 @@
 3. 服务端再把提交状态、照片链接或附件写回 Trello。
 
 不要把 Trello API token 打包进 APK。
+
+## 小李 Gateway 连接
+
+家长在小李管理端点击“添加学习平板”生成一次性二维码，再在“家长设置 → 小李连接”中扫描。设备 token 使用 Android Keystore 的 AES-GCM 密钥加密后才会保存到本机。二维码内容是：
+
+```json
+{"pair_url":"https://xiaoli-server.example/xiaozhi/pair","code":"short-lived-one-time-code"}
+```
+
+应用向 `pair_url` 提交设备 ID、名称和 `device_kind=android`。在 Logto 会话所属的用户确认后，Gateway 应返回：
+
+```json
+{
+  "device": {"id":"homework-tablet-abcd1234", "name":"小明的学习平板"},
+  "websocket": {"url":"wss://xiaoli-server.example/xiaozhi/v1/", "token":"device-token"}
+}
+```
+
+连接成功后，应用声明并实现以下 MCP 工具：
+
+- `self.device.get_status`
+- `self.homework.get_status`
+- `self.notify.send`
+- `self.camera.take_photo`（会显示系统相机，绝不静默拍摄）
+- `self.kiosk.pause_15_minutes`（复用既有的临时开放 15 分钟逻辑）

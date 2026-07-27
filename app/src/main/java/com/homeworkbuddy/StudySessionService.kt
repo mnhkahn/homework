@@ -1,0 +1,80 @@
+package com.homeworkbuddy
+
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.Service
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.IBinder
+import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
+
+/**
+ * Runs only during a managed study session. A dynamic USER_PRESENT receiver is
+ * reliable on modern Android, unlike a manifest-only implicit receiver.
+ */
+class StudySessionService : Service() {
+    private val unlockReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action != Intent.ACTION_USER_PRESENT) return
+            val policy = KioskPolicy(this@StudySessionService)
+            if (policy.isDeviceOwner && policy.mode() == KioskMode.STUDY) {
+                policy.applyForCurrentTime(navigate = true)
+            }
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        ContextCompat.registerReceiver(
+            this,
+            unlockReceiver,
+            IntentFilter(Intent.ACTION_USER_PRESENT),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val policy = KioskPolicy(this)
+        if (!policy.isDeviceOwner || policy.mode() != KioskMode.STUDY) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        getSystemService(NotificationManager::class.java).createNotificationChannel(
+            NotificationChannel(CHANNEL, "学习时间管理", NotificationManager.IMPORTANCE_LOW),
+        )
+        startForeground(
+            NOTIFICATION_ID,
+            NotificationCompat.Builder(this, CHANNEL)
+                .setSmallIcon(android.R.drawable.stat_sys_warning)
+                .setContentTitle("作业小伙伴")
+                .setContentText("学习时间管理已开启")
+                .setOngoing(true)
+                .build(),
+        )
+        return START_STICKY
+    }
+
+    override fun onDestroy() {
+        unregisterReceiver(unlockReceiver)
+        super.onDestroy()
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    companion object {
+        private const val CHANNEL = "study_session"
+        private const val NOTIFICATION_ID = 7110
+
+        fun start(context: Context) = ContextCompat.startForegroundService(
+            context,
+            Intent(context, StudySessionService::class.java),
+        )
+
+        fun stop(context: Context) {
+            context.stopService(Intent(context, StudySessionService::class.java))
+        }
+    }
+}

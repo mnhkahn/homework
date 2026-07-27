@@ -93,6 +93,16 @@ private class ParentPinStore(context: Context) {
         return MessageDigest.isEqual(expected.toByteArray(), hash(pin, salt).toByteArray())
     }
 
+    fun isSessionValid(now: Long = System.currentTimeMillis()): Boolean =
+        prefs.getLong("authenticated_until", 0L) > now
+
+    fun markAuthenticated(now: Long = System.currentTimeMillis()) {
+        // A short session survives an Activity recreation while the local QR
+        // scanner owns the camera, but never turns the parent PIN into a
+        // permanent bypass.
+        prefs.edit().putLong("authenticated_until", now + 5 * 60_000L).apply()
+    }
+
     private fun hash(pin: String, salt: ByteArray): String {
         var value = salt + pin.toByteArray()
         repeat(100_000) { value = MessageDigest.getInstance("SHA-256").digest(value) }
@@ -112,26 +122,30 @@ class KioskSettingsActivity : FragmentActivity() {
 @Composable
 private fun ParentGate(activity: KioskSettingsActivity) {
     val store = remember { ParentPinStore(activity) }
-    var authenticated by remember { mutableStateOf(false) }
+    var authenticated by remember { mutableStateOf(store.isSessionValid()) }
     var hasPin by remember { mutableStateOf(store.hasPin) }
     var pin by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
-    val biometricAvailable = remember {
-        BiometricManager.from(activity).canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_WEAK) == BiometricManager.BIOMETRIC_SUCCESS
+    // Some vendors expose face unlock only through the device credential path,
+    // rather than as BIOMETRIC_WEAK.  Supporting both lets the system present
+    // the familiar face/fingerprint/PIN sheet instead of forcing our local PIN.
+    val systemAuthAvailable = remember {
+        BiometricManager.from(activity).canAuthenticate(
+            BiometricManager.Authenticators.BIOMETRIC_WEAK or BiometricManager.Authenticators.DEVICE_CREDENTIAL,
+        ) == BiometricManager.BIOMETRIC_SUCCESS
     }
     val promptInfo = remember {
         BiometricPrompt.PromptInfo.Builder()
             .setTitle("家长验证")
-            .setSubtitle("请使用系统人脸或指纹进入家长设置")
-            .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_WEAK)
-            .setNegativeButtonText("使用家长 PIN")
+            .setSubtitle("请使用系统人脸、指纹或锁屏验证进入家长设置")
+            .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_WEAK or BiometricManager.Authenticators.DEVICE_CREDENTIAL)
             .build()
     }
     val biometricPrompt = remember(activity) {
         BiometricPrompt(activity, ContextCompat.getMainExecutor(activity), object : BiometricPrompt.AuthenticationCallback() {
             override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                authenticated = true
+                store.markAuthenticated(); authenticated = true
                 error = null
             }
 
@@ -140,15 +154,15 @@ private fun ParentGate(activity: KioskSettingsActivity) {
             }
 
             override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                if (errorCode != BiometricPrompt.ERROR_NEGATIVE_BUTTON && errorCode != BiometricPrompt.ERROR_USER_CANCELED) {
+                if (errorCode != BiometricPrompt.ERROR_USER_CANCELED) {
                     error = errString.toString()
                 }
             }
         })
     }
 
-    LaunchedEffect(hasPin, biometricAvailable) {
-        if (hasPin && biometricAvailable) biometricPrompt.authenticate(promptInfo)
+    LaunchedEffect(hasPin, systemAuthAvailable) {
+        if (hasPin && systemAuthAvailable) biometricPrompt.authenticate(promptInfo)
     }
 
     if (authenticated) {
@@ -164,14 +178,14 @@ private fun ParentGate(activity: KioskSettingsActivity) {
             ) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回", modifier = Modifier.size(32.dp)) }
             Column(Modifier.fillMaxWidth(.55f), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(if (hasPin) "家长验证" else "设置家长 PIN", fontSize = 28.sp, fontWeight = FontWeight.Medium)
-                if (hasPin && biometricAvailable) {
+                if (hasPin && systemAuthAvailable) {
                     Spacer(Modifier.height(14.dp))
                     OutlinedButton(onClick = { biometricPrompt.authenticate(promptInfo) }) {
                         Icon(Icons.Outlined.Face, null)
                         Spacer(Modifier.size(8.dp))
                         Text("使用人脸或指纹")
                     }
-                    Text("也可以使用家长 PIN", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp))
+                    Text("也可以使用锁屏验证或家长 PIN", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp))
                 }
                 Spacer(Modifier.height(18.dp))
                 OutlinedTextField(pin, { pin = it.filter(Char::isDigit).take(8) }, label = { Text("4–8 位数字 PIN") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
@@ -183,11 +197,11 @@ private fun ParentGate(activity: KioskSettingsActivity) {
                 Spacer(Modifier.height(18.dp))
                 Button(onClick = {
                     when {
-                        hasPin && store.verify(pin) -> authenticated = true
+                        hasPin && store.verify(pin) -> { store.markAuthenticated(); authenticated = true }
                         hasPin -> error = "PIN 不正确"
                         pin.length !in 4..8 -> error = "请输入 4–8 位数字"
                         pin != confirm -> error = "两次输入不一致"
-                        else -> { store.set(pin); hasPin = true; authenticated = true }
+                        else -> { store.set(pin); store.markAuthenticated(); hasPin = true; authenticated = true }
                     }
                 }) { Text(if (hasPin) "进入家长设置" else "保存并进入") }
             }
@@ -242,6 +256,15 @@ private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
                         OutlinedButton(enabled = policy.isDeviceOwner, onClick = policy::openStudyLauncher) { Icon(Icons.Outlined.Apps, null); Spacer(Modifier.size(7.dp)); Text("查看学习应用") }
                     }
                     message?.let { Text(it, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 10.dp)) }
+                }
+            }
+        }
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFEAF4FF)), shape = RoundedCornerShape(20.dp)) {
+                Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                    Text("小李连接", fontSize = 21.sp, fontWeight = FontWeight.Medium)
+                    Text("扫码绑定这台平板，让小李可查询作业、发送通知、请求拍照和临时开放 15 分钟。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Button(onClick = { activity.startActivity(Intent(activity, XiaoliSettingsActivity::class.java)) }, modifier = Modifier.padding(top = 10.dp)) { Text("配置小李连接") }
                 }
             }
         }
