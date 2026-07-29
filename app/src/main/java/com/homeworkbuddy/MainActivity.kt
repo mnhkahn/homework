@@ -240,6 +240,18 @@ class MainActivity : ComponentActivity() {
         super.onPause()
     }
 
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        val policy = KioskPolicy(this)
+        if (policy.isDeviceOwner && policy.mode() == KioskMode.STUDY) {
+            // MIUI's tablet window menu can issue a Home-like leave even while
+            // Lock Task is active. Reassert the managed activity immediately.
+            Handler(Looper.getMainLooper()).postDelayed({
+                policy.applyForCurrentTime(this, navigate = true)
+            }, 200)
+        }
+    }
+
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         if (event.actionMasked == MotionEvent.ACTION_DOWN) extendStudyScreenTimeout()
         return super.dispatchTouchEvent(event)
@@ -329,10 +341,10 @@ private fun HomeworkBuddyApp() {
             val next = kioskPolicy.mode()
             if (next != kioskMode) {
                 kioskMode = next
-                // The app can remain foregrounded across the scheduled end time.
-                // Pass its Activity so releaseLockTask also calls stopLockTask and
-                // restores Android's native Home gesture/navigation immediately.
-                kioskPolicy.applyForCurrentTime(activity)
+                // Exact alarms can be delayed by MIUI. This foreground fallback
+                // must therefore both release Lock Task *and* leave the homework
+                // activity when the scheduled study period ends.
+                kioskPolicy.applyForCurrentTime(activity, navigate = true)
             }
             delay(30_000)
         }
@@ -399,14 +411,12 @@ private fun HomeworkBuddyApp() {
             refreshing = true
             runCatching { api.todayTasks() }.onSuccess { remote ->
                 val local = tasks.associateBy { it.id }
-                val remoteIds = remote.mapTo(mutableSetOf()) { it.id }
-                val completedLocal = tasks.filter { it.status == TaskStatus.COMPLETED && it.id !in remoteIds }
                 val merged = remote.map { fresh ->
                     local[fresh.id]?.let { old ->
                         if (fresh.status == TaskStatus.COMPLETED) fresh.copy(photoPath = old.photoPath)
                         else fresh.copy(status = if (old.status == TaskStatus.RUNNING) TaskStatus.RUNNING else fresh.status, photoPath = old.photoPath)
                     } ?: fresh
-                } + completedLocal
+                }
                 tasks = merged
                 val selected = merged.firstOrNull { it.id == selectedId && it.status != TaskStatus.COMPLETED }
                     ?: merged.firstOrNull { it.status != TaskStatus.COMPLETED }
@@ -513,9 +523,7 @@ private fun HomeworkBuddyApp() {
                             }
                             .onFailure {
                                 pendingStore.add(PendingSubmission(current.id, emptyList(), current.status == TaskStatus.OVERTIME, submissionId))
-                                advanceAfterCompletion(current.id)
-                                celebration = CelebrationEvent(current.title, tasks.all { it.status == TaskStatus.COMPLETED })
-                                connectionError = "网络不可用，已保存，联网后会自动同步完成状态。"
+                                connectionError = "没有同步到 Trello，任务仍是待完成；联网后会自动重试。"
                             }
                         submittingTaskId = null
                     }
@@ -556,10 +564,8 @@ private fun HomeworkBuddyApp() {
                             }
                             .onFailure {
                                 pendingStore.add(PendingSubmission(current.id, photos.map(Uri::toString), current.status == TaskStatus.OVERTIME, submissionId))
-                                advanceAfterCompletion(current.id, photos.first().toString())
-                                celebration = CelebrationEvent(current.title, tasks.all { it.status == TaskStatus.COMPLETED })
                                 showCameraConfirm = false; pendingPhotos = emptyList()
-                                connectionError = "网络不可用，已保存，联网后会自动提交。"
+                                connectionError = "照片和完成状态尚未同步到 Trello，任务仍是待完成；联网后会自动重试。"
                             }
                         submittingTaskId = null
                     }

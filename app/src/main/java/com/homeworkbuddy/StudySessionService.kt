@@ -7,7 +7,9 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 
@@ -16,6 +18,22 @@ import androidx.core.content.ContextCompat
  * reliable on modern Android, unlike a manifest-only implicit receiver.
  */
 class StudySessionService : Service() {
+    private val handler = Handler(Looper.getMainLooper())
+    private val scheduleChecker = object : Runnable {
+        override fun run() {
+            val policy = KioskPolicy(this@StudySessionService)
+            if (!policy.isDeviceOwner || policy.mode() != KioskMode.STUDY) {
+                // MIUI can defer exact alarms by almost an hour. The foreground
+                // service remains alive for the study session, so it is the
+                // reliable final authority for leaving study mode on time.
+                policy.applyForCurrentTime(navigate = true)
+                stopSelf()
+                return
+            }
+            handler.postDelayed(this, SCHEDULE_CHECK_INTERVAL_MS)
+        }
+    }
+
     private val unlockReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action != Intent.ACTION_USER_PRESENT) return
@@ -54,12 +72,25 @@ class StudySessionService : Service() {
                 .setOngoing(true)
                 .build(),
         )
+        handler.removeCallbacks(scheduleChecker)
+        handler.post(scheduleChecker)
         return START_STICKY
     }
 
     override fun onDestroy() {
+        handler.removeCallbacks(scheduleChecker)
         unregisterReceiver(unlockReceiver)
         super.onDestroy()
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        // The MIUI tablet window menu's close button removes the foreground
+        // task. During study time it must not expose the ordinary launcher.
+        val policy = KioskPolicy(this)
+        if (policy.isDeviceOwner && policy.mode() == KioskMode.STUDY) {
+            policy.applyForCurrentTime(navigate = true)
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -67,6 +98,7 @@ class StudySessionService : Service() {
     companion object {
         private const val CHANNEL = "study_session"
         private const val NOTIFICATION_ID = 7110
+        private const val SCHEDULE_CHECK_INTERVAL_MS = 15_000L
 
         fun start(context: Context) = ContextCompat.startForegroundService(
             context,

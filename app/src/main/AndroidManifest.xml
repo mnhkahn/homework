@@ -19,6 +19,7 @@
         android:allowBackup="true"
         android:icon="@drawable/ic_launcher_homework"
         android:label="作业小伙伴"
+        android:resizeableActivity="false"
         android:roundIcon="@drawable/ic_launcher_homework"
         android:theme="@style/Theme.HomeworkBuddy">
         <activity
@@ -26,6 +27,7 @@
             android:exported="true"
             android:launchMode="singleTop"
             android:lockTaskMode="if_whitelisted"
+            android:resizeableActivity="false"
             android:screenOrientation="unspecified">
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.MAIN" />
@@ -43,6 +45,7 @@
             android:enabled="false"
             android:exported="true"
             android:lockTaskMode="if_whitelisted"
+            android:resizeableActivity="false"
             android:screenOrientation="unspecified">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

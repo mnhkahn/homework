@@ -2,7 +2,9 @@
     <style name="Theme.HomeworkBuddy" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:colorAccent">@android:color/holo_blue_light</item>
-        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <!-- Keep Android's own Home/overview bar clearly visible outside Lock Task. -->
+        <item name="android:navigationBarColor">@android:color/white</item>
+        <item name="android:windowLightNavigationBar">true</item>
         <item name="android:windowLightStatusBar">true</item>
     </style>
 </resources>

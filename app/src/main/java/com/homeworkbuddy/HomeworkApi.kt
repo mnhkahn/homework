@@ -63,10 +63,14 @@ class HomeworkApi(private val context: Context) {
     }
 
     suspend fun submit(taskId: String, photos: List<Uri>, isOvertime: Boolean, submissionId: String) = withContext(Dispatchers.IO) {
-        // The parameters are intentionally retained so queued submissions from
-        // older app versions remain compatible. Trello is the durable record.
-        isOvertime.hashCode(); submissionId.hashCode()
-        photos.take(MAX_PHOTOS).forEachIndexed { index, photo -> attachPhoto(taskId, photo, index + 1) }
+        // Trello is the durable record. Submission IDs make attachment retries
+        // idempotent: a retry after a partial upload never adds another photo.
+        isOvertime.hashCode()
+        val existingNames = attachmentNames(taskId)
+        photos.take(MAX_PHOTOS).forEachIndexed { index, photo ->
+            val name = "homework-$submissionId-${index + 1}.jpg"
+            if (name !in existingNames) attachPhoto(taskId, photo, name)
+        }
         request("PUT", "/cards/${segment(taskId)}", mapOf("idList" to requiredDoneList(), "dueComplete" to "true"))
     }
 
@@ -92,7 +96,12 @@ class HomeworkApi(private val context: Context) {
         return TrelloOption(value.getString("id"), value.getString("name"))
     }
 
-    private fun attachPhoto(taskId: String, photo: Uri, number: Int) {
+    private suspend fun attachmentNames(taskId: String): Set<String> {
+        val value = requestArray("GET", "/cards/${segment(taskId)}/attachments?fields=name")
+        return (0 until value.length()).map { value.getJSONObject(it).optString("name") }.toSet()
+    }
+
+    private fun attachPhoto(taskId: String, photo: Uri, name: String) {
         val boundary = "Trello-${UUID.randomUUID()}"
         val connection = connection("POST", "/cards/${segment(taskId)}/attachments", emptyMap()).apply {
             doOutput = true
@@ -102,8 +111,8 @@ class HomeworkApi(private val context: Context) {
             fun field(name: String, value: String) {
                 out.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"$name\"\r\n\r\n$value\r\n")
             }
-            field("name", "homework-$number.jpg")
-            out.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"homework-$number.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n")
+            field("name", name)
+            out.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"$name\"\r\nContent-Type: image/jpeg\r\n\r\n")
             context.contentResolver.openInputStream(photo)?.use { it.copyTo(out) } ?: error("无法读取作业照片")
             out.writeBytes("\r\n--$boundary--\r\n")
         }
