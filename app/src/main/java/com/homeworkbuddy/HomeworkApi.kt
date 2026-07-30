@@ -71,6 +71,9 @@ class HomeworkApi(private val context: Context) {
             val name = "homework-$submissionId-${index + 1}.jpg"
             if (name !in existingNames) attachPhoto(taskId, photo, name)
         }
+        check(photos.isNotEmpty() || !PhotoCompletionGuard(context).isRequired(taskId)) {
+            "该作业已选择拍照完成，不能无照片提交"
+        }
         request("PUT", "/cards/${segment(taskId)}", mapOf("idList" to requiredDoneList(), "dueComplete" to "true"))
     }
 

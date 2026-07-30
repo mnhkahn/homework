@@ -16,6 +16,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
+import android.util.Log
 import android.view.MotionEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -289,6 +290,7 @@ private fun HomeworkBuddyApp() {
     val api = remember(context) { HomeworkApi(context) }
     val kioskPolicy = remember(context) { KioskPolicy(context) }
     val pendingStore = remember(context) { PendingSubmissionStore(context) }
+    val photoCompletionGuard = remember(context) { PhotoCompletionGuard(context) }
     val remoteNoticeStore = remember(context) { RemoteNoticeStore(context) }
     val pianoPracticeStore = remember(context) { PianoPracticeStore(context) }
     val scope = rememberCoroutineScope()
@@ -313,6 +315,7 @@ private fun HomeworkBuddyApp() {
     var showCameraConfirm by remember { mutableStateOf(false) }
     var capturePhoto by remember { mutableStateOf<Uri?>(null) }
     var pendingPhotos by remember { mutableStateOf<List<Uri>>(emptyList()) }
+    var photoRequiredTaskIds by remember { mutableStateOf(photoCompletionGuard.requiredTaskIds()) }
     var submittingTaskId by remember { mutableStateOf<String?>(null) }
     var celebration by remember { mutableStateOf<CelebrationEvent?>(null) }
     var kioskMode by remember { mutableStateOf(kioskPolicy.mode()) }
@@ -372,6 +375,7 @@ private fun HomeworkBuddyApp() {
     val isTablet = context.resources.configuration.smallestScreenWidthDp >= 600
     val takePhoto = rememberLauncherForActivityResult(remember(isTablet) { DeviceAwareTakePicture(isTablet) }) { captured ->
         val photo = capturePhoto
+        Log.i("HomeworkSubmit", "camera_result captured=$captured task=$selectedId uri=${photo != null}")
         if (captured && photo != null) {
             pendingPhotos = (pendingPhotos + photo).take(MAX_HOMEWORK_PHOTOS)
             showCameraConfirm = true
@@ -434,8 +438,18 @@ private fun HomeworkBuddyApp() {
                 connectionError = error.message ?: "同步当天作业失败"
             }
             pendingStore.items().forEach { pending ->
-                runCatching { api.submit(pending.taskId, pending.photoPaths.map(android.net.Uri::parse), pending.isOvertime, pending.submissionId) }
-                    .onSuccess { pendingStore.remove(pending.taskId); refreshRequest++ }
+                if (pending.photoPaths.isEmpty() && photoCompletionGuard.isRequired(pending.taskId)) {
+                    Log.w("HomeworkSubmit", "drop_no_photo_retry task=${pending.taskId} submission=${pending.submissionId}")
+                    pendingStore.remove(pending.taskId)
+                } else {
+                    Log.i("HomeworkSubmit", "retry task=${pending.taskId} photos=${pending.photoPaths.size} submission=${pending.submissionId}")
+                    runCatching { api.submit(pending.taskId, pending.photoPaths.map(android.net.Uri::parse), pending.isOvertime, pending.submissionId) }
+                        .onSuccess {
+                            pendingStore.remove(pending.taskId)
+                            if (pending.photoPaths.isNotEmpty()) photoCompletionGuard.clear(pending.taskId)
+                            refreshRequest++
+                        }
+                }
             }
             refreshing = false
             delay(60_000)
@@ -511,6 +525,12 @@ private fun HomeworkBuddyApp() {
             },
             onComplete = {
                 selected?.takeIf { submittingTaskId == null }?.let { current ->
+                    if (photoCompletionGuard.isRequired(current.id)) {
+                        Log.w("HomeworkSubmit", "blocked_direct_complete task=${current.id}")
+                        connectionError = "这项作业已选择拍照完成，请拍照成功后再提交。"
+                        return@let
+                    }
+                    Log.i("HomeworkSubmit", "direct_complete task=${current.id}")
                     running = false
                     submittingTaskId = current.id
                     val submissionId = java.util.UUID.randomUUID().toString()
@@ -531,6 +551,10 @@ private fun HomeworkBuddyApp() {
             },
             onFinish = {
                 selected?.let { current ->
+                    Log.i("HomeworkSubmit", "photo_mode task=${current.id}")
+                    photoCompletionGuard.require(current.id)
+                    photoRequiredTaskIds = photoRequiredTaskIds + current.id
+                    pendingStore.remove(current.id)
                     running = false
                     pendingPhotos = emptyList()
                     val file = File(context.cacheDir, "photos/${current.id}-${System.currentTimeMillis()}.jpg").also { it.parentFile?.mkdirs() }
@@ -557,6 +581,8 @@ private fun HomeworkBuddyApp() {
                     scope.launch {
                         runCatching { api.submit(current.id, photos, current.status == TaskStatus.OVERTIME, submissionId) }
                             .onSuccess {
+                                photoCompletionGuard.clear(current.id)
+                                photoRequiredTaskIds = photoRequiredTaskIds - current.id
                                 advanceAfterCompletion(current.id, photos.first().toString())
                                 celebration = CelebrationEvent(current.title, tasks.all { it.status == TaskStatus.COMPLETED })
                                 refreshRequest++
@@ -582,6 +608,7 @@ private fun HomeworkBuddyApp() {
                 }
             },
             onRetake = { showCameraConfirm = false; capturePhoto = null; pendingPhotos = emptyList() },
+            photoRequired = selected?.id in photoRequiredTaskIds,
         )
         celebration?.let { event -> CelebrationDialog(event.taskTitle, event.allTasksComplete) { celebration = null } }
     }
@@ -664,7 +691,7 @@ private fun CelebrationDialog(taskTitle: String, allTasksComplete: Boolean, onDi
 }
 
 @Composable
-private fun HomeworkHome(name: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, remainingSeconds: Int, running: Boolean, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, studyLocked: Boolean, hasStudyApps: Boolean, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onComplete: () -> Unit, onFinish: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photoCount: Int, onAddPhoto: () -> Unit, onRetake: () -> Unit) {
+private fun HomeworkHome(name: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, remainingSeconds: Int, running: Boolean, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, studyLocked: Boolean, hasStudyApps: Boolean, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onComplete: () -> Unit, onFinish: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photoCount: Int, onAddPhoto: () -> Unit, onRetake: () -> Unit, photoRequired: Boolean) {
     val complete = tasks.count { it.status == TaskStatus.COMPLETED }
     val waiting = tasks.filter { it.status != TaskStatus.COMPLETED && it.id != selected?.id }
     val completedTasks = tasks.filter { it.status == TaskStatus.COMPLETED }
@@ -680,10 +707,10 @@ private fun HomeworkHome(name: String, tasks: List<HomeworkTask>, selected: Home
             if (selected == null) {
                 EmptyTaskState(Modifier.fillMaxSize())
             } else if (this@BoxWithConstraints.maxWidth >= 700.dp) Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(22.dp)) {
-                CurrentTask(Modifier.weight(1.45f).fillMaxHeight(), selected, running, pianoPractice, submitting, onStart, onPianoRecord, onComplete, onFinish)
+                CurrentTask(Modifier.weight(1.45f).fillMaxHeight(), selected, running, pianoPractice, submitting, photoRequired, onStart, onPianoRecord, onComplete, onFinish)
                 TaskQueue(Modifier.weight(.8f).fillMaxHeight(), waiting, completedTasks, onSelect)
             } else {
-                CurrentTask(Modifier.fillMaxWidth(), selected, running, pianoPractice, submitting, onStart, onPianoRecord, onComplete, onFinish)
+                CurrentTask(Modifier.fillMaxWidth(), selected, running, pianoPractice, submitting, photoRequired, onStart, onPianoRecord, onComplete, onFinish)
                 Spacer(Modifier.height(16.dp)); TaskQueue(Modifier.fillMaxWidth(), waiting, completedTasks, onSelect)
             }
         }
@@ -755,7 +782,7 @@ private fun RemoteNoticeCard(notice: RemoteNotice) {
     }
 }
 
-@Composable private fun CurrentTask(modifier: Modifier, task: HomeworkTask, running: Boolean, pianoPractice: PianoPracticeStatus?, submitting: Boolean, onStart: () -> Unit, onPianoRecord: () -> Unit, onComplete: () -> Unit, onFinish: () -> Unit) {
+@Composable private fun CurrentTask(modifier: Modifier, task: HomeworkTask, running: Boolean, pianoPractice: PianoPracticeStatus?, submitting: Boolean, photoRequired: Boolean, onStart: () -> Unit, onPianoRecord: () -> Unit, onComplete: () -> Unit, onFinish: () -> Unit) {
     val overdue = task.status == TaskStatus.OVERTIME
     Column(modifier.clip(RoundedCornerShape(26.dp)).background(if (overdue) OverdueSurface else Sun).padding(28.dp), horizontalAlignment = Alignment.Start) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -777,7 +804,7 @@ private fun RemoteNoticeCard(notice: RemoteNotice) {
                 Text(if (pianoPractice.cooldownSeconds > 0) "已记 ${pianoPractice.count} 次 · ${pianoPractice.cooldownSeconds} 秒后可再记" else "🎹 练琴记一次（已记 ${pianoPractice.count} 次）")
             }
         }
-        Spacer(Modifier.height(10.dp)); Row(Modifier.align(Alignment.CenterHorizontally), horizontalArrangement = Arrangement.spacedBy(10.dp)) { FilledTonalButton(onClick = onComplete, enabled = task.status != TaskStatus.COMPLETED && !submitting) { if (submitting) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)); Text("提交中…") } else Text("直接完成") }; FilledTonalButton(onClick = onFinish, enabled = task.status != TaskStatus.COMPLETED && !submitting) { Icon(Icons.Outlined.CameraAlt, null); Spacer(Modifier.width(8.dp)); Text("完成并拍照") } }
+        Spacer(Modifier.height(10.dp)); Row(Modifier.align(Alignment.CenterHorizontally), horizontalArrangement = Arrangement.spacedBy(10.dp)) { FilledTonalButton(onClick = onComplete, enabled = task.status != TaskStatus.COMPLETED && !submitting && !photoRequired) { if (submitting) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)); Text("提交中…") } else Text(if (photoRequired) "需拍照完成" else "直接完成") }; FilledTonalButton(onClick = onFinish, enabled = task.status != TaskStatus.COMPLETED && !submitting) { Icon(Icons.Outlined.CameraAlt, null); Spacer(Modifier.width(8.dp)); Text("完成并拍照") } }
     }
 }
 
