@@ -353,6 +353,7 @@ private fun ChildLauncher(activity: ChildLauncherActivity) {
                 items(apps, key = { it.packageName }) { app ->
                     val icon = remember(app.packageName) { activity.packageManager.getApplicationIcon(app.packageName).toBitmap(96, 96).asImageBitmap() }
                     LauncherCard(app.label, icon = { Image(icon, null, modifier = Modifier.size(48.dp)) }) {
+                        policy.prepareStudyAppLaunch(app.packageName)
                         activity.packageManager.getLaunchIntentForPackage(app.packageName)?.let(activity::startActivity)
                     }
                 }

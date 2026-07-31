@@ -381,13 +381,16 @@ private fun HomeworkBuddyApp() {
             showCameraConfirm = true
         }
         capturePhoto = null
+        KioskPolicy(context).revokeCameraCaptureAccess()
     }
     val requestCameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         val photo = capturePhoto
         if (granted && photo != null) {
+            KioskPolicy(context).allowCameraForCapture()
             runCatching { takePhoto.launch(photo) }
                 .onFailure {
                     capturePhoto = null
+                    KioskPolicy(context).revokeCameraCaptureAccess()
                     connectionError = "无法打开相机，请检查系统相机是否可用。"
                 }
         } else {
@@ -560,9 +563,11 @@ private fun HomeworkBuddyApp() {
                     val file = File(context.cacheDir, "photos/${current.id}-${System.currentTimeMillis()}.jpg").also { it.parentFile?.mkdirs() }
                     capturePhoto = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
                     if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                        KioskPolicy(context).allowCameraForCapture()
                         runCatching { takePhoto.launch(capturePhoto!!) }
                             .onFailure {
                                 capturePhoto = null
+                                KioskPolicy(context).revokeCameraCaptureAccess()
                                 connectionError = "无法打开相机，请检查系统相机是否可用。"
                             }
                     } else {
@@ -603,7 +608,10 @@ private fun HomeworkBuddyApp() {
                 selected?.takeIf { pendingPhotos.size < MAX_HOMEWORK_PHOTOS }?.let { current ->
                     val file = File(context.cacheDir, "photos/${current.id}-${System.currentTimeMillis()}.jpg").also { it.parentFile?.mkdirs() }
                     capturePhoto = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) takePhoto.launch(capturePhoto!!)
+                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                        KioskPolicy(context).allowCameraForCapture()
+                        takePhoto.launch(capturePhoto!!)
+                    }
                     else requestCameraPermission.launch(Manifest.permission.CAMERA)
                 }
             },

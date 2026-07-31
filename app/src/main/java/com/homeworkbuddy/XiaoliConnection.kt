@@ -137,6 +137,24 @@ class XiaoliConnectionService : Service() {
     }
 
     override fun onDestroy() { socket?.cancel(); worker.shutdownNow(); super.onDestroy() }
+
+    // Android 15 limits dataSync foreground services to a fixed runtime.  If
+    // this callback is ignored Android kills the whole app a few seconds later,
+    // which looks like a random flash/crash when returning from another app.
+    override fun onTimeout(startId: Int) {
+        stopConnectionAfterTimeout()
+    }
+
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        stopConnectionAfterTimeout()
+    }
+
+    private fun stopConnectionAfterTimeout() {
+        stopped = true
+        socket?.close(1000, "foreground service time limit reached")
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun connect() {

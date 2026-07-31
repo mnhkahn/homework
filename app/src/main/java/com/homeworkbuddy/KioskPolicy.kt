@@ -14,6 +14,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.PowerManager
+import android.provider.MediaStore
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
@@ -35,6 +36,7 @@ class KioskPolicy(private val context: Context) {
     val endMinutes: Int get() = prefs.getInt("end_minutes", 21 * 60 + 30)
     val pausedUntil: Long get() = prefs.getLong("paused_until", 0L)
     val studyPackages: Set<String> get() = prefs.getStringSet("study_packages", prefs.getStringSet("approved_packages", emptySet()))?.toSet().orEmpty()
+    private val temporaryPackages: Set<String> get() = prefs.getStringSet("temporary_packages", emptySet())?.toSet().orEmpty()
 
     fun mode(now: LocalDateTime = LocalDateTime.now()): KioskMode {
         if (System.currentTimeMillis() < pausedUntil) return KioskMode.PAUSED
@@ -106,6 +108,39 @@ class KioskPolicy(private val context: Context) {
         context.startActivity(Intent(context, ChildLauncherActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP))
     }
 
+    /**
+     * The system camera is a separate app.  During Lock Task it must be
+     * explicitly allowlisted before ACTION_IMAGE_CAPTURE is launched, or MIUI
+     * opens a black frame and immediately returns to this activity.
+     */
+    fun allowCameraForCapture(): Boolean {
+        if (!isDeviceOwner || mode() != KioskMode.STUDY) return false
+        val packageName = context.packageManager.resolveActivity(
+            Intent(MediaStore.ACTION_IMAGE_CAPTURE),
+            PackageManager.MATCH_DEFAULT_ONLY,
+        )?.activityInfo?.packageName ?: return false
+        allowTemporarily(packageName)
+        return true
+    }
+
+    fun revokeCameraCaptureAccess() {
+        if (!isDeviceOwner) return
+        val packageName = context.packageManager.resolveActivity(
+            Intent(MediaStore.ACTION_IMAGE_CAPTURE),
+            PackageManager.MATCH_DEFAULT_ONLY,
+        )?.activityInfo?.packageName ?: return
+        val updated = temporaryPackages - packageName
+        prefs.edit().putStringSet("temporary_packages", updated).apply()
+        if (mode() == KioskMode.STUDY) applyAllowlist(KioskMode.STUDY)
+    }
+
+    /** Reassert the selected app's allowlist entry immediately before launch. */
+    fun prepareStudyAppLaunch(packageName: String) {
+        if (isDeviceOwner && mode() == KioskMode.STUDY && packageName in studyPackages) {
+            applyAllowlist(KioskMode.STUDY)
+        }
+    }
+
     fun pause(minutes: Int, activity: Activity? = null) {
         prefs.edit().putLong("paused_until", System.currentTimeMillis() + minutes * 60_000L).apply()
         StudySessionService.stop(context)
@@ -145,7 +180,7 @@ class KioskPolicy(private val context: Context) {
 
     private fun applyAllowlist(mode: KioskMode) {
         val packages = when (mode) {
-            KioskMode.STUDY -> setOf(context.packageName) + studyPackages
+            KioskMode.STUDY -> setOf(context.packageName) + studyPackages + temporaryPackages
             KioskMode.NORMAL -> emptySet()
             KioskMode.PAUSED -> emptySet()
         }
@@ -153,6 +188,11 @@ class KioskPolicy(private val context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             runCatching { dpm.setLockTaskFeatures(admin, DevicePolicyManager.LOCK_TASK_FEATURE_NONE) }
         }
+    }
+
+    private fun allowTemporarily(packageName: String) {
+        prefs.edit().putStringSet("temporary_packages", temporaryPackages + packageName).apply()
+        applyAllowlist(KioskMode.STUDY)
     }
 
     private fun configureAsHome() {
@@ -173,6 +213,7 @@ class KioskPolicy(private val context: Context) {
     private fun releaseLockTask(activity: Activity?) {
         if (!isDeviceOwner) return
         runCatching { dpm.setLockTaskPackages(admin, emptyArray()) }
+        prefs.edit().remove("temporary_packages").apply()
         // Lock-task features are policy state on MIUI too. Explicitly restore the
         // normal system navigation controls when study time ends; merely removing
         // the package allowlist can leave the bottom navigation area hidden.
