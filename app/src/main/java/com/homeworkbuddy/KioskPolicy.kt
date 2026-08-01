@@ -2,6 +2,7 @@ package com.homeworkbuddy
 
 import android.app.Activity
 import android.app.ActivityManager
+import android.app.ActivityOptions
 import android.app.AlarmManager
 import android.app.PendingIntent
 import android.app.admin.DeviceAdminReceiver
@@ -14,6 +15,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.PowerManager
+import android.os.UserManager
 import android.provider.MediaStore
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -37,6 +39,7 @@ class KioskPolicy(private val context: Context) {
     val pausedUntil: Long get() = prefs.getLong("paused_until", 0L)
     val studyPackages: Set<String> get() = prefs.getStringSet("study_packages", prefs.getStringSet("approved_packages", emptySet()))?.toSet().orEmpty()
     private val temporaryPackages: Set<String> get() = prefs.getStringSet("temporary_packages", emptySet())?.toSet().orEmpty()
+    val isExternalForegroundAllowed: Boolean get() = prefs.getBoolean("external_foreground_allowed", false)
 
     fun mode(now: LocalDateTime = LocalDateTime.now()): KioskMode {
         if (System.currentTimeMillis() < pausedUntil) return KioskMode.PAUSED
@@ -119,6 +122,7 @@ class KioskPolicy(private val context: Context) {
             Intent(MediaStore.ACTION_IMAGE_CAPTURE),
             PackageManager.MATCH_DEFAULT_ONLY,
         )?.activityInfo?.packageName ?: return false
+        prefs.edit().putBoolean("external_foreground_allowed", true).apply()
         allowTemporarily(packageName)
         return true
     }
@@ -130,14 +134,53 @@ class KioskPolicy(private val context: Context) {
             PackageManager.MATCH_DEFAULT_ONLY,
         )?.activityInfo?.packageName ?: return
         val updated = temporaryPackages - packageName
-        prefs.edit().putStringSet("temporary_packages", updated).apply()
+        prefs.edit().putStringSet("temporary_packages", updated).putBoolean("external_foreground_allowed", false).apply()
         if (mode() == KioskMode.STUDY) applyAllowlist(KioskMode.STUDY)
     }
 
     /** Reassert the selected app's allowlist entry immediately before launch. */
     fun prepareStudyAppLaunch(packageName: String) {
         if (isDeviceOwner && mode() == KioskMode.STUDY && packageName in studyPackages) {
+            prefs.edit().putBoolean("external_foreground_allowed", true).apply()
             applyAllowlist(KioskMode.STUDY)
+        }
+    }
+
+    fun markManagedActivityForeground() {
+        if (isExternalForegroundAllowed) {
+            prefs.edit().putBoolean("external_foreground_allowed", false).apply()
+        }
+    }
+
+    fun restoreManagedTask() {
+        if (!isDeviceOwner || mode() != KioskMode.STUDY) return
+        configureAsHome()
+        applyAllowlist(KioskMode.STUDY)
+        val launchIntent = Intent(context, MainActivity::class.java).addFlags(
+            Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP,
+        )
+        val options = ActivityOptions.makeBasic().apply {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                setPendingIntentBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+                setPendingIntentCreatorBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
+            }
+        }
+        val pending = PendingIntent.getActivity(
+            context,
+            REQUEST_RESTORE_STUDY,
+            launchIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            options.toBundle(),
+        )
+        // HyperOS ignores startActivity() and AppTask.moveToFront() after its
+        // tablet window menu closes a locked task. A device-owner foreground
+        // service may restore it through an explicitly BAL-enabled PendingIntent.
+        runCatching {
+            pending.send(context, 0, null, null, null, null, options.toBundle())
+        }.onFailure {
+            openMode(KioskMode.STUDY)
         }
     }
 
@@ -185,6 +228,13 @@ class KioskPolicy(private val context: Context) {
             KioskMode.PAUSED -> emptySet()
         }
         runCatching { dpm.setLockTaskPackages(admin, packages.toTypedArray()) }
+        if (mode == KioskMode.STUDY) {
+            runCatching { dpm.addUserRestriction(admin, UserManager.DISALLOW_CREATE_WINDOWS) }
+            runCatching { dpm.setStatusBarDisabled(admin, true) }
+        } else {
+            runCatching { dpm.clearUserRestriction(admin, UserManager.DISALLOW_CREATE_WINDOWS) }
+            runCatching { dpm.setStatusBarDisabled(admin, false) }
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             runCatching { dpm.setLockTaskFeatures(admin, DevicePolicyManager.LOCK_TASK_FEATURE_NONE) }
         }
@@ -213,7 +263,9 @@ class KioskPolicy(private val context: Context) {
     private fun releaseLockTask(activity: Activity?) {
         if (!isDeviceOwner) return
         runCatching { dpm.setLockTaskPackages(admin, emptyArray()) }
-        prefs.edit().remove("temporary_packages").apply()
+        runCatching { dpm.clearUserRestriction(admin, UserManager.DISALLOW_CREATE_WINDOWS) }
+        runCatching { dpm.setStatusBarDisabled(admin, false) }
+        prefs.edit().remove("temporary_packages").remove("external_foreground_allowed").apply()
         // Lock-task features are policy state on MIUI too. Explicitly restore the
         // normal system navigation controls when study time ends; merely removing
         // the package allowlist can leave the bottom navigation area hidden.
@@ -254,6 +306,7 @@ class KioskPolicy(private val context: Context) {
         private const val REQUEST_STUDY = 1700
         private const val REQUEST_NORMAL = 2130
         private const val REQUEST_RESUME = 1515
+        private const val REQUEST_RESTORE_STUDY = 7111
     }
 }
 

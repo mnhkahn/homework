@@ -163,8 +163,13 @@ private object CelebrationSound {
 
 class MainActivity : ComponentActivity() {
     private val screenTimeoutHandler = Handler(Looper.getMainLooper())
+    private var allowNextUserLeaveHint = false
     private val clearKeepScreenOn = Runnable {
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
+    fun allowManagedActivityLaunch() {
+        allowNextUserLeaveHint = true
     }
 
     /**
@@ -232,7 +237,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        KioskPolicy(this).applyForCurrentTime(this)
+        KioskPolicy(this).apply {
+            markManagedActivityForeground()
+            applyForCurrentTime(this@MainActivity)
+        }
         extendStudyScreenTimeout()
     }
 
@@ -243,6 +251,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
+        if (allowNextUserLeaveHint) {
+            allowNextUserLeaveHint = false
+            return
+        }
         val policy = KioskPolicy(this)
         if (policy.isDeviceOwner && policy.mode() == KioskMode.STUDY) {
             // MIUI's tablet window menu can issue a Home-like leave even while
@@ -317,9 +329,17 @@ private fun HomeworkBuddyApp() {
     var pendingPhotos by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var photoRequiredTaskIds by remember { mutableStateOf(photoCompletionGuard.requiredTaskIds()) }
     var submittingTaskId by remember { mutableStateOf<String?>(null) }
+    var retryingPendingSubmissions by remember { mutableStateOf(false) }
     var celebration by remember { mutableStateOf<CelebrationEvent?>(null) }
     var kioskMode by remember { mutableStateOf(kioskPolicy.mode()) }
     var remoteNotice by remember { mutableStateOf(remoteNoticeStore.current()) }
+    // Keep the header useful immediately; a network response only replaces this
+    // default when it contains a non-blank slogan.
+    var slogan by remember { mutableStateOf(DEFAULT_HOME_SLOGAN) }
+
+    LaunchedEffect(Unit) {
+        runCatching { SloganApi.fetch() }.getOrNull()?.let { slogan = it }
+    }
 
     DisposableEffect(remoteNoticeStore) {
         val listener = remoteNoticeStore.addChangeListener { remoteNotice = remoteNoticeStore.current() }
@@ -372,6 +392,41 @@ private fun HomeworkBuddyApp() {
         running = false
     }
 
+    fun retryPendingSubmissions() {
+        if (!connected || retryingPendingSubmissions) return
+        retryingPendingSubmissions = true
+        // This deliberately uses the screen scope instead of the refresh
+        // LaunchedEffect. Starting another refresh must never cancel an upload.
+        scope.launch {
+            var uploadedAnything = false
+            try {
+                pendingStore.items().forEach { pending ->
+                    if (pending.photoPaths.isEmpty() && photoCompletionGuard.isRequired(pending.taskId)) {
+                        Log.w("HomeworkSubmit", "drop_no_photo_retry task=${pending.taskId} submission=${pending.submissionId}")
+                        pendingStore.remove(pending.taskId)
+                    } else {
+                        Log.i("HomeworkSubmit", "retry task=${pending.taskId} photos=${pending.photoPaths.size} submission=${pending.submissionId}")
+                        runCatching {
+                            api.submit(
+                                pending.taskId,
+                                pending.photoPaths.map(android.net.Uri::parse),
+                                pending.isOvertime,
+                                pending.submissionId,
+                            )
+                        }.onSuccess {
+                            pendingStore.remove(pending.taskId)
+                            if (pending.photoPaths.isNotEmpty()) photoCompletionGuard.clear(pending.taskId)
+                            uploadedAnything = true
+                        }
+                    }
+                }
+            } finally {
+                retryingPendingSubmissions = false
+            }
+            if (uploadedAnything) refreshRequest++
+        }
+    }
+
     val isTablet = context.resources.configuration.smallestScreenWidthDp >= 600
     val takePhoto = rememberLauncherForActivityResult(remember(isTablet) { DeviceAwareTakePicture(isTablet) }) { captured ->
         val photo = capturePhoto
@@ -387,6 +442,7 @@ private fun HomeworkBuddyApp() {
         val photo = capturePhoto
         if (granted && photo != null) {
             KioskPolicy(context).allowCameraForCapture()
+            (activity as? MainActivity)?.allowManagedActivityLaunch()
             runCatching { takePhoto.launch(photo) }
                 .onFailure {
                     capturePhoto = null
@@ -440,20 +496,7 @@ private fun HomeworkBuddyApp() {
                 if (error is kotlinx.coroutines.CancellationException) throw error
                 connectionError = error.message ?: "同步当天作业失败"
             }
-            pendingStore.items().forEach { pending ->
-                if (pending.photoPaths.isEmpty() && photoCompletionGuard.isRequired(pending.taskId)) {
-                    Log.w("HomeworkSubmit", "drop_no_photo_retry task=${pending.taskId} submission=${pending.submissionId}")
-                    pendingStore.remove(pending.taskId)
-                } else {
-                    Log.i("HomeworkSubmit", "retry task=${pending.taskId} photos=${pending.photoPaths.size} submission=${pending.submissionId}")
-                    runCatching { api.submit(pending.taskId, pending.photoPaths.map(android.net.Uri::parse), pending.isOvertime, pending.submissionId) }
-                        .onSuccess {
-                            pendingStore.remove(pending.taskId)
-                            if (pending.photoPaths.isNotEmpty()) photoCompletionGuard.clear(pending.taskId)
-                            refreshRequest++
-                        }
-                }
-            }
+            retryPendingSubmissions()
             refreshing = false
             delay(60_000)
         }
@@ -472,6 +515,7 @@ private fun HomeworkBuddyApp() {
                 connectionError = null
                 trelloBoards = emptyList(); selectedBoardId = ""
                 authorizationStarted = true
+                (activity as? MainActivity)?.allowManagedActivityLaunch()
                 api.openAuthorization()
             },
             onCheck = {
@@ -506,7 +550,7 @@ private fun HomeworkBuddyApp() {
             }
         }
         HomeworkHome(
-            name = childName,
+            slogan = slogan,
             tasks = tasks,
             selected = selected,
             remainingSeconds = remainingSeconds,
@@ -519,8 +563,14 @@ private fun HomeworkBuddyApp() {
             remoteNotice = remoteNotice,
             syncError = if (connected) connectionError else null,
             onRefresh = { refreshRequest++ },
-            onParent = { context.startActivity(Intent(context, KioskSettingsActivity::class.java)) },
-            onStudyApps = kioskPolicy::openStudyLauncher,
+            onParent = {
+                (activity as? MainActivity)?.allowManagedActivityLaunch()
+                context.startActivity(Intent(context, KioskSettingsActivity::class.java))
+            },
+            onStudyApps = {
+                (activity as? MainActivity)?.allowManagedActivityLaunch()
+                kioskPolicy.openStudyLauncher()
+            },
             onSelect = { task -> selectedId = task.id; remainingSeconds = task.estimatedMinutes * 60; running = false },
             onStart = { running = true; tasks = tasks.map { if (it.id == selectedId) it.copy(status = TaskStatus.RUNNING) else it } },
             onPianoRecord = {
@@ -564,6 +614,7 @@ private fun HomeworkBuddyApp() {
                     capturePhoto = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
                     if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
                         KioskPolicy(context).allowCameraForCapture()
+                        (activity as? MainActivity)?.allowManagedActivityLaunch()
                         runCatching { takePhoto.launch(capturePhoto!!) }
                             .onFailure {
                                 capturePhoto = null
@@ -610,6 +661,7 @@ private fun HomeworkBuddyApp() {
                     capturePhoto = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
                     if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
                         KioskPolicy(context).allowCameraForCapture()
+                        (activity as? MainActivity)?.allowManagedActivityLaunch()
                         takePhoto.launch(capturePhoto!!)
                     }
                     else requestCameraPermission.launch(Manifest.permission.CAMERA)
@@ -699,14 +751,20 @@ private fun CelebrationDialog(taskTitle: String, allTasksComplete: Boolean, onDi
 }
 
 @Composable
-private fun HomeworkHome(name: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, remainingSeconds: Int, running: Boolean, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, studyLocked: Boolean, hasStudyApps: Boolean, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onComplete: () -> Unit, onFinish: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photoCount: Int, onAddPhoto: () -> Unit, onRetake: () -> Unit, photoRequired: Boolean) {
+private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, remainingSeconds: Int, running: Boolean, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, studyLocked: Boolean, hasStudyApps: Boolean, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onComplete: () -> Unit, onFinish: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photoCount: Int, onAddPhoto: () -> Unit, onRetake: () -> Unit, photoRequired: Boolean) {
     val complete = tasks.count { it.status == TaskStatus.COMPLETED }
     val waiting = tasks.filter { it.status != TaskStatus.COMPLETED && it.id != selected?.id }
     val completedTasks = tasks.filter { it.status == TaskStatus.COMPLETED }
     val overdue = tasks.count { it.status == TaskStatus.OVERTIME }
-    BoxWithConstraints(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(24.dp)) {
+    BoxWithConstraints(
+        Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .navigationBarsPadding()
+            .padding(24.dp),
+    ) {
         Column(Modifier.fillMaxSize()) {
-            Header(name, complete, tasks.size, overdue, refreshing, studyLocked, hasStudyApps, onRefresh, onParent, onStudyApps)
+            Header(slogan, complete, tasks.size, overdue, refreshing, studyLocked, hasStudyApps, onRefresh, onParent, onStudyApps)
             if (remoteNotice != null) {
                 Spacer(Modifier.height(14.dp))
                 RemoteNoticeCard(remoteNotice)
@@ -759,10 +817,10 @@ private fun RemoteNoticeCard(notice: RemoteNotice) {
 }
 
 @OptIn(ExperimentalFoundationApi::class)
-@Composable private fun Header(name: String, complete: Int, total: Int, overdue: Int, refreshing: Boolean, studyLocked: Boolean, hasStudyApps: Boolean, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit) {
+@Composable private fun Header(slogan: String, complete: Int, total: Int, overdue: Int, refreshing: Boolean, studyLocked: Boolean, hasStudyApps: Boolean, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit) {
     val percent = if (total == 0) 0 else complete * 100 / total
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.combinedClickable(onClick = {}, onLongClick = onParent)) { Text("今天的作业", fontSize = 30.sp, fontWeight = FontWeight.Medium); Text(if (name.isBlank()) "按顺序完成就好！" else "$name，按顺序完成就好！", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        Column(Modifier.weight(1f).combinedClickable(onClick = {}, onLongClick = onParent)) { Text("今天的作业", fontSize = 30.sp, fontWeight = FontWeight.Medium); Text(slogan, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis) }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (studyLocked) Surface(shape = RoundedCornerShape(18.dp), color = Leaf, contentColor = Color(0xFF24733A)) {
                 Row(Modifier.padding(horizontal = 13.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {

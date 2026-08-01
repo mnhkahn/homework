@@ -3,6 +3,7 @@ package com.homeworkbuddy
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.app.ActivityManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -10,6 +11,8 @@ import android.content.IntentFilter
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
+import android.os.Process
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 
@@ -29,6 +32,18 @@ class StudySessionService : Service() {
                 policy.applyForCurrentTime(navigate = true)
                 stopSelf()
                 return
+            }
+            val importance = getSystemService(ActivityManager::class.java)
+                .runningAppProcesses
+                ?.firstOrNull { it.pid == Process.myPid() }
+                ?.importance
+            val isInteractive = getSystemService(PowerManager::class.java).isInteractive
+            if (isInteractive && importance != null && importance > ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND && !policy.isExternalForegroundAllowed) {
+                // HyperOS can close a locked task from its tablet window menu
+                // while ActivityManager still reports LOCK_TASK_MODE_LOCKED.
+                // The foreground service drops below foreground importance even
+                // though the vendor leaves the lock-task state stuck at LOCKED.
+                policy.restoreManagedTask()
             }
             handler.postDelayed(this, SCHEDULE_CHECK_INTERVAL_MS)
         }
@@ -89,7 +104,7 @@ class StudySessionService : Service() {
         // task. During study time it must not expose the ordinary launcher.
         val policy = KioskPolicy(this)
         if (policy.isDeviceOwner && policy.mode() == KioskMode.STUDY) {
-            policy.applyForCurrentTime(navigate = true)
+            policy.restoreManagedTask()
         }
     }
 
@@ -98,7 +113,7 @@ class StudySessionService : Service() {
     companion object {
         private const val CHANNEL = "study_session"
         private const val NOTIFICATION_ID = 7110
-        private const val SCHEDULE_CHECK_INTERVAL_MS = 15_000L
+        private const val SCHEDULE_CHECK_INTERVAL_MS = 1_000L
 
         fun start(context: Context) = ContextCompat.startForegroundService(
             context,

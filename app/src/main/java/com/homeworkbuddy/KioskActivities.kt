@@ -54,6 +54,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
@@ -321,6 +323,7 @@ class ChildLauncherActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         val policy = KioskPolicy(this)
+        policy.markManagedActivityForeground()
         if (policy.mode() == KioskMode.STUDY) policy.applyForCurrentTime(this) else policy.exitStudyMode(this)
     }
 }
@@ -349,6 +352,30 @@ private fun ChildLauncher(activity: ChildLauncherActivity) {
             LazyVerticalGrid(columns = GridCells.Adaptive(180.dp), modifier = Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 item(key = "homework") {
                     LauncherCard("作业小伙伴", icon = { Icon(Icons.AutoMirrored.Outlined.MenuBook, null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary) }) { activity.startActivity(Intent(activity, MainActivity::class.java)) }
+                }
+                item(key = "cyeam-24") {
+                    LauncherCard("24 点", icon = {
+                        Image(
+                            painterResource(R.drawable.cyeam_game_24),
+                            null,
+                            modifier = Modifier.size(56.dp),
+                            contentScale = ContentScale.Fit,
+                        )
+                    }) {
+                        activity.startActivity(GameActivity.intent(activity, GameActivity.GAME_24_URL))
+                    }
+                }
+                item(key = "cyeam-sudoku") {
+                    LauncherCard("数独", icon = {
+                        Image(
+                            painterResource(R.drawable.cyeam_game_sudoku),
+                            null,
+                            modifier = Modifier.size(56.dp),
+                            contentScale = ContentScale.Fit,
+                        )
+                    }) {
+                        activity.startActivity(GameActivity.intent(activity, GameActivity.SUDOKU_URL))
+                    }
                 }
                 items(apps, key = { it.packageName }) { app ->
                     val icon = remember(app.packageName) { activity.packageManager.getApplicationIcon(app.packageName).toBitmap(96, 96).asImageBitmap() }
