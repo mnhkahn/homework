@@ -47,6 +47,11 @@
 
 - `self.device.get_status`
 - `self.homework.get_status`
+- `self.homework.get_weekly_report`（查询本周作业完成周报）
 - `self.notify.send`
 - `self.camera.take_photo`（会显示系统相机，绝不静默拍摄）
+- `self.camera.record_video`（前台调起系统相机录制小视频，默认最长 15 秒、上限 30 秒）
+- `self.device.screenshot`（前台弹系统授权框后截取当前屏幕画面）
 - `self.kiosk.pause_15_minutes`（复用既有的临时开放 15 分钟逻辑）
+
+这里的 MCP 是手写 JSON-RPC over WebSocket（小智风格 envelope），未使用官方 MCP SDK——因为服务端不是标准 MCP transport，官方 SDK 无内置 WebSocket transport。

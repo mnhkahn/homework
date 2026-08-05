@@ -336,6 +336,7 @@ class KioskSystemReceiver : BroadcastReceiver() {
             scheduleNextTransitions()
             if (isDeviceOwner) applyForCurrentTime(navigate = true)
         }
+        HomeworkReminderScheduler.rescheduleFromPrefs(context)
     }
 }
 

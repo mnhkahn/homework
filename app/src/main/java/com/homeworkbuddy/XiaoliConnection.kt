@@ -5,21 +5,17 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.os.BatteryManager
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
-import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
-import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
-import java.time.Instant
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
@@ -254,53 +250,5 @@ class XiaoliConnectionService : Service() {
         private const val ACTION_STOP = "com.homeworkbuddy.xiaoli.STOP"
         fun connect(context: Context) = ContextCompat.startForegroundService(context, Intent(context, XiaoliConnectionService::class.java))
         fun disconnect(context: Context) = context.startService(Intent(context, XiaoliConnectionService::class.java).setAction(ACTION_STOP))
-    }
-}
-
-object McpTools {
-    private fun emptySchema() = JSONObject().put("type", "object").put("properties", JSONObject())
-
-    fun definitions(): JSONArray = JSONArray()
-        .put(tool("self.device.get_status", "查询平板与小李连接状态", emptySchema()))
-        .put(tool("self.homework.get_status", "查询今天作业与当前学习状态", emptySchema()))
-        .put(tool("self.notify.send", "在平板显示通知", JSONObject().put("type", "object").put("properties", JSONObject().put("title", JSONObject().put("type", "string")).put("body", JSONObject().put("type", "string"))).put("required", JSONArray().put("title").put("body"))))
-        .put(tool("self.camera.take_photo", "请求在平板前台拍摄一张学习照片", emptySchema()))
-        .put(tool("self.kiosk.pause_15_minutes", "临时解除学习模式限制 15 分钟", emptySchema()))
-
-    private fun tool(name: String, description: String, schema: JSONObject) = JSONObject().put("name", name).put("description", description).put("inputSchema", schema)
-
-    fun call(context: Context, params: JSONObject): JSONObject {
-        val name = params.getString("name")
-        val arguments = params.optJSONObject("arguments") ?: JSONObject()
-        val text = when (name) {
-            "self.device.get_status" -> JSONObject()
-                .put("device_id", XiaoliDeviceStore.config(context)?.deviceId ?: XiaoliDeviceStore.defaultDeviceId(context))
-                .put("connection", XiaoliConnectionState.status)
-                .put("last_connected_at", XiaoliConnectionState.lastConnectedAt?.let { Instant.ofEpochMilli(it).toString() })
-                .put("battery_percent", context.getSystemService(BatteryManager::class.java).getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY))
-                .put("kiosk_mode", KioskPolicy(context).mode().name.lowercase())
-            "self.homework.get_status" -> HomeworkStatusStore(context).snapshot()
-            "self.notify.send" -> {
-                notify(context, arguments.getString("title"), arguments.getString("body"))
-                JSONObject().put("delivered", true)
-            }
-            "self.kiosk.pause_15_minutes" -> {
-                val policy = KioskPolicy(context)
-                if (!policy.isDeviceOwner) throw IllegalStateException("平板尚未配置为 Device Owner，无法解除学习限制")
-                policy.pause(15)
-                JSONObject().put("paused_minutes", 15).put("paused_until", Instant.ofEpochMilli(policy.pausedUntil).toString())
-            }
-            "self.camera.take_photo" -> runBlocking { RemotePhotoCoordinator.take(context) }
-            else -> throw IllegalArgumentException("未注册工具：$name")
-        }
-        return JSONObject().put("content", JSONArray().put(JSONObject().put("type", "text").put("text", text.toString())))
-    }
-
-    private fun notify(context: Context, title: String, body: String) {
-        RemoteNoticeStore(context).save(title, body)
-        val manager = context.getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel("xiaoli_requests", "小李通知", NotificationManager.IMPORTANCE_DEFAULT))
-        manager.notify((System.currentTimeMillis() % Int.MAX_VALUE).toInt(), NotificationCompat.Builder(context, "xiaoli_requests")
-            .setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle(title).setContentText(body).setAutoCancel(true).build())
     }
 }
