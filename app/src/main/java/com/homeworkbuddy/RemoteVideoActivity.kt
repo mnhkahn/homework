@@ -61,12 +61,19 @@ class RemoteVideoActivity : ComponentActivity() {
                         .put("video_base64", Base64.encodeToString(file.readBytes(), Base64.NO_WRAP))
                         .put("duration_seconds", maxSeconds)
                 )
-            }.onFailure { RemoteVideoCoordinator.fail(it.message ?: "视频编码失败") }
-        } else RemoteVideoCoordinator.fail("已取消录像")
+                CaptureStatusStore(applicationContext).complete(CaptureKind.VIDEO)
+            }.onFailure {
+                CaptureStatusStore(applicationContext).clear()
+                RemoteVideoCoordinator.fail(it.message ?: "视频编码失败")
+            }
+        } else {
+            CaptureStatusStore(applicationContext).clear()
+            RemoteVideoCoordinator.fail("已取消录像")
+        }
         finish()
     }
     private val permission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) launchCamera() else { RemoteVideoCoordinator.fail("需要相机权限才能录像"); finish() }
+        if (granted) launchCamera() else { CaptureStatusStore(applicationContext).clear(); RemoteVideoCoordinator.fail("需要相机权限才能录像"); finish() }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -78,6 +85,7 @@ class RemoteVideoActivity : ComponentActivity() {
     }
 
     private fun launchCamera() {
+        CaptureStatusStore(applicationContext).begin(CaptureKind.VIDEO)
         val file = File(cacheDir, "mcp_videos/${System.currentTimeMillis()}.mp4").also { it.parentFile?.mkdirs() }
         outputFile = file
         output = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)

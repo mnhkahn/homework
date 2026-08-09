@@ -1,6 +1,7 @@
 package com.homeworkbuddy
 
 import java.time.LocalTime
+import java.time.LocalDate
 
 enum class TaskStatus { TODO, RUNNING, COMPLETED, OVERTIME }
 
@@ -12,6 +13,10 @@ data class HomeworkTask(
     val deadline: LocalTime,
     val status: TaskStatus = TaskStatus.TODO,
     val photoPath: String? = null,
+    /** The Trello attachment URLs are full-resolution originals. */
+    val photoUrls: List<String> = emptyList(),
+    val dueDate: LocalDate = LocalDate.now(),
+    val completedAtEpochSeconds: Long? = null,
 )
 
 /** Legacy preview abstraction; production homework sync is implemented by [HomeworkApi]. */

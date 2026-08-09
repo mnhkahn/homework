@@ -17,6 +17,7 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
 private const val XIAOLI_CHANNEL = "xiaoli_connection"
@@ -71,6 +72,15 @@ object XiaoliConnectionState {
     fun disconnected(error: String?) { status = "未连接"; lastError = error }
 }
 
+/** Thread-safe bridge for device-originated MCP notifications such as video frames. */
+object XiaoliMcpNotifications {
+    @Volatile private var sender: ((String, JSONObject) -> Boolean)? = null
+
+    fun register(value: (String, JSONObject) -> Boolean) { sender = value }
+    fun clear() { sender = null }
+    fun publish(method: String, params: JSONObject): Boolean = sender?.invoke(method, params) ?: false
+}
+
 /**
  * QR format is server-owned and intentionally small. The QR contains a short lived pair URL and code:
  * {"pair_url":"https://gateway.example/xiaozhi/pair","code":"one-time-code"}.
@@ -112,7 +122,9 @@ object XiaoliPairingClient {
 class XiaoliConnectionService : Service() {
     private val client = OkHttpClient.Builder().pingInterval(20, TimeUnit.SECONDS).build()
     private val worker = Executors.newSingleThreadExecutor()
+    private val reconnectWorker = Executors.newSingleThreadScheduledExecutor()
     private var socket: WebSocket? = null
+    private var reconnectFuture: ScheduledFuture<*>? = null
     private var sessionId: String? = null
     private var reconnectAttempts = 0
     private var stopped = false
@@ -128,11 +140,18 @@ class XiaoliConnectionService : Service() {
         ensureChannel()
         startForeground(XIAOLI_NOTIFICATION_ID, notification("正在连接小李…"))
         stopped = false
-        connect()
+        if (socket == null) connect()
         return START_STICKY
     }
 
-    override fun onDestroy() { socket?.cancel(); worker.shutdownNow(); super.onDestroy() }
+    override fun onDestroy() {
+        XiaoliMcpNotifications.clear()
+        reconnectFuture?.cancel(true)
+        socket?.cancel()
+        worker.shutdownNow()
+        reconnectWorker.shutdownNow()
+        super.onDestroy()
+    }
 
     // Android 15 limits dataSync foreground services to a fixed runtime.  If
     // this callback is ignored Android kills the whole app a few seconds later,
@@ -147,29 +166,37 @@ class XiaoliConnectionService : Service() {
 
     private fun stopConnectionAfterTimeout() {
         stopped = true
+        reconnectFuture?.cancel(true)
         socket?.close(1000, "foreground service time limit reached")
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun connect() {
+    @Synchronized private fun connect() {
+        if (stopped || socket != null) return
         val config = XiaoliDeviceStore.config(this) ?: run {
             XiaoliConnectionState.disconnected("尚未绑定设备")
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return
         }
+        reconnectFuture?.cancel(false)
+        reconnectFuture = null
         XiaoliConnectionState.connecting()
         val request = Request.Builder()
             .url(config.websocketUrl)
             .header("Device-Id", config.deviceId)
             .header("Authorization", config.token)
             .build()
-        socket?.cancel()
         socket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (socket != null && socket !== webSocket) { webSocket.cancel(); return }
+                socket = webSocket
                 reconnectAttempts = 0
+                reconnectFuture?.cancel(false)
+                reconnectFuture = null
+                XiaoliMcpNotifications.register(::publishMcpNotification)
                 webSocket.send(JSONObject()
                     .put("type", "hello")
                     .put("version", 1)
@@ -183,11 +210,17 @@ class XiaoliConnectionService : Service() {
             override fun onMessage(webSocket: WebSocket, text: String) = handleMessage(webSocket, text)
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                if (socket !== webSocket) return
+                socket = null
+                XiaoliMcpNotifications.clear()
                 XiaoliConnectionState.disconnected(t.message ?: "连接失败")
                 reconnect()
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                if (socket !== webSocket) return
+                socket = null
+                XiaoliMcpNotifications.clear()
                 XiaoliConnectionState.disconnected(reason.ifBlank { "连接已关闭" })
                 reconnect()
             }
@@ -232,11 +265,24 @@ class XiaoliConnectionService : Service() {
         webSocket.send(envelope.toString())
     }
 
-    private fun reconnect() {
+    /** Sends a server-defined MCP notification while the device connection is active. */
+    fun publishMcpNotification(method: String, params: JSONObject): Boolean {
+        val webSocket = socket ?: return false
+        val payload = JSONObject()
+            .put("jsonrpc", "2.0")
+            .put("method", method)
+            .put("params", params)
+        val envelope = JSONObject().put("type", "mcp").put("payload", payload)
+        sessionId?.let { envelope.put("session_id", it) }
+        return webSocket.send(envelope.toString())
+    }
+
+    @Synchronized private fun reconnect() {
         if (stopped) return
         val delay = (1_000L shl reconnectAttempts.coerceAtMost(5)).coerceAtMost(30_000L)
         reconnectAttempts++
-        worker.execute { Thread.sleep(delay); if (!stopped) connect() }
+        reconnectFuture?.cancel(false)
+        reconnectFuture = reconnectWorker.schedule({ if (!stopped) connect() }, delay, TimeUnit.MILLISECONDS)
     }
 
     private fun ensureChannel() {

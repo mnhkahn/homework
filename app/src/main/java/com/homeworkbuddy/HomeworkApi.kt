@@ -2,6 +2,8 @@ package com.homeworkbuddy
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -13,7 +15,9 @@ import java.net.URL
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.time.OffsetDateTime
-import java.time.ZoneOffset
+import java.time.LocalDate
+import java.time.DayOfWeek
+import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.util.UUID
 
@@ -57,9 +61,46 @@ class HomeworkApi(private val context: Context) {
     fun clearConnection() = prefs.edit().clear().apply()
 
     suspend fun todayTasks(): List<HomeworkTask> {
+        // The 待完成 list is the parent's current-day queue.  Do not use a
+        // mutable Trello due date to discard its cards: changing a deadline
+        // must never make today's homework disappear from the tablet.
         val todo = cards(prefs.getString(TODO_LIST, "") ?: "", TaskStatus.TODO)
         val done = cards(prefs.getString(DONE_LIST, "") ?: "", TaskStatus.COMPLETED)
+            .filter { task -> task.completedAtEpochSeconds?.let(::dateAt) == LocalDate.now() }
         return (todo + done).sortedBy { it.deadline }
+    }
+
+    /** Fast path for the home screen: the 待完成 list is today's live queue. */
+    suspend fun activeTasks(): List<HomeworkTask> {
+        val today = LocalDate.now(HOMEWORK_ZONE)
+        // Trello card IDs are independent random values, so they cannot
+        // identify a "第 N 天" batch. The due date is the authoritative
+        // school-day field.  Read today's completed cards too so their
+        // attachments remain available from the home-screen task list.
+        val todo = cards(prefs.getString(TODO_LIST, "") ?: "", TaskStatus.TODO, dueOn = today)
+        val done = cards(prefs.getString(DONE_LIST, "") ?: "", TaskStatus.COMPLETED, dueOn = today)
+            .filter { task -> task.completedAtEpochSeconds?.let(::dateAt) == today }
+        return (todo + done)
+            .sortedBy { it.deadline }
+    }
+
+    /** Current Mon–Sun, including completed cards so the calendar can show history. */
+    suspend fun weekTasks(): List<HomeworkTask> {
+        val todo = cards(prefs.getString(TODO_LIST, "") ?: "", TaskStatus.TODO)
+        val done = cards(prefs.getString(DONE_LIST, "") ?: "", TaskStatus.COMPLETED)
+        val monday = LocalDate.now(HOMEWORK_ZONE).with(DayOfWeek.MONDAY)
+        val sunday = monday.plusDays(6)
+        return (todo + done.filter { task -> task.completedAtEpochSeconds?.let(::dateAt) in monday..sunday })
+            .sortedWith(compareBy<HomeworkTask> { it.dueDate }.thenBy { it.deadline })
+    }
+
+    /** Fast calendar source for scheduled work; it must not wait for historical actions. */
+    suspend fun weekScheduledTasks(): List<HomeworkTask> {
+        val monday = LocalDate.now(HOMEWORK_ZONE).with(DayOfWeek.MONDAY)
+        val sunday = monday.plusDays(6)
+        return cards(prefs.getString(TODO_LIST, "") ?: "", TaskStatus.TODO)
+            .filter { it.dueDate in monday..sunday }
+            .sortedWith(compareBy<HomeworkTask> { it.dueDate }.thenBy { it.deadline })
     }
 
     suspend fun submit(taskId: String, photos: List<Uri>, isOvertime: Boolean, submissionId: String) = withContext(Dispatchers.IO) {
@@ -75,20 +116,59 @@ class HomeworkApi(private val context: Context) {
         request("PUT", "/cards/${segment(taskId)}", mapOf("idList" to requiredDoneList(), "dueComplete" to "true"))
     }
 
-    private suspend fun cards(listId: String, status: TaskStatus): List<HomeworkTask> {
+    /** Downloads a Trello attachment through its authenticated download endpoint. */
+    suspend fun loadPhoto(url: String): Bitmap? = withContext(Dispatchers.IO) {
+        runCatching {
+            val source = Uri.parse(url)
+            val parts = source.pathSegments
+            val cardIndex = parts.indexOf("cards")
+            val attachmentIndex = parts.indexOf("attachments")
+            val downloadIndex = parts.indexOf("download")
+            require(cardIndex >= 0 && attachmentIndex > cardIndex && downloadIndex > attachmentIndex) { "无效的 Trello 附件地址" }
+            val cardId = parts[cardIndex + 1]
+            val attachmentId = parts[attachmentIndex + 1]
+            val fileName = parts.drop(downloadIndex + 1).joinToString("/")
+            require(fileName.isNotBlank()) { "Trello 附件缺少文件名" }
+            val downloadUrl = "$API_ROOT/cards/${segment(cardId)}/attachments/${segment(attachmentId)}/download/${Uri.encode(fileName)}"
+            (URL(downloadUrl).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 15_000
+                readTimeout = 30_000
+                setRequestProperty("User-Agent", "homework-buddy-android/0.1")
+                setRequestProperty(
+                    "Authorization",
+                    "OAuth oauth_consumer_key=\"${oauthHeaderValue(BuildConfig.TRELLO_API_KEY)}\", oauth_token=\"${oauthHeaderValue(requireToken())}\"",
+                )
+            }.inputStream.use(BitmapFactory::decodeStream)
+        }.getOrNull()
+    }
+
+    private suspend fun cards(listId: String, status: TaskStatus, dueOn: LocalDate? = null): List<HomeworkTask> {
         require(listId.isNotBlank()) { "请由家长选择作业看板" }
-        val value = requestArray("GET", "/lists/${segment(listId)}/cards?fields=id,name,desc,due,labels")
-        val now = ZonedDateTime.now(ZoneOffset.ofHours(8))
-        val today = now.toLocalDate()
+        val value = requestArray("GET", "/lists/${segment(listId)}/cards?fields=id,name,desc,due,labels,dateLastActivity&attachments=true&attachment_fields=url")
+        val now = ZonedDateTime.now(HOMEWORK_ZONE)
         return (0 until value.length()).mapNotNull { index ->
             val item = value.getJSONObject(index)
             val due = item.optString("due").takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            val deadline = runCatching { OffsetDateTime.parse(due).atZoneSameInstant(ZoneOffset.ofHours(8)) }.getOrNull() ?: return@mapNotNull null
-            if (deadline.toLocalDate() != today) return@mapNotNull null
+            val deadline = runCatching { OffsetDateTime.parse(due).atZoneSameInstant(HOMEWORK_ZONE) }.getOrNull() ?: return@mapNotNull null
+            if (dueOn != null && deadline.toLocalDate() != dueOn) return@mapNotNull null
             val labels = item.optJSONArray("labels")
             val subject = labels?.optJSONObject(0)?.optString("name")?.takeIf { it.isNotBlank() } ?: "作业"
             val taskStatus = if (status == TaskStatus.TODO && !deadline.isAfter(now)) TaskStatus.OVERTIME else status
-            HomeworkTask(item.getString("id"), subject, item.getString("name"), homeworkMinutes(item.optString("desc")), deadline.toLocalTime(), taskStatus)
+            val attachmentUrls = item.optJSONArray("attachments")?.let { attachments ->
+                (0 until attachments.length()).mapNotNull { attachment ->
+                    attachments.optJSONObject(attachment)?.optString("url")?.ifBlank { null }
+                }
+            } ?: emptyList()
+            val activityAt = if (status == TaskStatus.COMPLETED) {
+                completionTime(item.getString("id"), listId)
+                    ?: item.optString("dateLastActivity").takeIf { it.isNotBlank() }
+                        ?.let { runCatching { OffsetDateTime.parse(it).toEpochSecond() }.getOrNull() }
+            } else null
+            HomeworkTask(
+                item.getString("id"), subject, item.getString("name"), homeworkMinutes(item.optString("desc")),
+                deadline.toLocalTime(), taskStatus, photoUrls = attachmentUrls,
+                dueDate = deadline.toLocalDate(), completedAtEpochSeconds = activityAt,
+            )
         }
     }
 
@@ -101,6 +181,19 @@ class HomeworkApi(private val context: Context) {
         val value = requestArray("GET", "/cards/${segment(taskId)}/attachments?fields=name")
         return (0 until value.length()).map { value.getJSONObject(it).optString("name") }.toSet()
     }
+
+    /** The move into 已完成 is the durable completion timestamp in Trello. */
+    private suspend fun completionTime(cardId: String, doneListId: String): Long? {
+        val actions = requestArray("GET", "/cards/${segment(cardId)}/actions?filter=updateCard:idList&limit=50&fields=date,data")
+        return (0 until actions.length()).firstNotNullOfOrNull { index ->
+            val action = actions.optJSONObject(index) ?: return@firstNotNullOfOrNull null
+            val movedToDone = action.optJSONObject("data")?.optJSONObject("listAfter")?.optString("id") == doneListId
+            if (!movedToDone) null else action.optString("date").takeIf { it.isNotBlank() }
+                ?.let { runCatching { OffsetDateTime.parse(it).toEpochSecond() }.getOrNull() }
+        }
+    }
+
+    private fun dateAt(epochSeconds: Long) = java.time.Instant.ofEpochSecond(epochSeconds).atZone(HOMEWORK_ZONE).toLocalDate()
 
     private fun attachPhoto(taskId: String, photo: Uri, name: String) {
         val boundary = "Trello-${UUID.randomUUID()}"
@@ -161,6 +254,7 @@ class HomeworkApi(private val context: Context) {
     private fun requiredDoneList() = prefs.getString(DONE_LIST, null) ?: error("请由家长选择作业看板")
     private fun encode(value: String) = URLEncoder.encode(value, StandardCharsets.UTF_8.name())
     private fun segment(value: String) = Uri.encode(value)
+    private fun oauthHeaderValue(value: String) = value.replace("\\", "\\\\").replace("\"", "\\\"")
 
     companion object {
         private const val API_ROOT = "https://api.trello.com/1"
@@ -175,6 +269,7 @@ class HomeworkApi(private val context: Context) {
         private const val TODO_LIST_NAME = "待完成"
         private const val DONE_LIST_NAME = "已完成"
         private const val MAX_PHOTOS = 4
+        private val HOMEWORK_ZONE: ZoneId = ZoneId.of("Asia/Shanghai")
 
         /** Called by MainActivity for the app-link redirect after Trello consent. */
         fun saveAuthorizationResult(context: Context, uri: Uri?): Boolean {

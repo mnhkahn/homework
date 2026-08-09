@@ -2,6 +2,7 @@ package com.homeworkbuddy
 
 import android.Manifest
 import android.app.Activity
+import android.graphics.Bitmap
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
@@ -33,6 +34,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -56,6 +58,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -72,6 +76,7 @@ import kotlinx.coroutines.launch
 import java.io.File
 import java.time.LocalDate
 import java.time.LocalTime
+import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlin.math.cos
@@ -108,6 +113,7 @@ private data class CelebrationVariant(
 )
 
 private data class CelebrationEvent(val taskTitle: String, val allTasksComplete: Boolean)
+private data class PhotoLoadState(val bitmap: Bitmap? = null, val finished: Boolean = false)
 
 private val CelebrationVariants = listOf(
     CelebrationVariant("太棒啦！", "宝贝，你完成了《%s》！", shortFanfare(523.25, 659.25, 783.99, 1_046.50), listOf(Color(0xFFFFD166), Color(0xFFFF70A6), Color(0xFF70D6FF))),
@@ -307,13 +313,16 @@ private fun HomeworkBuddyApp() {
     val kioskPolicy = remember(context) { KioskPolicy(context) }
     val pendingStore = remember(context) { PendingSubmissionStore(context) }
     val remoteNoticeStore = remember(context) { RemoteNoticeStore(context) }
+    val captureStatusStore = remember(context) { CaptureStatusStore(context) }
     val pianoPracticeStore = remember(context) { PianoPracticeStore(context) }
+    val taskCache = remember(context) { HomeworkCacheStore(context) }
     val scope = rememberCoroutineScope()
     var childName by remember { mutableStateOf(context.getSharedPreferences("profile", Context.MODE_PRIVATE).getString("child_name", "") ?: "") }
     // The home screen must only show work returned by the family service.  Keeping
     // preview tasks here made a fictional completed homework item survive a sync
     // with an otherwise empty board.
-    var tasks by remember { mutableStateOf<List<HomeworkTask>>(emptyList()) }
+    var tasks by remember { mutableStateOf(taskCache.todayTasks()) }
+    var weekTasks by remember { mutableStateOf(taskCache.weekTasks()) }
     var selectedId by remember { mutableStateOf("") }
     var remainingSeconds by remember { mutableIntStateOf(0) }
     var running by remember { mutableStateOf(false) }
@@ -335,9 +344,15 @@ private fun HomeworkBuddyApp() {
     var celebration by remember { mutableStateOf<CelebrationEvent?>(null) }
     var kioskMode by remember { mutableStateOf(kioskPolicy.mode()) }
     var remoteNotice by remember { mutableStateOf(remoteNoticeStore.current()) }
+    var captureStatus by remember { mutableStateOf(captureStatusStore.current()) }
     // Keep the header useful immediately; a network response only replaces this
     // default when it contains a non-blank slogan.
     var slogan by remember { mutableStateOf(DEFAULT_HOME_SLOGAN) }
+
+    LaunchedEffect(captureStatusStore) {
+        captureStatusStore.clearInterruptedCapture()
+        captureStatus = captureStatusStore.current()
+    }
 
     LaunchedEffect(Unit) {
         runCatching { SloganApi.fetch() }.getOrNull()?.let { slogan = it }
@@ -346,6 +361,20 @@ private fun HomeworkBuddyApp() {
     DisposableEffect(remoteNoticeStore) {
         val listener = remoteNoticeStore.addChangeListener { remoteNotice = remoteNoticeStore.current() }
         onDispose { remoteNoticeStore.removeChangeListener(listener) }
+    }
+
+    DisposableEffect(captureStatusStore) {
+        val mainHandler = Handler(Looper.getMainLooper())
+        val listener = captureStatusStore.addChangeListener {
+            mainHandler.post { captureStatus = captureStatusStore.current() }
+        }
+        onDispose { captureStatusStore.removeChangeListener(listener) }
+    }
+
+    LaunchedEffect(captureStatus?.atMillis, captureStatus?.active) {
+        val status = captureStatus ?: return@LaunchedEffect
+        delay((status.atMillis + 15 * 60 * 1_000L - System.currentTimeMillis()).coerceAtLeast(1_000L))
+        captureStatus = captureStatusStore.current()
     }
 
     // A message is intentionally only for the current day. Recheck at local midnight
@@ -380,13 +409,20 @@ private fun HomeworkBuddyApp() {
     }
 
     var weekMarks by remember { mutableStateOf(FlowerCalendar(context).currentWeek()) }
-    var weeklyReport by remember { mutableStateOf<WeeklyReport?>(null) }
+    var weeklyReport by remember { mutableStateOf(WeeklyReport(context)) }
+    var historyRevision by remember { mutableIntStateOf(0) }
+    var historicalWeekLoaded by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        CompletionHistoryStore(context).removeLegacyConfirmedMarks()
+        historyRevision++
+    }
 
     // The completion history is written by the submit/refresh paths before
     // tasks changes, so recomputing here always sees the latest records.
-    LaunchedEffect(tasks) {
+    LaunchedEffect(tasks, historyRevision) {
         weekMarks = FlowerCalendar(context).currentWeek()
-        weeklyReport = WeeklyReport(context).takeIf { it.completedCount > 0 }
+        weeklyReport = WeeklyReport(context)
     }
 
     fun advanceAfterCompletion(taskId: String, photoPath: String? = null) {
@@ -395,6 +431,7 @@ private fun HomeworkBuddyApp() {
             if (task.id == taskId) task.copy(status = TaskStatus.COMPLETED, photoPath = photoPath ?: task.photoPath) else task
         }
         tasks = updated
+        taskCache.saveToday(updated)
         val next = if (currentIndex >= 0) {
             updated.drop(currentIndex + 1).firstOrNull { it.status != TaskStatus.COMPLETED }
                 ?: updated.take(currentIndex).firstOrNull { it.status != TaskStatus.COMPLETED }
@@ -476,7 +513,11 @@ private fun HomeworkBuddyApp() {
         val activity = context as? ComponentActivity
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_START -> { foreground = true; refreshRequest++ }
+                Lifecycle.Event.ON_START -> {
+                    foreground = true
+                    captureStatus = captureStatusStore.current()
+                    refreshRequest++
+                }
                 Lifecycle.Event.ON_STOP -> foreground = false
                 else -> Unit
             }
@@ -485,11 +526,58 @@ private fun HomeworkBuddyApp() {
         onDispose { activity?.lifecycle?.removeObserver(observer) }
     }
 
+    // The calendar's future/current schedules come from the compact 待完成
+    // query. Do not make them wait for the much slower completed-card audit.
+    LaunchedEffect(connected, foreground, refreshRequest) {
+        if (!connected || !foreground) return@LaunchedEffect
+        runCatching { api.weekScheduledTasks() }.onSuccess { scheduledCards ->
+            weekTasks = scheduledCards
+            taskCache.saveWeek(scheduledCards)
+        }.onFailure { error ->
+            if (error !is kotlinx.coroutines.CancellationException) {
+                connectionError = error.message ?: "拉取本周作业安排失败"
+            }
+        }
+    }
+
+    // Historical import is independent from the live queue.  A temporary
+    // failure while reading today's 待完成 list must never prevent 8/6 and
+    // other completed days from being recovered from Trello.
+    LaunchedEffect(connected, foreground, refreshRequest) {
+        if (!connected || !foreground || historicalWeekLoaded) return@LaunchedEffect
+        runCatching { api.weekTasks() }.onSuccess { weeklyCards ->
+            val history = CompletionHistoryStore(context)
+            val completedCards = weeklyCards.filter { it.status == TaskStatus.COMPLETED && it.completedAtEpochSeconds != null }
+            val weekStart = LocalDate.now().with(java.time.DayOfWeek.MONDAY)
+            val weekDays = (0L..6L).map(weekStart::plusDays)
+            val ids = completedCards.mapTo(mutableSetOf()) { it.id }
+            weekDays.forEach { history.removeTasks(it, ids) }
+            completedCards.groupBy { card ->
+                Instant.ofEpochSecond(requireNotNull(card.completedAtEpochSeconds))
+                    .atZone(ZoneId.systemDefault()).toLocalDate()
+            }.forEach { (date, dailyCards) ->
+                history.noteTasks(dailyCards, date)
+                val records = history.day(date)
+                if (records.isNotEmpty() && records.all { it.completedAtEpochSeconds != null && it.completedAtEpochSeconds <= it.deadlineEpochSeconds }) {
+                    history.correctFinalMark(date, DayMark.FLOWER)
+                }
+            }
+            historicalWeekLoaded = true
+            historyRevision++
+        }.onFailure { error ->
+            // Leaving composition (sleeping, rotating, or opening another
+            // screen) cancels this effect. It is never a child-facing error.
+            if (error is kotlinx.coroutines.CancellationException || error.message == "The coroutine scope left composition.") return@onFailure
+            Log.e("HomeworkHistory", "weekly import failed", error)
+            connectionError = error.message ?: "拉取本周完成记录失败"
+        }
+    }
+
     LaunchedEffect(connected, foreground, refreshRequest) {
         if (!connected || !foreground) return@LaunchedEffect
         while (connected && foreground) {
             refreshing = true
-            runCatching { api.todayTasks() }.onSuccess { remote ->
+            runCatching { api.activeTasks() }.onSuccess { remote ->
                 val local = tasks.associateBy { it.id }
                 val completionHistory = CompletionHistoryStore(context)
                 val today = LocalDate.now()
@@ -508,7 +596,11 @@ private fun HomeworkBuddyApp() {
                     } ?: fresh
                 }
                 tasks = merged
-                completionHistory.noteTasks(merged)
+                taskCache.saveToday(merged)
+                // Replace only today's live queue; settled day marks live in
+                // their own ledger and are not affected by this cleanup.
+                completionHistory.clearDay(today)
+                completionHistory.noteTasks(merged, today)
                 val selected = merged.firstOrNull { it.id == selectedId && it.status != TaskStatus.COMPLETED }
                     ?: merged.firstOrNull { it.status != TaskStatus.COMPLETED }
                 if (selected == null) {
@@ -588,7 +680,9 @@ private fun HomeworkBuddyApp() {
             submitting = selected?.id == submittingTaskId,
             refreshing = refreshing,
             weekMarks = weekMarks,
+            weekTasks = weekTasks,
             weeklyReport = weeklyReport,
+            captureStatus = captureStatus,
             studyLocked = kioskPolicy.isDeviceOwner && kioskMode == KioskMode.STUDY,
             hasStudyApps = kioskPolicy.studyPackages.isNotEmpty(),
             remoteNotice = remoteNotice,
@@ -752,11 +846,21 @@ private fun CelebrationDialog(taskTitle: String, allTasksComplete: Boolean, onDi
 }
 
 @Composable
-private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, remainingSeconds: Int, running: Boolean, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weeklyReport: WeeklyReport?, studyLocked: Boolean, hasStudyApps: Boolean, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photoCount: Int, onAddPhoto: () -> Unit, onRetake: () -> Unit) {
+private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, remainingSeconds: Int, running: Boolean, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, weeklyReport: WeeklyReport, captureStatus: CaptureStatus?, studyLocked: Boolean, hasStudyApps: Boolean, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photoCount: Int, onAddPhoto: () -> Unit, onRetake: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     val complete = tasks.count { it.status == TaskStatus.COMPLETED }
+    val todayEstimatedSeconds = tasks.sumOf { it.estimatedMinutes.coerceAtLeast(0) * 60 }
+    val completedEstimatedSeconds = tasks.filter { it.status == TaskStatus.COMPLETED }
+        .sumOf { it.estimatedMinutes.coerceAtLeast(0) * 60 }
+    val activeEstimatedSeconds = selected?.estimatedMinutes?.coerceAtLeast(0)?.times(60) ?: 0
+    val activeElapsedSeconds = if (running && selected?.status != TaskStatus.COMPLETED) {
+        (activeEstimatedSeconds - remainingSeconds).coerceIn(0, activeEstimatedSeconds)
+    } else 0
+    val todayElapsedSeconds = (completedEstimatedSeconds + activeElapsedSeconds).coerceAtMost(todayEstimatedSeconds)
     val waiting = tasks.filter { it.status != TaskStatus.COMPLETED && it.id != selected?.id }
     val completedTasks = tasks.filter { it.status == TaskStatus.COMPLETED }
     val overdue = tasks.count { it.status == TaskStatus.OVERTIME }
+    var selectedDate by remember { mutableStateOf(LocalDate.now()) }
     BoxWithConstraints(
         Modifier
             .fillMaxSize()
@@ -765,25 +869,37 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
             .padding(24.dp),
     ) {
         Column(Modifier.fillMaxSize()) {
-            Header(slogan, complete, tasks.size, overdue, refreshing, studyLocked, hasStudyApps, onRefresh, onParent, onStudyApps)
+            Header(slogan, refreshing, weeklyReport, captureStatus, studyLocked, hasStudyApps, onRefresh, onParent, onStudyApps)
             if (remoteNotice != null) {
                 Spacer(Modifier.height(14.dp))
                 RemoteNoticeCard(remoteNotice)
             }
             Spacer(Modifier.height(14.dp))
-            WeekCalendar(weekMarks)
-            weeklyReport?.let { report ->
-                Spacer(Modifier.height(10.dp))
-                WeeklyReportCard(report)
-            }
+            WeekCalendar(
+                weekMarks,
+                selectedDate = selectedDate,
+                todayElapsedSeconds = todayElapsedSeconds,
+                todayEstimatedSeconds = todayEstimatedSeconds,
+                onSelectDate = { selectedDate = it },
+            )
             Spacer(Modifier.height(20.dp))
-            if (selected == null) {
+            if (selectedDate != LocalDate.now()) {
+                CalendarDayContent(
+                    modifier = Modifier.fillMaxSize(),
+                    date = selectedDate,
+                    tasks = weekTasks.filter { it.dueDate == selectedDate },
+                    records = CompletionHistoryStore(context).day(selectedDate),
+                    mark = FlowerCalendar(context).markFor(selectedDate),
+                )
+            } else if (selected == null && tasks.isEmpty()) {
                 EmptyTaskState(Modifier.fillMaxSize())
             } else if (this@BoxWithConstraints.maxWidth >= 700.dp) Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(22.dp)) {
-                CurrentTask(Modifier.weight(1.45f).fillMaxHeight(), selected, running, pianoPractice, submitting, onStart, onPianoRecord, onFinish)
+                if (selected != null) CurrentTask(Modifier.weight(1.45f).fillMaxHeight(), selected, running, pianoPractice, submitting, onStart, onPianoRecord, onFinish)
+                else AllDoneState(Modifier.weight(1.45f).fillMaxHeight())
                 TaskQueue(Modifier.weight(.8f).fillMaxHeight(), waiting, completedTasks, onSelect)
             } else {
-                CurrentTask(Modifier.fillMaxWidth(), selected, running, pianoPractice, submitting, onStart, onPianoRecord, onFinish)
+                if (selected != null) CurrentTask(Modifier.fillMaxWidth(), selected, running, pianoPractice, submitting, onStart, onPianoRecord, onFinish)
+                else AllDoneState(Modifier.fillMaxWidth())
                 Spacer(Modifier.height(16.dp)); TaskQueue(Modifier.fillMaxWidth(), waiting, completedTasks, onSelect)
             }
         }
@@ -823,22 +939,160 @@ private fun RemoteNoticeCard(notice: RemoteNotice) {
     }
 }
 
-@Composable private fun WeekCalendar(week: List<Pair<LocalDate, DayMark>>) {
+@Composable private fun WeekCalendar(week: List<Pair<LocalDate, DayMark>>, selectedDate: LocalDate, todayElapsedSeconds: Int, todayEstimatedSeconds: Int, onSelectDate: (LocalDate) -> Unit) {
     val today = LocalDate.now()
     val dayNames = listOf("一", "二", "三", "四", "五", "六", "日")
-    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Sky).padding(horizontal = 12.dp, vertical = 9.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Sky).padding(horizontal = 8.dp, vertical = 8.dp)) {
         week.forEach { (date, mark) ->
             val isToday = date == today
+            val isSelected = date == selectedDate
             Column(
-                Modifier.clip(RoundedCornerShape(12.dp)).then(if (isToday) Modifier.background(Color.White) else Modifier).padding(horizontal = 9.dp, vertical = 6.dp),
+                Modifier.weight(1f).clip(RoundedCornerShape(12.dp)).then(if (isSelected) Modifier.background(Primary) else Modifier).clickable { onSelectDate(date) }.padding(vertical = 7.dp, horizontal = 2.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Text("周${dayNames[date.dayOfWeek.value - 1]}", fontSize = 11.sp, color = if (isToday) Primary else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = if (isToday) FontWeight.Medium else FontWeight.Normal)
-                Spacer(Modifier.height(2.dp))
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text("周${dayNames[date.dayOfWeek.value - 1]}", fontSize = 11.sp, color = if (isSelected) Color.White else if (isToday) Primary else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Medium)
+                    Text("${date.dayOfMonth}日", fontSize = 13.sp, color = if (isSelected) Color.White else Ink, fontWeight = FontWeight.Bold)
+                }
+                Spacer(Modifier.height(3.dp))
                 when (mark) {
-                    DayMark.FLOWER -> Text("🌸", fontSize = 15.sp)
-                    DayMark.BLACK -> Text("🖤", fontSize = 15.sp)
-                    else -> Text("●", fontSize = 12.sp, color = Color(0xFFB0BEC5))
+                    DayMark.FLOWER -> Text("🌸", fontSize = 28.sp)
+                    DayMark.BLACK -> Text("🖤", fontSize = 23.sp)
+                    else -> if (isToday && todayEstimatedSeconds > 0) {
+                        CalendarProgressRing(
+                            elapsedSeconds = todayElapsedSeconds,
+                            estimatedSeconds = todayEstimatedSeconds,
+                            color = if (isSelected) Color.White else Primary,
+                            track = if (isSelected) Color.White.copy(alpha = .28f) else Color(0xFFBED0E8),
+                        )
+                    } else Text("·", fontSize = 26.sp, color = if (isSelected) Color.White else Color(0xFF8BA0AA))
+                }
+            }
+        }
+    }
+}
+
+@Composable private fun CalendarProgressRing(elapsedSeconds: Int, estimatedSeconds: Int, color: Color, track: Color) {
+    val progress = (elapsedSeconds.toFloat() / estimatedSeconds.coerceAtLeast(1)).coerceIn(0f, 1f)
+    Canvas(Modifier.size(27.dp)) {
+        val stroke = 3.dp.toPx()
+        drawArc(track, -90f, 360f, false, style = Stroke(stroke))
+        drawArc(color, -90f, progress * 360f, false, style = Stroke(stroke))
+    }
+}
+
+@Composable
+private fun CalendarDayContent(modifier: Modifier, date: LocalDate, tasks: List<HomeworkTask>, records: List<CompletionRecord>, mark: DayMark) {
+    if (tasks.isEmpty()) {
+        HistoryDayContent(modifier, date, records, mark)
+        return
+    }
+    val doneCount = tasks.count { it.status == TaskStatus.COMPLETED }
+    BoxWithConstraints(modifier) {
+        if (maxWidth >= 700.dp) Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(22.dp)) {
+            Column(Modifier.weight(1.45f).fillMaxHeight().clip(RoundedCornerShape(26.dp)).background(Sky).padding(28.dp)) {
+                Text(date.format(DateTimeFormatter.ofPattern("M月d日")) + " 的作业", fontSize = 30.sp, fontWeight = FontWeight.Medium)
+                Spacer(Modifier.height(10.dp))
+                Text(if (doneCount == 0) "已从 Trello 同步 ${tasks.size} 项安排" else "已完成 $doneCount / ${tasks.size} 项", fontSize = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.weight(1f))
+                Text("📚", fontSize = 72.sp, modifier = Modifier.align(Alignment.CenterHorizontally))
+                Spacer(Modifier.weight(1f))
+            }
+            ScheduledTaskList(Modifier.weight(.8f).fillMaxHeight(), tasks)
+        } else Column(Modifier.fillMaxSize()) {
+            Text(date.format(DateTimeFormatter.ofPattern("M月d日")) + " 的作业 · ${tasks.size} 项", fontSize = 20.sp, fontWeight = FontWeight.Medium)
+            Spacer(Modifier.height(12.dp))
+            ScheduledTaskList(Modifier.weight(1f), tasks)
+        }
+    }
+}
+
+@Composable
+private fun ScheduledTaskList(modifier: Modifier, tasks: List<HomeworkTask>) {
+    Column(modifier) {
+        Text("作业清单 · ${tasks.size} 项", fontSize = 20.sp, fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(6.dp))
+        LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            items(tasks, key = { it.id }) { task ->
+                val completed = task.status == TaskStatus.COMPLETED
+                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(if (completed) Leaf else TodoSurface).padding(horizontal = 12.dp, vertical = 10.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text(task.title, modifier = Modifier.weight(1f), fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        TaskStatusPill(task.status)
+                    }
+                    Text(if (completed) "已完成" else "截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                }
+            }
+        }
+    }
+}
+
+@Composable private fun HistoryDayContent(modifier: Modifier, date: LocalDate, records: List<CompletionRecord>, mark: DayMark) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val doneCount = records.count { it.completedAtEpochSeconds != null }
+    BoxWithConstraints(modifier) {
+        if (maxWidth >= 700.dp) Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(22.dp)) {
+            Column(Modifier.weight(1.45f).fillMaxHeight().clip(RoundedCornerShape(26.dp)).background(if (mark == DayMark.FLOWER) Leaf else Sky).padding(28.dp)) {
+                Text(date.format(DateTimeFormatter.ofPattern("M月d日")) + " 的作业", fontSize = 30.sp, fontWeight = FontWeight.Medium)
+                Spacer(Modifier.height(10.dp))
+                Text(when { mark == DayMark.FLOWER -> "全部完成 · 奖励已记录"; records.isEmpty() -> "这一天还没有作业记录"; else -> "已完成 $doneCount / ${records.size} 项" }, fontSize = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.weight(1f))
+                Text(if (mark == DayMark.FLOWER) "🌸" else if (mark == DayMark.BLACK) "🖤" else "📚", fontSize = 72.sp, modifier = Modifier.align(Alignment.CenterHorizontally))
+                Spacer(Modifier.height(10.dp))
+                when (mark) {
+                    DayMark.FLOWER -> Text("太棒了！这一天的作业全部完成，继续保持！", modifier = Modifier.align(Alignment.CenterHorizontally), color = Color(0xFF24733A), fontWeight = FontWeight.Medium)
+                    DayMark.BLACK -> Text("还没完成：${records.filter { it.completedAtEpochSeconds == null && it.title.isNotBlank() }.joinToString("、") { it.title }}", color = OverdueInk, fontWeight = FontWeight.Medium)
+                    else -> Unit
+                }
+                Spacer(Modifier.weight(1f))
+            }
+            HistoryTaskList(Modifier.weight(.8f).fillMaxHeight(), records, context)
+        } else Column(Modifier.fillMaxSize()) {
+            Text(date.format(DateTimeFormatter.ofPattern("M月d日")) + " 的作业 · 已完成 $doneCount / ${records.size} 项", fontSize = 20.sp, fontWeight = FontWeight.Medium)
+            Spacer(Modifier.height(12.dp))
+            HistoryTaskList(Modifier.weight(1f), records, context)
+        }
+    }
+}
+
+@Composable private fun HistoryTaskList(modifier: Modifier, records: List<CompletionRecord>, context: Context) {
+    var photoUrl by remember { mutableStateOf<String?>(null) }
+    Column(modifier) {
+        Text("作业清单 · ${records.size} 项", fontSize = 20.sp, fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(6.dp))
+        if (records.isEmpty()) Text("暂无作业记录", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        else LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            items(records, key = { it.taskId }) { record ->
+                val done = record.completedAtEpochSeconds != null
+                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(if (done) Leaf else TodoSurface).padding(horizontal = 12.dp, vertical = 10.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text(record.title.ifBlank { "作业" }, modifier = Modifier.weight(1f), fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        TaskStatusPill(if (done) TaskStatus.COMPLETED else TaskStatus.TODO)
+                    }
+                    if (record.photoUrls.isNotEmpty()) {
+                        TextButton(onClick = { photoUrl = record.photoUrls.first() }, contentPadding = PaddingValues(top = 5.dp, bottom = 0.dp)) {
+                            Icon(Icons.Outlined.CameraAlt, null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("查看图片（${record.photoUrls.size} 张）")
+                        }
+                    }
+                }
+            }
+        }
+    }
+    photoUrl?.let { PhotoViewer(it, HomeworkApi(context)) { photoUrl = null } }
+}
+
+@Composable private fun PhotoViewer(url: String, api: HomeworkApi, onDismiss: () -> Unit) {
+    val state by produceState(PhotoLoadState(), url) { value = PhotoLoadState(api.loadPhoto(url), finished = true) }
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(Modifier.fillMaxSize().padding(24.dp), shape = RoundedCornerShape(24.dp), color = Color.Black) {
+            Column(Modifier.fillMaxSize()) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onDismiss, colors = ButtonDefaults.textButtonColors(contentColor = Color.White)) { Text("关闭") }
+                }
+                Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
+                    state.bitmap?.let { Image(it.asImageBitmap(), "作业图片", Modifier.fillMaxSize(), contentScale = ContentScale.Fit) }
+                    if (!state.finished) CircularProgressIndicator(color = Color.White)
+                    else if (state.bitmap == null) Text("图片加载失败，请稍后重试", color = Color.White)
                 }
             }
         }
@@ -869,8 +1123,7 @@ private fun RemoteNoticeCard(notice: RemoteNotice) {
 }
 
 @OptIn(ExperimentalFoundationApi::class)
-@Composable private fun Header(slogan: String, complete: Int, total: Int, overdue: Int, refreshing: Boolean, studyLocked: Boolean, hasStudyApps: Boolean, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit) {
-    val percent = if (total == 0) 0 else complete * 100 / total
+@Composable private fun Header(slogan: String, refreshing: Boolean, weeklyReport: WeeklyReport, captureStatus: CaptureStatus?, studyLocked: Boolean, hasStudyApps: Boolean, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f).combinedClickable(onClick = {}, onLongClick = onParent)) { Text("今天的作业", fontSize = 30.sp, fontWeight = FontWeight.Medium); Text(slogan, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis) }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -885,18 +1138,42 @@ private fun RemoteNoticeCard(notice: RemoteNotice) {
             FilledTonalButton(onClick = onRefresh, enabled = !refreshing, shape = RoundedCornerShape(18.dp), contentPadding = PaddingValues(horizontal = 13.dp, vertical = 9.dp)) {
                 Icon(Icons.Outlined.Refresh, null, modifier = Modifier.size(19.dp)); Spacer(Modifier.width(6.dp)); Text(if (refreshing) "刷新中…" else "刷新")
             }
-            Column(Modifier.width(245.dp).clip(RoundedCornerShape(18.dp)).background(Sky).padding(horizontal = 14.dp, vertical = 11.dp)) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("已完成 $complete / $total"); Text("$percent%", fontWeight = FontWeight.Medium) }
-                if (overdue > 0) Text("还有 $overdue 项已超期", color = OverdueInk, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                Spacer(Modifier.height(7.dp)); LinearProgressIndicator(progress = { if (total == 0) 0f else complete.toFloat() / total }, modifier = Modifier.fillMaxWidth().height(7.dp).clip(CircleShape))
-            }
+            CaptureStatusBadge(weeklyReport, captureStatus)
         }
+    }
+}
+
+@Composable private fun CaptureStatusBadge(report: WeeklyReport, status: CaptureStatus?) {
+    val label = status?.label() ?: "本周 ${report.completedCount} / ${report.taskCount} 项"
+    val color = when {
+        status?.active == true -> Color(0xFFFFE9EE)
+        status != null -> Sun
+        else -> Leaf
+    }
+    val content = when {
+        status?.active == true -> Color(0xFFB3264A)
+        status != null -> Color(0xFF765B11)
+        else -> Color(0xFF24733A)
+    }
+    Surface(shape = RoundedCornerShape(18.dp), color = color, contentColor = content) {
+        Text(label, modifier = Modifier.padding(horizontal = 13.dp, vertical = 9.dp), fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1)
     }
 }
 
 @Composable private fun EmptyTaskState(modifier: Modifier) {
     Box(modifier.clip(RoundedCornerShape(26.dp)).background(Leaf), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) { Text("🎉", fontSize = 58.sp); Spacer(Modifier.height(12.dp)); Text("今天还没有作业", fontSize = 26.sp, fontWeight = FontWeight.Medium); Text("新增到 Trello 的“待完成”列表后，最多一分钟会出现在这里。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+    }
+}
+
+@Composable private fun AllDoneState(modifier: Modifier) {
+    Box(modifier.clip(RoundedCornerShape(26.dp)).background(Leaf), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("🏆", fontSize = 70.sp)
+            Spacer(Modifier.height(12.dp))
+            Text("今天的作业都完成啦！", fontSize = 26.sp, fontWeight = FontWeight.Medium)
+            Text("右边可以查看每一项完成情况。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 
@@ -927,13 +1204,17 @@ private fun RemoteNoticeCard(notice: RemoteNotice) {
 }
 
 @Composable private fun TaskQueue(modifier: Modifier, tasks: List<HomeworkTask>, completedTasks: List<HomeworkTask>, onSelect: (HomeworkTask) -> Unit) {
+    val allTasks = tasks + completedTasks
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var photoUrl by remember { mutableStateOf<String?>(null) }
     Column(modifier) {
-        Text("接下来 · ${tasks.size} 项", fontSize = 20.sp, fontWeight = FontWeight.Medium)
+        Text("作业清单 · ${allTasks.size} 项", fontSize = 20.sp, fontWeight = FontWeight.Medium)
         Spacer(Modifier.height(6.dp))
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            items(tasks, key = { it.id }) { task ->
+            items(allTasks, key = { it.id }) { task ->
                 val overdue = task.status == TaskStatus.OVERTIME
-                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(if (overdue) OverdueSurface else TodoSurface).clickable { onSelect(task) }.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                val completed = task.status == TaskStatus.COMPLETED
+                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(if (completed) Leaf else if (overdue) OverdueSurface else TodoSurface).clickable { onSelect(task) }.padding(horizontal = 12.dp, vertical = 8.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         if (task.subject != "作业") Text(task.subject, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
                         TaskStatusPill(task.status)
@@ -942,29 +1223,20 @@ private fun RemoteNoticeCard(notice: RemoteNotice) {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Text(task.title, modifier = Modifier.weight(1f), fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Spacer(Modifier.width(8.dp))
-                        Text("截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", color = if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                        Text(if (completed) "已完成" else "截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", color = if (completed) Color(0xFF24733A) else if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
                     }
-                }
-            }
-        }
-        Spacer(Modifier.height(10.dp))
-        if (completedTasks.isNotEmpty()) {
-            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Leaf).padding(13.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Outlined.Star, null, tint = Primary, modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("今天已完成 · ${completedTasks.size} 项", fontWeight = FontWeight.Medium)
-                }
-                Spacer(Modifier.height(9.dp))
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(completedTasks, key = { "completed-${it.id}" }) { task ->
-                        Surface(shape = RoundedCornerShape(14.dp), color = Color.White) {
-                            Text("✓ ${task.title}", modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 13.sp, color = Primary)
+                    if (completed && task.photoUrls.isNotEmpty()) {
+                        TextButton(onClick = { photoUrl = task.photoUrls.first() }, contentPadding = PaddingValues(top = 4.dp, bottom = 0.dp)) {
+                            Icon(Icons.Outlined.CameraAlt, null, modifier = Modifier.size(17.dp))
+                            Spacer(Modifier.width(5.dp))
+                            Text("查看照片（${task.photoUrls.size} 张）")
                         }
                     }
                 }
             }
-        } else {
+        }
+        if (completedTasks.isEmpty()) {
+            Spacer(Modifier.height(10.dp))
             Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(17.dp)).background(Leaf).padding(13.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Outlined.Star, null, tint = Primary)
                 Spacer(Modifier.width(10.dp))
@@ -972,6 +1244,7 @@ private fun RemoteNoticeCard(notice: RemoteNotice) {
             }
         }
     }
+    photoUrl?.let { PhotoViewer(it, HomeworkApi(context)) { photoUrl = null } }
 }
 
 @Composable private fun TaskStatusPill(status: TaskStatus) {

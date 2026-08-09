@@ -11,6 +11,7 @@ data class CompletionRecord(
     val title: String,
     val deadlineEpochSeconds: Long,
     val completedAtEpochSeconds: Long?,
+    val photoUrls: List<String>,
 )
 
 /**
@@ -28,6 +29,12 @@ class CompletionHistoryStore(context: Context) {
             val deadline = date.atTime(task.deadline).atZone(ZoneId.systemDefault()).toEpochSecond()
             val entry = day.optJSONObject(task.id) ?: JSONObject()
             entry.put("title", task.title).put("deadline", deadline)
+            entry.put("photo_urls", org.json.JSONArray(task.photoUrls))
+            // This also imports completed cards that existed before this feature
+            // was installed, so their earned flower is not lost.
+            if (task.status == TaskStatus.COMPLETED && !entry.has("completed_at")) {
+                entry.put("completed_at", task.completedAtEpochSeconds ?: deadline)
+            }
             day.put(task.id, entry)
         }
         save(date, day)
@@ -53,11 +60,58 @@ class CompletionHistoryStore(context: Context) {
                 entry.optString("title"),
                 entry.optLong("deadline"),
                 if (entry.has("completed_at")) entry.getLong("completed_at") else null,
+                entry.optJSONArray("photo_urls")?.let { photos ->
+                    (0 until photos.length()).mapNotNull { index -> photos.optString(index).ifBlank { null } }
+                } ?: emptyList(),
             )
         }.toList()
+    }
+
+    /** Removes cards before a fresh weekly reconciliation relocates them. */
+    fun removeTasks(date: LocalDate, taskIds: Set<String>) {
+        val day = dayJson(date)
+        taskIds.forEach(day::remove)
+        save(date, day)
+    }
+
+    fun clearDay(date: LocalDate) = save(date, JSONObject())
+
+    /** A final flower/black mark is an on-device ledger entry, not a view calculation. */
+    fun savedMark(date: LocalDate): DayMark? = prefs.getString(markKey(date), null)
+        ?.let { name -> runCatching { DayMark.valueOf(name) }.getOrNull() }
+
+    fun saveFinalMark(date: LocalDate, mark: DayMark) {
+        require(mark == DayMark.FLOWER || mark == DayMark.BLACK)
+        // Never overwrite a settled day.  Its result belongs to the tablet.
+        if (savedMark(date) == null) prefs.edit().putString(markKey(date), mark.name).apply()
+    }
+
+    /** Used only by a verified remote-history repair to replace a bad legacy mark. */
+    fun correctFinalMark(date: LocalDate, mark: DayMark) {
+        require(mark == DayMark.FLOWER || mark == DayMark.BLACK)
+        prefs.edit().putString(markKey(date), mark.name).apply()
+    }
+
+    /** Removes legacy black marks that were inferred from an incomplete cache. */
+    fun clearUnverifiedBlackMark(date: LocalDate) {
+        if (savedMark(date) == DayMark.BLACK) prefs.edit().remove(markKey(date)).apply()
+    }
+
+    /** Removes the short-lived date-specific corrections from earlier builds. */
+    fun removeLegacyConfirmedMarks() {
+        val keys = prefs.all.keys.filter { it.startsWith("confirmed:") }
+        if (keys.isEmpty()) return
+        val editor = prefs.edit()
+        keys.forEach { key ->
+            val date = key.removePrefix("confirmed:").substringBeforeLast(":").let { runCatching { LocalDate.parse(it) }.getOrNull() }
+            if (date != null) editor.remove(markKey(date))
+            editor.remove(key)
+        }
+        editor.apply()
     }
 
     private fun dayJson(date: LocalDate) = runCatching { JSONObject(prefs.getString(key(date), "{}") ?: "{}") }.getOrDefault(JSONObject())
     private fun save(date: LocalDate, day: JSONObject) = prefs.edit().putString(key(date), day.toString()).apply()
     private fun key(date: LocalDate) = "day:$date"
+    private fun markKey(date: LocalDate) = "mark:$date"
 }

@@ -38,7 +38,8 @@ class StudySessionService : Service() {
                 ?.firstOrNull { it.pid == Process.myPid() }
                 ?.importance
             val isInteractive = getSystemService(PowerManager::class.java).isInteractive
-            if (isInteractive && importance != null && importance > ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND && !policy.isExternalForegroundAllowed) {
+            if (isInteractive && importance != null && importance > ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND &&
+                !policy.isExternalForegroundAllowed && !RemotePhotoCoordinator.isCaptureInProgress) {
                 // HyperOS can close a locked task from its tablet window menu
                 // while ActivityManager still reports LOCK_TASK_MODE_LOCKED.
                 // The foreground service drops below foreground importance even

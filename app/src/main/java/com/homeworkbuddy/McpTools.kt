@@ -44,15 +44,40 @@ object McpTools {
             notify(context, arguments.getString("title"), arguments.getString("body"))
             JSONObject().put("delivered", true)
         },
-        ToolRegistration("self.camera.take_photo", "请求在平板前台拍摄一张学习照片", emptySchema()) { context, _ ->
+        ToolRegistration("self.audio_speaker.play_ogg_url", "播放服务端提供的 Ogg/Opus 音频 URL", JSONObject().put("type", "object").put("properties", JSONObject().put("url", JSONObject().put("type", "string").put("format", "uri"))).put("required", JSONArray().put("url"))) { context, arguments ->
+            runBlocking { RemoteAudioPlayer.play(context, arguments.getString("url")) }
+        },
+        ToolRegistration("self.audio_speaker.stop", "停止当前音频播放", emptySchema()) { context, _ ->
+            RemoteAudioPlayer.stop(context)
+        },
+        ToolRegistration("self.camera.take_photo", "应用内拍摄一张学习照片，并在平板提示正在拍照", emptySchema()) { context, _ ->
+            runBlocking { RemotePhotoCoordinator.take(context) }
+        },
+        // The admin console's snapshot button uses this established protocol
+        // name. It returns the same JPEG payload as take_photo.
+        ToolRegistration("self.camera.snapshot", "应用内拍摄一张学习照片并返回 JPEG 数据", emptySchema()) { context, _ ->
             runBlocking { RemotePhotoCoordinator.take(context) }
         },
         ToolRegistration("self.camera.record_video", "请求在平板前台录制一段学习小视频", JSONObject().put("type", "object").put("properties", JSONObject().put("max_seconds", JSONObject().put("type", "integer").put("description", "最长录制秒数，默认 15，上限 30")))) { context, arguments ->
             val maxSeconds = arguments.optInt("max_seconds", 15).coerceIn(1, 30)
             runBlocking { RemoteVideoCoordinator.record(context, maxSeconds) }
         },
-        ToolRegistration("self.device.screenshot", "截取平板当前屏幕画面", emptySchema()) { context, _ ->
-            runBlocking { RemoteScreenshotCoordinator.capture(context) }
+        ToolRegistration("self.camera.start_stream", "开始共享学习画面（平板会提示正在共享）", JSONObject().put("type", "object").put("properties", JSONObject()
+            .put("fps", JSONObject().put("type", "integer").put("minimum", 1).put("maximum", 3).put("description", "每秒帧数，范围 1-3"))
+            .put("duration_sec", JSONObject().put("type", "integer").put("description", "最长共享秒数，范围 1-60"))
+            .put("resolution", JSONObject().put("type", "string").put("enum", JSONArray().put("qqvga").put("qvga").put("vga").put("svga")))
+        )) { context, arguments ->
+            runBlocking {
+                RemoteStreamCoordinator.start(
+                    context,
+                    arguments.optInt("fps", 1).coerceIn(1, 3),
+                    arguments.optInt("duration_sec", 30).coerceIn(1, 60),
+                    arguments.optString("resolution", "qqvga"),
+                )
+            }
+        },
+        ToolRegistration("self.camera.stop_stream", "停止共享学习画面", emptySchema()) { _, _ ->
+            RemoteStreamCoordinator.stop()
         },
         ToolRegistration("self.kiosk.pause_15_minutes", "临时解除学习模式限制 15 分钟", emptySchema()) { context, _ ->
             val policy = KioskPolicy(context)
@@ -72,8 +97,16 @@ object McpTools {
         val name = params.getString("name")
         val arguments = params.optJSONObject("arguments") ?: JSONObject()
         val tool = tools.firstOrNull { it.name == name } ?: throw IllegalArgumentException("未注册工具：$name")
-        val text = tool.handler(context, arguments)
-        return JSONObject().put("content", JSONArray().put(JSONObject().put("type", "text").put("text", text.toString())))
+        val result = tool.handler(context, arguments)
+        // The Xiaoli admin preview reads image fields from the tool result.  Do
+        // not hide a JPEG inside MCP's human-readable text content.
+        if (result.has("image_base64")) {
+            return JSONObject()
+                .put("content", JSONArray().put(JSONObject().put("type", "text").put("text", "已拍摄一张照片")))
+                .put("mime_type", result.optString("mime_type", "image/jpeg"))
+                .put("image_base64", result.getString("image_base64"))
+        }
+        return JSONObject().put("content", JSONArray().put(JSONObject().put("type", "text").put("text", result.toString())))
     }
 
     private fun notify(context: Context, title: String, body: String) {
