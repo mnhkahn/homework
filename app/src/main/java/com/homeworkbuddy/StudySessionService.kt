@@ -22,6 +22,8 @@ import androidx.core.content.ContextCompat
  */
 class StudySessionService : Service() {
     private val handler = Handler(Looper.getMainLooper())
+    private var lastBlockedPackage: String? = null
+    private var lastBlockedAt = 0L
     private val scheduleChecker = object : Runnable {
         override fun run() {
             val policy = KioskPolicy(this@StudySessionService)
@@ -45,6 +47,18 @@ class StudySessionService : Service() {
                 // The foreground service drops below foreground importance even
                 // though the vendor leaves the lock-task state stuck at LOCKED.
                 policy.restoreManagedTask()
+            }
+            // Lock Task is the primary barrier. When a vendor escape (or a
+            // moment before the lock reasserts) lets a blocked app reach the
+            // foreground, cover it with the study-time block screen.
+            val blocked = policy.blockedForegroundPackage()
+            if (blocked != null) {
+                val now = System.currentTimeMillis()
+                if (blocked != lastBlockedPackage || now - lastBlockedAt > BLOCK_THROTTLE_MS) {
+                    lastBlockedPackage = blocked
+                    lastBlockedAt = now
+                    policy.openStudyBlock(blocked)
+                }
             }
             handler.postDelayed(this, SCHEDULE_CHECK_INTERVAL_MS)
         }
@@ -115,6 +129,7 @@ class StudySessionService : Service() {
         private const val CHANNEL = "study_session"
         private const val NOTIFICATION_ID = 7110
         private const val SCHEDULE_CHECK_INTERVAL_MS = 1_000L
+        private const val BLOCK_THROTTLE_MS = 3_000L
 
         fun start(context: Context) = ContextCompat.startForegroundService(
             context,

@@ -4,9 +4,12 @@ import android.app.Activity
 import android.app.ActivityManager
 import android.app.ActivityOptions
 import android.app.AlarmManager
+import android.app.AppOpsManager
 import android.app.PendingIntent
 import android.app.admin.DeviceAdminReceiver
 import android.app.admin.DevicePolicyManager
+import android.app.usage.UsageEvents
+import android.app.usage.UsageStatsManager
 import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
@@ -15,6 +18,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.PowerManager
+import android.os.Process
 import android.os.UserManager
 import android.provider.MediaStore
 import java.time.LocalDate
@@ -69,6 +73,52 @@ class KioskPolicy(private val context: Context) {
             }
             .distinctBy { it.packageName }
             .sortedBy { it.label.lowercase() }
+    }
+
+    /** Usage access powers the study-time block screen; the parent grants it once in system settings. */
+    fun hasUsageAccess(): Boolean {
+        val appOps = context.getSystemService(AppOpsManager::class.java)
+        val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            appOps.unsafeCheckOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), context.packageName)
+        } else {
+            @Suppress("DEPRECATION")
+            appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), context.packageName)
+        }
+        return mode == AppOpsManager.MODE_ALLOWED
+    }
+
+    /**
+     * The launchable app currently in the foreground that study time must
+     * block, or null. Lock Task already keeps these apps closed on a healthy
+     * device; this is the fallback for vendor window-menu escapes. System
+     * components (launcher, settings, dialogs) are not launchable targets and
+     * therefore never trigger the block screen.
+     */
+    fun blockedForegroundPackage(): String? {
+        if (!hasUsageAccess() || isExternalForegroundAllowed || RemotePhotoCoordinator.isCaptureInProgress) return null
+        val now = System.currentTimeMillis()
+        val events = context.getSystemService(UsageStatsManager::class.java).queryEvents(now - FOREGROUND_WINDOW_MS, now)
+        val event = UsageEvents.Event()
+        var foreground: String? = null
+        while (events.hasNextEvent()) {
+            events.getNextEvent(event)
+            @Suppress("DEPRECATION") // MOVE_TO_FOREGROUND is the only foreground event on API < 29
+            if (event.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND || event.eventType == UsageEvents.Event.ACTIVITY_RESUMED) {
+                foreground = event.packageName
+            }
+        }
+        val candidate = foreground?.takeIf { it != context.packageName } ?: return null
+        if (candidate in studyPackages || candidate in temporaryPackages) return null
+        return candidate.takeIf { blocked -> launchableApps().any { it.packageName == blocked } }
+    }
+
+    /** Shows the full-screen study-time notice over a blocked app. */
+    fun openStudyBlock(blockedPackage: String) {
+        if (mode() != KioskMode.STUDY) return
+        val launchIntent = Intent(context, StudyBlockActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            .putExtra(StudyBlockActivity.EXTRA_BLOCKED_PACKAGE, blockedPackage)
+        launchFromBackground(launchIntent, REQUEST_STUDY_BLOCK)
     }
 
     fun applyForCurrentTime(activity: Activity? = null, navigate: Boolean = false) {
@@ -159,6 +209,15 @@ class KioskPolicy(private val context: Context) {
         val launchIntent = Intent(context, MainActivity::class.java).addFlags(
             Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP,
         )
+        launchFromBackground(launchIntent, REQUEST_RESTORE_STUDY)
+    }
+
+    /**
+     * HyperOS ignores startActivity() and AppTask.moveToFront() from a
+     * background service. A device-owner foreground service may launch through
+     * an explicitly BAL-enabled PendingIntent.
+     */
+    private fun launchFromBackground(launchIntent: Intent, requestCode: Int) {
         val options = ActivityOptions.makeBasic().apply {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 setPendingIntentBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
@@ -169,18 +228,15 @@ class KioskPolicy(private val context: Context) {
         }
         val pending = PendingIntent.getActivity(
             context,
-            REQUEST_RESTORE_STUDY,
+            requestCode,
             launchIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             options.toBundle(),
         )
-        // HyperOS ignores startActivity() and AppTask.moveToFront() after its
-        // tablet window menu closes a locked task. A device-owner foreground
-        // service may restore it through an explicitly BAL-enabled PendingIntent.
         runCatching {
             pending.send(context, 0, null, null, null, null, options.toBundle())
         }.onFailure {
-            openMode(KioskMode.STUDY)
+            context.startActivity(launchIntent)
         }
     }
 
@@ -307,6 +363,8 @@ class KioskPolicy(private val context: Context) {
         private const val REQUEST_NORMAL = 2130
         private const val REQUEST_RESUME = 1515
         private const val REQUEST_RESTORE_STUDY = 7111
+        private const val REQUEST_STUDY_BLOCK = 7112
+        private const val FOREGROUND_WINDOW_MS = 3_000L
     }
 }
 

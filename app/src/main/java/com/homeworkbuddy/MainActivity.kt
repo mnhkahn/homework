@@ -220,7 +220,6 @@ class MainActivity : ComponentActivity() {
         setShowWhenLocked(true)
         setTurnScreenOn(true)
         KioskPolicy(this).scheduleNextTransitions()
-        if (XiaoliDeviceStore.config(this) != null) XiaoliConnectionService.connect(this)
         setContent { HomeworkBuddyApp() }
     }
 
@@ -228,16 +227,27 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         HomeworkApi.saveAuthorizationResult(this, intent.data)
+        ensureXiaoliConnection()
     }
 
     override fun onStart() {
         super.onStart()
+        // A foreground Activity is the most reliable and Android-compliant
+        // opportunity to revive a foreground service that HyperOS may have
+        // reclaimed while the tablet was idle.
+        ensureXiaoliConnection()
         ContextCompat.registerReceiver(
             this,
             modeChangeReceiver,
             IntentFilter(KioskPolicy.ACTION_MODE_CHANGED),
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
+    }
+
+    private fun ensureXiaoliConnection() {
+        // Clearing the binding removes the config, so an explicit user
+        // disconnect is never undone by an Activity lifecycle callback.
+        if (XiaoliDeviceStore.config(this) != null) XiaoliConnectionService.connect(this)
     }
 
     override fun onStop() {
@@ -333,6 +343,7 @@ private fun HomeworkBuddyApp() {
     var trelloBoards by remember { mutableStateOf<List<TrelloOption>>(emptyList()) }
     var selectedBoardId by remember { mutableStateOf("") }
     var connectionError by remember { mutableStateOf<String?>(null) }
+    var authorizationExpired by remember { mutableStateOf(false) }
     var foreground by remember { mutableStateOf(true) }
     var refreshRequest by remember { mutableIntStateOf(0) }
     var refreshing by remember { mutableStateOf(false) }
@@ -423,6 +434,21 @@ private fun HomeworkBuddyApp() {
     LaunchedEffect(tasks, historyRevision) {
         weekMarks = FlowerCalendar(context).currentWeek()
         weeklyReport = WeeklyReport(context)
+    }
+
+    // An expired Trello token (HTTP 401) fails every request. Guide the parent
+    // straight back into the authorization dialog instead of only showing a
+    // bottom-corner sync error nobody acts on.
+    fun reportSyncError(error: Throwable, fallback: String) {
+        if (error is AuthorizationExpiredException) {
+            api.clearConnection()
+            connected = false
+            authorizationStarted = false
+            authorizationExpired = true
+            trelloBoards = emptyList(); selectedBoardId = ""
+            showConnectionDialog = true
+        }
+        connectionError = error.message ?: fallback
     }
 
     fun advanceAfterCompletion(taskId: String, photoPath: String? = null) {
@@ -535,7 +561,7 @@ private fun HomeworkBuddyApp() {
             taskCache.saveWeek(scheduledCards)
         }.onFailure { error ->
             if (error !is kotlinx.coroutines.CancellationException) {
-                connectionError = error.message ?: "拉取本周作业安排失败"
+                reportSyncError(error, "拉取本周作业安排失败")
             }
         }
     }
@@ -569,7 +595,7 @@ private fun HomeworkBuddyApp() {
             // screen) cancels this effect. It is never a child-facing error.
             if (error is kotlinx.coroutines.CancellationException || error.message == "The coroutine scope left composition.") return@onFailure
             Log.e("HomeworkHistory", "weekly import failed", error)
-            connectionError = error.message ?: "拉取本周完成记录失败"
+            reportSyncError(error, "拉取本周完成记录失败")
         }
     }
 
@@ -615,7 +641,7 @@ private fun HomeworkBuddyApp() {
                 // example while the tablet sleeps). That is normal lifecycle behavior,
                 // not a sync failure, so do not surface it as an error to the child.
                 if (error is kotlinx.coroutines.CancellationException) throw error
-                connectionError = error.message ?: "同步当天作业失败"
+                reportSyncError(error, "同步当天作业失败")
             }
             retryPendingSubmissions()
             refreshing = false
@@ -628,6 +654,7 @@ private fun HomeworkBuddyApp() {
             onSaved = { name -> context.getSharedPreferences("profile", Context.MODE_PRIVATE).edit().putString("child_name", name).apply(); childName = name; showNameDialog = false; if (!connected) showConnectionDialog = true }
         )
         if (showConnectionDialog) ConnectionDialog(
+            expired = authorizationExpired,
             authorizationStarted = authorizationStarted,
             boards = trelloBoards,
             selectedBoardId = selectedBoardId,
@@ -636,6 +663,13 @@ private fun HomeworkBuddyApp() {
                 connectionError = null
                 trelloBoards = emptyList(); selectedBoardId = ""
                 authorizationStarted = true
+                authorizationExpired = false
+                // The browser is outside the Lock Task allowlist. Temporarily
+                // open the device so the parent can reach Trello consent.
+                if (kioskPolicy.isDeviceOwner && kioskPolicy.mode() == KioskMode.STUDY) {
+                    kioskPolicy.pause(15, activity)
+                    connectionError = "已临时开放 15 分钟，请在浏览器中完成授权。"
+                }
                 (activity as? MainActivity)?.allowManagedActivityLaunch()
                 api.openAuthorization()
             },
@@ -653,7 +687,7 @@ private fun HomeworkBuddyApp() {
             onFinishSetup = {
                 scope.launch {
                     runCatching { api.initialize(selectedBoardId) }
-                        .onSuccess { connected = true; showConnectionDialog = false }
+                        .onSuccess { connected = true; showConnectionDialog = false; authorizationExpired = false }
                         .onFailure { connectionError = it.message ?: "保存看板设置失败" }
                 }
             },
@@ -740,10 +774,11 @@ private fun HomeworkBuddyApp() {
                                 refreshRequest++
                                 showCameraConfirm = false; pendingPhotos = emptyList()
                             }
-                            .onFailure {
+                            .onFailure { error ->
                                 pendingStore.add(PendingSubmission(current.id, photos.map(Uri::toString), current.status == TaskStatus.OVERTIME, submissionId))
                                 showCameraConfirm = false; pendingPhotos = emptyList()
-                                connectionError = "照片和完成状态尚未同步到 Trello，任务仍是待完成；联网后会自动重试。"
+                                if (error is AuthorizationExpiredException) reportSyncError(error, "")
+                                else connectionError = "照片和完成状态尚未同步到 Trello，任务仍是待完成；联网后会自动重试。"
                             }
                         submittingTaskId = null
                     }
@@ -822,14 +857,14 @@ private fun CelebrationDialog(taskTitle: String, allTasksComplete: Boolean, onDi
 }
 
 @Composable private fun ConnectionDialog(
-    authorizationStarted: Boolean, boards: List<TrelloOption>, selectedBoardId: String, error: String?,
+    expired: Boolean, authorizationStarted: Boolean, boards: List<TrelloOption>, selectedBoardId: String, error: String?,
     onConnect: () -> Unit, onCheck: () -> Unit, onSelectBoard: (String) -> Unit,
     onFinishSetup: () -> Unit,
 ) {
     val selectingBoard = boards.isNotEmpty()
-    AlertDialog(onDismissRequest = {}, icon = { Text("🔗", fontSize = 38.sp) }, title = { Text("请家长关联 Trello") }, text = {
+    AlertDialog(onDismissRequest = {}, icon = { Text("🔗", fontSize = 38.sp) }, title = { Text(if (expired) "Trello 授权已过期" else "请家长关联 Trello") }, text = {
         Column(Modifier.heightIn(max = 430.dp).verticalScroll(rememberScrollState())) {
-            Text(when { !authorizationStarted -> "家长授权后，这台平板会直接读取 Trello 作业。授权 token 仅加密保存在平板。"; selectingBoard -> "请选择这台平板使用的看板。系统固定使用“待完成”和“已完成”两个列表，缺少时会自动创建。"; else -> "浏览器只负责 Trello 授权；授权后会自动回到这里，再点击继续。" })
+            Text(when { expired && !selectingBoard -> "授权已过期，请家长重新授权 Trello，之后重新选择看板。授权 token 仅加密保存在平板。"; !authorizationStarted -> "家长授权后，这台平板会直接读取 Trello 作业。授权 token 仅加密保存在平板。"; selectingBoard -> "请选择这台平板使用的看板。系统固定使用“待完成”和“已完成”两个列表，缺少时会自动创建。"; else -> "浏览器只负责 Trello 授权；授权后会自动回到这里，再点击继续。" })
             if (selectingBoard) boards.forEach { item -> Row(Modifier.fillMaxWidth().clickable { onSelectBoard(item.id) }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) { RadioButton(selectedBoardId == item.id, { onSelectBoard(item.id) }); Text(item.name) } }
             if (error != null) { Spacer(Modifier.height(10.dp)); Text(error, color = MaterialTheme.colorScheme.error) }
         }

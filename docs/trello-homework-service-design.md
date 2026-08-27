@@ -102,3 +102,37 @@ HOMEWORK_PUBLIC_URL=https://www.cyeam.com
 ```
 
 Before deployment, add `https://www.cyeam.com` under the Power-Up API key's Allowed Origins.
+
+## As-built deviations (Android)
+
+The shipped tablet app talks to Trello directly instead of through the cyeam.com bridge:
+
+- The Trello user token is stored on the tablet, encrypted with Android Keystore-backed
+  AES/GCM (`DeviceTokenCipher`), in SharedPreferences `trello_connection`. The parent
+  authorizes via `https://trello.com/1/authorize` and the app-link callback
+  `https://www.cyeam.com/homework/trello/android/callback` delivers the token fragment
+  back to `MainActivity`.
+- Any Trello API answer with HTTP 401 means the token expired or was revoked
+  (`AuthorizationExpiredException`). The app then clears the stored connection and
+  reopens the authorization dialog at the "授权 Trello" step; after consent the parent
+  re-selects the board. If the device is in study mode, authorizing first pauses the
+  lockdown for 15 minutes so the browser can open.
+- Failed submissions stay in `PendingSubmissionStore` and are retried by the 60-second
+  refresh loop.
+
+## Study-time app blocking (Android)
+
+Study time is defined by `KioskPolicy` (SharedPreferences `kiosk_policy`, default
+17:00–21:30). Two layers keep non-allowlisted apps closed during study time:
+
+1. Device Owner + Lock Task: `setLockTaskPackages()` allowlists this app plus
+   `study_packages` and temporary camera entries; `ChildLauncherActivity` becomes the
+   persistent preferred HOME.
+2. UsageStats fallback (`StudySessionService` 1-second loop →
+   `KioskPolicy.blockedForegroundPackage()`): if a launchable app outside the allowlist
+   reaches the foreground anyway (e.g. the HyperOS tablet window menu closing a locked
+   task), `StudyBlockActivity` is launched over it via a BAL-enabled PendingIntent and
+   offers a "返回作业" button. This layer requires the `PACKAGE_USAGE_STATS` app-op,
+   granted from `Settings.ACTION_USAGE_ACCESS_SETTINGS` or
+   `adb shell appops set com.homeworkbuddy PACKAGE_USAGE_STATS allow`; the parent
+   settings screen links there while the permission is missing.

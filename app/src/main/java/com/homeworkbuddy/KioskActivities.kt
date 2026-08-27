@@ -296,6 +296,16 @@ private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
             Text("学习时间允许的应用", fontSize = 21.sp, fontWeight = FontWeight.Medium)
             Text("作业小伙伴始终允许；未勾选的应用在学习时间无法打开。21:30 后恢复正常系统。", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+        if (!policy.hasUsageAccess()) item {
+            Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3CE))) {
+                Column(Modifier.padding(18.dp)) {
+                    Text("开启“使用情况访问”后，学习时间才能拦截被绕过的未勾选应用。", fontWeight = FontWeight.Medium)
+                    Spacer(Modifier.height(8.dp))
+                    Button(onClick = { activity.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }) { Text("去开启使用情况访问") }
+                    Text("也可以使用电脑执行：adb shell appops set com.homeworkbuddy PACKAGE_USAGE_STATS allow", fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp))
+                }
+            }
+        }
         items(apps, key = { it.packageName }) { app ->
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(checked = app.packageName in approved, onCheckedChange = { checked ->

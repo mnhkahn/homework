@@ -23,6 +23,9 @@ import java.util.UUID
 
 data class TrelloOption(val id: String, val name: String)
 
+/** Thrown when Trello rejects the stored token (HTTP 401); the parent must re-authorize. */
+class AuthorizationExpiredException(message: String) : IllegalStateException(message)
+
 /**
  * Trello is the source of truth for homework.  This client talks to Trello from
  * the tablet; the user's token never passes through cyeam.com.
@@ -243,6 +246,10 @@ class HomeworkApi(private val context: Context) {
         val status = connection.responseCode
         val stream = if (status in 200..299) connection.inputStream else connection.errorStream
         val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+        // An expired or revoked token answers every request with 401. Surface it
+        // as a dedicated type so the UI can restart the authorization flow
+        // instead of showing a generic sync error the parent never acts on.
+        if (status == 401) throw AuthorizationExpiredException("Trello 授权已过期，请家长重新授权")
         if (status !in 200..299) {
             val message = runCatching { JSONObject(text).optString("message") }.getOrDefault("")
             throw IllegalStateException(message.ifBlank { "Trello 请求失败（$status）" })
