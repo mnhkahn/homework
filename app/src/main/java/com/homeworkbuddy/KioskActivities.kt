@@ -302,7 +302,7 @@ private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
                     Text("开启“使用情况访问”后，学习时间才能拦截被绕过的未勾选应用。", fontWeight = FontWeight.Medium)
                     Spacer(Modifier.height(8.dp))
                     Button(onClick = { activity.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }) { Text("去开启使用情况访问") }
-                    Text("也可以使用电脑执行：adb shell appops set com.homeworkbuddy PACKAGE_USAGE_STATS allow", fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp))
+                    Text("也可以使用电脑执行：adb shell appops set com.homeworkbuddy android:get_usage_stats allow", fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp))
                 }
             }
         }

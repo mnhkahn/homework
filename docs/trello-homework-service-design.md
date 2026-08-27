@@ -134,5 +134,5 @@ Study time is defined by `KioskPolicy` (SharedPreferences `kiosk_policy`, defaul
    task), `StudyBlockActivity` is launched over it via a BAL-enabled PendingIntent and
    offers a "返回作业" button. This layer requires the `PACKAGE_USAGE_STATS` app-op,
    granted from `Settings.ACTION_USAGE_ACCESS_SETTINGS` or
-   `adb shell appops set com.homeworkbuddy PACKAGE_USAGE_STATS allow`; the parent
+   `adb shell appops set com.homeworkbuddy android:get_usage_stats allow`; the parent
    settings screen links there while the permission is missing.

@@ -324,6 +324,7 @@ private fun HomeworkBuddyApp() {
     val pendingStore = remember(context) { PendingSubmissionStore(context) }
     val remoteNoticeStore = remember(context) { RemoteNoticeStore(context) }
     val captureStatusStore = remember(context) { CaptureStatusStore(context) }
+    val studyActivityStore = remember(context) { StudyActivityStore(context) }
     val pianoPracticeStore = remember(context) { PianoPracticeStore(context) }
     val taskCache = remember(context) { HomeworkCacheStore(context) }
     val scope = rememberCoroutineScope()
@@ -356,6 +357,7 @@ private fun HomeworkBuddyApp() {
     var kioskMode by remember { mutableStateOf(kioskPolicy.mode()) }
     var remoteNotice by remember { mutableStateOf(remoteNoticeStore.current()) }
     var captureStatus by remember { mutableStateOf(captureStatusStore.current()) }
+    var studyActivity by remember { mutableStateOf(studyActivityStore.today()) }
     // Keep the header useful immediately; a network response only replaces this
     // default when it contains a non-blank slogan.
     var slogan by remember { mutableStateOf(DEFAULT_HOME_SLOGAN) }
@@ -382,6 +384,15 @@ private fun HomeworkBuddyApp() {
         onDispose { captureStatusStore.removeChangeListener(listener) }
     }
 
+    DisposableEffect(studyActivityStore) {
+        val mainHandler = Handler(Looper.getMainLooper())
+        val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+            mainHandler.post { studyActivity = studyActivityStore.today() }
+        }
+        studyActivityStore.addChangeListener(listener)
+        onDispose { studyActivityStore.removeChangeListener(listener) }
+    }
+
     LaunchedEffect(captureStatus?.atMillis, captureStatus?.active) {
         val status = captureStatus ?: return@LaunchedEffect
         delay((status.atMillis + 15 * 60 * 1_000L - System.currentTimeMillis()).coerceAtLeast(1_000L))
@@ -396,6 +407,7 @@ private fun HomeworkBuddyApp() {
             val nextMidnight = now.toLocalDate().plusDays(1).atStartOfDay(now.zone)
             delay(java.time.Duration.between(now, nextMidnight).toMillis().coerceAtLeast(1_000L))
             remoteNotice = remoteNoticeStore.current()
+            studyActivity = studyActivityStore.today()
         }
     }
 
@@ -420,7 +432,6 @@ private fun HomeworkBuddyApp() {
     }
 
     var weekMarks by remember { mutableStateOf(FlowerCalendar(context).currentWeek()) }
-    var weeklyReport by remember { mutableStateOf(WeeklyReport(context)) }
     var historyRevision by remember { mutableIntStateOf(0) }
     var historicalWeekLoaded by remember { mutableStateOf(false) }
 
@@ -433,7 +444,6 @@ private fun HomeworkBuddyApp() {
     // tasks changes, so recomputing here always sees the latest records.
     LaunchedEffect(tasks, historyRevision) {
         weekMarks = FlowerCalendar(context).currentWeek()
-        weeklyReport = WeeklyReport(context)
     }
 
     // An expired Trello token (HTTP 401) fails every request. Guide the parent
@@ -715,8 +725,8 @@ private fun HomeworkBuddyApp() {
             refreshing = refreshing,
             weekMarks = weekMarks,
             weekTasks = weekTasks,
-            weeklyReport = weeklyReport,
             captureStatus = captureStatus,
+            studyActivity = studyActivity,
             studyLocked = kioskPolicy.isDeviceOwner && kioskMode == KioskMode.STUDY,
             hasStudyApps = kioskPolicy.studyPackages.isNotEmpty(),
             remoteNotice = remoteNotice,
@@ -881,7 +891,7 @@ private fun CelebrationDialog(taskTitle: String, allTasksComplete: Boolean, onDi
 }
 
 @Composable
-private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, remainingSeconds: Int, running: Boolean, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, weeklyReport: WeeklyReport, captureStatus: CaptureStatus?, studyLocked: Boolean, hasStudyApps: Boolean, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photoCount: Int, onAddPhoto: () -> Unit, onRetake: () -> Unit) {
+private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, remainingSeconds: Int, running: Boolean, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, captureStatus: CaptureStatus?, studyActivity: StudyActivity, studyLocked: Boolean, hasStudyApps: Boolean, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photoCount: Int, onAddPhoto: () -> Unit, onRetake: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val complete = tasks.count { it.status == TaskStatus.COMPLETED }
     val todayEstimatedSeconds = tasks.sumOf { it.estimatedMinutes.coerceAtLeast(0) * 60 }
@@ -904,7 +914,7 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
             .padding(24.dp),
     ) {
         Column(Modifier.fillMaxSize()) {
-            Header(slogan, refreshing, weeklyReport, captureStatus, studyLocked, hasStudyApps, onRefresh, onParent, onStudyApps)
+            Header(slogan, refreshing, captureStatus, studyActivity, studyLocked, hasStudyApps, onRefresh, onParent, onStudyApps)
             if (remoteNotice != null) {
                 Spacer(Modifier.height(14.dp))
                 RemoteNoticeCard(remoteNotice)
@@ -1158,7 +1168,7 @@ private fun ScheduledTaskList(modifier: Modifier, tasks: List<HomeworkTask>) {
 }
 
 @OptIn(ExperimentalFoundationApi::class)
-@Composable private fun Header(slogan: String, refreshing: Boolean, weeklyReport: WeeklyReport, captureStatus: CaptureStatus?, studyLocked: Boolean, hasStudyApps: Boolean, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit) {
+@Composable private fun Header(slogan: String, refreshing: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, studyLocked: Boolean, hasStudyApps: Boolean, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f).combinedClickable(onClick = {}, onLongClick = onParent)) { Text("今天的作业", fontSize = 30.sp, fontWeight = FontWeight.Medium); Text(slogan, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis) }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1173,13 +1183,36 @@ private fun ScheduledTaskList(modifier: Modifier, tasks: List<HomeworkTask>) {
             FilledTonalButton(onClick = onRefresh, enabled = !refreshing, shape = RoundedCornerShape(18.dp), contentPadding = PaddingValues(horizontal = 13.dp, vertical = 9.dp)) {
                 Icon(Icons.Outlined.Refresh, null, modifier = Modifier.size(19.dp)); Spacer(Modifier.width(6.dp)); Text(if (refreshing) "刷新中…" else "刷新")
             }
-            CaptureStatusBadge(weeklyReport, captureStatus)
+            StudyActivityBadges(studyActivity)
+            CaptureStatusBadge(captureStatus)
         }
     }
 }
 
-@Composable private fun CaptureStatusBadge(report: WeeklyReport, status: CaptureStatus?) {
-    val label = status?.label() ?: "本周 ${report.completedCount} / ${report.taskCount} 项"
+@Composable private fun StudyActivityBadges(activity: StudyActivity) {
+    if (activity.switches > 0) MetricBadge("切换 APP ${activity.switches} 次")
+    if (activity.blockedSeconds > 0) MetricBadge("非允许 APP ${formatStudyDuration(activity.blockedSeconds)}")
+}
+
+@Composable private fun MetricBadge(label: String) {
+    Surface(shape = RoundedCornerShape(18.dp), color = Sun, contentColor = Color(0xFF765B11)) {
+        Text(label, modifier = Modifier.padding(horizontal = 13.dp, vertical = 9.dp), fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+    }
+}
+
+private fun formatStudyDuration(seconds: Long): String {
+    val minutes = seconds / 60
+    val remainder = seconds % 60
+    return when {
+        minutes > 0 && remainder > 0 -> "${minutes} 分 ${remainder} 秒"
+        minutes > 0 -> "${minutes} 分"
+        else -> "${remainder} 秒"
+    }
+}
+
+@Composable private fun CaptureStatusBadge(status: CaptureStatus?) {
+    if (status == null) return
+    val label = status.label()
     val color = when {
         status?.active == true -> Color(0xFFFFE9EE)
         status != null -> Sun

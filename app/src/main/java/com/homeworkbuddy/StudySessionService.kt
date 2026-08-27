@@ -24,6 +24,7 @@ class StudySessionService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private var lastBlockedPackage: String? = null
     private var lastBlockedAt = 0L
+    private var lastForegroundPackage: String? = null
     private val scheduleChecker = object : Runnable {
         override fun run() {
             val policy = KioskPolicy(this@StudySessionService)
@@ -48,16 +49,25 @@ class StudySessionService : Service() {
                 // though the vendor leaves the lock-task state stuck at LOCKED.
                 policy.restoreManagedTask()
             }
-            // Lock Task is the primary barrier. When a vendor escape (or a
-            // moment before the lock reasserts) lets a blocked app reach the
-            // foreground, cover it with the study-time block screen.
-            val blocked = policy.blockedForegroundPackage()
-            if (blocked != null) {
-                val now = System.currentTimeMillis()
-                if (blocked != lastBlockedPackage || now - lastBlockedAt > BLOCK_THROTTLE_MS) {
-                    lastBlockedPackage = blocked
-                    lastBlockedAt = now
-                    policy.openStudyBlock(blocked)
+            // Track study-time app usage for the home-screen counters, and
+            // cover any blocked app that Lock Task failed to contain (vendor
+            // window-menu escapes). One UsageStats query feeds both.
+            val foreground = policy.foregroundApp()
+            if (foreground?.launchable == true) {
+                val store = StudyActivityStore(this@StudySessionService)
+                if (foreground.packageName != lastForegroundPackage) {
+                    if (lastForegroundPackage != null) store.noteSwitch()
+                    lastForegroundPackage = foreground.packageName
+                }
+                if (!foreground.allowed) {
+                    store.addBlockedSeconds(SCHEDULE_CHECK_INTERVAL_MS / 1_000)
+                    val now = System.currentTimeMillis()
+                    val suppressed = policy.isExternalForegroundAllowed || RemotePhotoCoordinator.isCaptureInProgress
+                    if (!suppressed && (foreground.packageName != lastBlockedPackage || now - lastBlockedAt > BLOCK_THROTTLE_MS)) {
+                        lastBlockedPackage = foreground.packageName
+                        lastBlockedAt = now
+                        policy.openStudyBlock(foreground.packageName)
+                    }
                 }
             }
             handler.postDelayed(this, SCHEDULE_CHECK_INTERVAL_MS)

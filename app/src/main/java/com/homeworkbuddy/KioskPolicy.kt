@@ -32,6 +32,9 @@ enum class KioskMode { STUDY, NORMAL, PAUSED }
 
 data class LaunchableApp(val packageName: String, val label: String)
 
+/** A foreground app as seen by the study-time tracker. */
+data class ForegroundApp(val packageName: String, val launchable: Boolean, val allowed: Boolean)
+
 class KioskPolicy(private val context: Context) {
     private val prefs = context.getSharedPreferences("kiosk_policy", Context.MODE_PRIVATE)
     private val dpm = context.getSystemService(DevicePolicyManager::class.java)
@@ -88,14 +91,12 @@ class KioskPolicy(private val context: Context) {
     }
 
     /**
-     * The launchable app currently in the foreground that study time must
-     * block, or null. Lock Task already keeps these apps closed on a healthy
-     * device; this is the fallback for vendor window-menu escapes. System
-     * components (launcher, settings, dialogs) are not launchable targets and
-     * therefore never trigger the block screen.
+     * The current foreground app. Our own package is included so returning to
+     * 作业小伙伴 counts as an app switch; system components (launcher, dialogs)
+     * stay excluded because they are not launchable.
      */
-    fun blockedForegroundPackage(): String? {
-        if (!hasUsageAccess() || isExternalForegroundAllowed || RemotePhotoCoordinator.isCaptureInProgress) return null
+    fun foregroundApp(): ForegroundApp? {
+        if (!hasUsageAccess()) return null
         val now = System.currentTimeMillis()
         val events = context.getSystemService(UsageStatsManager::class.java).queryEvents(now - FOREGROUND_WINDOW_MS, now)
         val event = UsageEvents.Event()
@@ -107,9 +108,31 @@ class KioskPolicy(private val context: Context) {
                 foreground = event.packageName
             }
         }
-        val candidate = foreground?.takeIf { it != context.packageName } ?: return null
-        if (candidate in studyPackages || candidate in temporaryPackages) return null
-        return candidate.takeIf { blocked -> launchableApps().any { it.packageName == blocked } }
+        val launchablePackages = launchablePackageNames()
+        // A foreground event is emitted when an activity is opened, not every
+        // second while it remains on screen. Fall back to UsageStats so a
+        // child lingering in the same non-allowed app is still measured.
+        val candidate = foreground?.takeIf {
+            it == context.packageName || it in launchablePackages
+        } ?: context.getSystemService(UsageStatsManager::class.java)
+            .queryUsageStats(UsageStatsManager.INTERVAL_DAILY, now - USAGE_FALLBACK_WINDOW_MS, now)
+            .asSequence()
+            .filter { it.packageName == context.packageName || it.packageName in launchablePackages }
+            .maxByOrNull { it.lastTimeUsed }
+            ?.packageName
+            ?: return null
+        val launchable = candidate == context.packageName || candidate in launchablePackages
+        val allowed = candidate == context.packageName || candidate in studyPackages || candidate in temporaryPackages
+        return ForegroundApp(candidate, launchable = launchable, allowed = allowed)
+    }
+
+    /** The settings screen changes the allowlist rarely; cache the expensive package query. */
+    private fun launchablePackageNames(): Set<String> {
+        val now = System.currentTimeMillis()
+        launchableCache?.takeIf { now - it.first < LAUNCHABLE_CACHE_MS }?.let { return it.second }
+        val names = launchableApps().mapTo(HashSet()) { it.packageName }
+        launchableCache = now to names
+        return names
     }
 
     /** Shows the full-screen study-time notice over a blocked app. */
@@ -365,6 +388,9 @@ class KioskPolicy(private val context: Context) {
         private const val REQUEST_RESTORE_STUDY = 7111
         private const val REQUEST_STUDY_BLOCK = 7112
         private const val FOREGROUND_WINDOW_MS = 3_000L
+        private const val USAGE_FALLBACK_WINDOW_MS = 24 * 60 * 60 * 1_000L
+        private const val LAUNCHABLE_CACHE_MS = 60_000L
+        private var launchableCache: Pair<Long, Set<String>>? = null
     }
 }
 
