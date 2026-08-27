@@ -49,6 +49,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material.icons.outlined.Apps
+import androidx.compose.material.icons.outlined.CloudDone
+import androidx.compose.material.icons.outlined.CloudOff
+import androidx.compose.material.icons.outlined.CloudSync
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Star
@@ -358,6 +361,7 @@ private fun HomeworkBuddyApp() {
     var remoteNotice by remember { mutableStateOf(remoteNoticeStore.current()) }
     var captureStatus by remember { mutableStateOf(captureStatusStore.current()) }
     var studyActivity by remember { mutableStateOf(studyActivityStore.today()) }
+    var xiaoliConnection by remember { mutableStateOf(XiaoliConnectionState.snapshot()) }
     // Keep the header useful immediately; a network response only replaces this
     // default when it contains a non-blank slogan.
     var slogan by remember { mutableStateOf(DEFAULT_HOME_SLOGAN) }
@@ -391,6 +395,15 @@ private fun HomeworkBuddyApp() {
         }
         studyActivityStore.addChangeListener(listener)
         onDispose { studyActivityStore.removeChangeListener(listener) }
+    }
+
+    DisposableEffect(Unit) {
+        val mainHandler = Handler(Looper.getMainLooper())
+        val listener: (XiaoliConnectionSnapshot) -> Unit = { snapshot ->
+            mainHandler.post { xiaoliConnection = snapshot }
+        }
+        XiaoliConnectionState.addChangeListener(listener)
+        onDispose { XiaoliConnectionState.removeChangeListener(listener) }
     }
 
     LaunchedEffect(captureStatus?.atMillis, captureStatus?.active) {
@@ -727,6 +740,7 @@ private fun HomeworkBuddyApp() {
             weekTasks = weekTasks,
             captureStatus = captureStatus,
             studyActivity = studyActivity,
+            xiaoliConnection = xiaoliConnection,
             studyLocked = kioskPolicy.isDeviceOwner && kioskMode == KioskMode.STUDY,
             hasStudyApps = kioskPolicy.studyPackages.isNotEmpty(),
             remoteNotice = remoteNotice,
@@ -891,7 +905,7 @@ private fun CelebrationDialog(taskTitle: String, allTasksComplete: Boolean, onDi
 }
 
 @Composable
-private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, remainingSeconds: Int, running: Boolean, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, captureStatus: CaptureStatus?, studyActivity: StudyActivity, studyLocked: Boolean, hasStudyApps: Boolean, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photoCount: Int, onAddPhoto: () -> Unit, onRetake: () -> Unit) {
+private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, remainingSeconds: Int, running: Boolean, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, captureStatus: CaptureStatus?, studyActivity: StudyActivity, xiaoliConnection: XiaoliConnectionSnapshot, studyLocked: Boolean, hasStudyApps: Boolean, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photoCount: Int, onAddPhoto: () -> Unit, onRetake: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val complete = tasks.count { it.status == TaskStatus.COMPLETED }
     val todayEstimatedSeconds = tasks.sumOf { it.estimatedMinutes.coerceAtLeast(0) * 60 }
@@ -914,7 +928,7 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
             .padding(24.dp),
     ) {
         Column(Modifier.fillMaxSize()) {
-            Header(slogan, refreshing, captureStatus, studyActivity, studyLocked, hasStudyApps, onRefresh, onParent, onStudyApps)
+            Header(slogan, refreshing, captureStatus, studyActivity, xiaoliConnection, studyLocked, hasStudyApps, onRefresh, onParent, onStudyApps)
             if (remoteNotice != null) {
                 Spacer(Modifier.height(14.dp))
                 RemoteNoticeCard(remoteNotice)
@@ -1168,9 +1182,16 @@ private fun ScheduledTaskList(modifier: Modifier, tasks: List<HomeworkTask>) {
 }
 
 @OptIn(ExperimentalFoundationApi::class)
-@Composable private fun Header(slogan: String, refreshing: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, studyLocked: Boolean, hasStudyApps: Boolean, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit) {
+@Composable private fun Header(slogan: String, refreshing: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, xiaoliConnection: XiaoliConnectionSnapshot, studyLocked: Boolean, hasStudyApps: Boolean, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f).combinedClickable(onClick = {}, onLongClick = onParent)) { Text("今天的作业", fontSize = 30.sp, fontWeight = FontWeight.Medium); Text(slogan, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis) }
+        Column(Modifier.weight(1f).combinedClickable(onClick = {}, onLongClick = onParent)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("今天的作业", fontSize = 30.sp, fontWeight = FontWeight.Medium)
+                Spacer(Modifier.width(8.dp))
+                XiaoliConnectionIcon(xiaoliConnection)
+            }
+            Text(slogan, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (studyLocked) Surface(shape = RoundedCornerShape(18.dp), color = Leaf, contentColor = Color(0xFF24733A)) {
                 Row(Modifier.padding(horizontal = 13.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1187,6 +1208,15 @@ private fun ScheduledTaskList(modifier: Modifier, tasks: List<HomeworkTask>) {
             CaptureStatusBadge(captureStatus)
         }
     }
+}
+
+@Composable private fun XiaoliConnectionIcon(connection: XiaoliConnectionSnapshot) {
+    val (icon, tint, description) = when (connection.status) {
+        "已连接" -> Triple(Icons.Outlined.CloudDone, Color(0xFF24733A), "已连接小李服务")
+        "正在连接" -> Triple(Icons.Outlined.CloudSync, Color(0xFF765B11), "正在连接小李服务")
+        else -> Triple(Icons.Outlined.CloudOff, MaterialTheme.colorScheme.error, "未连接小李服务")
+    }
+    Icon(icon, description, modifier = Modifier.size(24.dp), tint = tint)
 }
 
 @Composable private fun StudyActivityBadges(activity: StudyActivity) {
@@ -1213,16 +1243,8 @@ private fun formatStudyDuration(seconds: Long): String {
 @Composable private fun CaptureStatusBadge(status: CaptureStatus?) {
     if (status == null) return
     val label = status.label()
-    val color = when {
-        status?.active == true -> Color(0xFFFFE9EE)
-        status != null -> Sun
-        else -> Leaf
-    }
-    val content = when {
-        status?.active == true -> Color(0xFFB3264A)
-        status != null -> Color(0xFF765B11)
-        else -> Color(0xFF24733A)
-    }
+    val color = if (status.active) Color(0xFFFFE9EE) else Sun
+    val content = if (status.active) Color(0xFFB3264A) else Color(0xFF765B11)
     Surface(shape = RoundedCornerShape(18.dp), color = color, contentColor = content) {
         Text(label, modifier = Modifier.padding(horizontal = 13.dp, vertical = 9.dp), fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1)
     }

@@ -19,6 +19,7 @@ import java.net.URL
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.CopyOnWriteArraySet
 
 private const val XIAOLI_CHANNEL = "xiaoli_connection"
 private const val XIAOLI_NOTIFICATION_ID = 7101
@@ -59,6 +60,8 @@ object XiaoliDeviceStore {
 }
 
 /** Runtime state is deliberately separate from the Trello "connected" state. */
+data class XiaoliConnectionSnapshot(val status: String, val lastError: String?)
+
 object XiaoliConnectionState {
     @Volatile var status: String = "未配置"
         private set
@@ -67,9 +70,26 @@ object XiaoliConnectionState {
     @Volatile var lastError: String? = null
         private set
 
-    fun connecting() { status = "正在连接"; lastError = null }
-    fun connected() { status = "已连接"; lastConnectedAt = System.currentTimeMillis(); lastError = null }
-    fun disconnected(error: String?) { status = "未连接"; lastError = error }
+    private val listeners = CopyOnWriteArraySet<(XiaoliConnectionSnapshot) -> Unit>()
+
+    fun snapshot() = XiaoliConnectionSnapshot(status, lastError)
+
+    fun addChangeListener(listener: (XiaoliConnectionSnapshot) -> Unit) {
+        listeners += listener
+    }
+
+    fun removeChangeListener(listener: (XiaoliConnectionSnapshot) -> Unit) {
+        listeners -= listener
+    }
+
+    fun connecting() { status = "正在连接"; lastError = null; notifyChanged() }
+    fun connected() { status = "已连接"; lastConnectedAt = System.currentTimeMillis(); lastError = null; notifyChanged() }
+    fun disconnected(error: String?) { status = "未连接"; lastError = error; notifyChanged() }
+
+    private fun notifyChanged() {
+        val snapshot = snapshot()
+        listeners.forEach { it(snapshot) }
+    }
 }
 
 /** Thread-safe bridge for device-originated MCP notifications such as video frames. */
