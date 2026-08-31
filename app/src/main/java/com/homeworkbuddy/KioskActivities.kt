@@ -255,6 +255,9 @@ private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
                     Text("管控与紧急出口", fontSize = 21.sp, fontWeight = FontWeight.Medium)
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 10.dp)) {
                         Button(enabled = policy.isDeviceOwner, onClick = { policy.pause(15, activity); message = "已临时开放 15 分钟" }) { Icon(Icons.Outlined.LockOpen, null); Spacer(Modifier.size(7.dp)); Text("临时开放 15 分钟") }
+                        Button(enabled = policy.isDeviceOwner, onClick = { policy.guardFor(15, activity); message = "已立即守护 15 分钟" }) { Icon(Icons.Outlined.Lock, null); Spacer(Modifier.size(7.dp)); Text("守护 15 分钟") }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 10.dp)) {
                         Button(enabled = policy.isDeviceOwner, onClick = { policy.enterStudy(activity); message = "已立即进入守护模式" }) { Icon(Icons.Outlined.Lock, null); Spacer(Modifier.size(7.dp)); Text("立即进入守护") }
                         OutlinedButton(enabled = policy.isDeviceOwner, onClick = { policy.resume(activity) }) { Icon(Icons.Outlined.RestartAlt, null); Spacer(Modifier.size(7.dp)); Text("立即应用当前策略") }
                         OutlinedButton(enabled = policy.isDeviceOwner, onClick = policy::openStudyLauncher) { Icon(Icons.Outlined.Apps, null); Spacer(Modifier.size(7.dp)); Text("查看学习应用") }
@@ -285,7 +288,7 @@ private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
                 Button(onClick = {
                     val start = (startHour.toIntOrNull() ?: -1) * 60 + (startMinute.toIntOrNull() ?: -1)
                     val end = (endHour.toIntOrNull() ?: -1) * 60 + (endMinute.toIntOrNull() ?: -1)
-                    runCatching { policy.saveSchedule(start, end); message = "时间已保存" }.onFailure { message = "时间格式不正确" }
+                    runCatching { policy.saveSchedule(start, end, activity); message = "时间已保存并立即生效" }.onFailure { message = "时间格式不正确" }
                 }) { Icon(Icons.Outlined.Save, null); Spacer(Modifier.size(7.dp)); Text("保存") }
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !alarm.canScheduleExactAlarms()) {

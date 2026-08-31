@@ -44,20 +44,28 @@ class KioskPolicy(private val context: Context) {
     val startMinutes: Int get() = prefs.getInt("start_minutes", 17 * 60)
     val endMinutes: Int get() = prefs.getInt("end_minutes", 21 * 60 + 30)
     val pausedUntil: Long get() = prefs.getLong("paused_until", 0L)
+    private val guardedUntil: Long get() = prefs.getLong("guarded_until", 0L)
     val studyPackages: Set<String> get() = prefs.getStringSet("study_packages", prefs.getStringSet("approved_packages", emptySet()))?.toSet().orEmpty()
     private val temporaryPackages: Set<String> get() = prefs.getStringSet("temporary_packages", emptySet())?.toSet().orEmpty()
     val isExternalForegroundAllowed: Boolean get() = prefs.getBoolean("external_foreground_allowed", false)
 
     fun mode(now: LocalDateTime = LocalDateTime.now()): KioskMode {
         if (System.currentTimeMillis() < pausedUntil) return KioskMode.PAUSED
+        if (System.currentTimeMillis() < guardedUntil) return KioskMode.STUDY
         val minute = now.hour * 60 + now.minute
         return if (minute in startMinutes until endMinutes) KioskMode.STUDY else KioskMode.NORMAL
     }
 
-    fun saveSchedule(start: Int, end: Int) {
+    /** Save the parent-selected period and enforce the resulting state now. */
+    fun saveSchedule(start: Int, end: Int, activity: Activity? = null) {
         require(start in 0 until 24 * 60 && end in 0 until 24 * 60 && start < end)
         prefs.edit().putInt("start_minutes", start).putInt("end_minutes", end).apply()
         scheduleNextTransitions()
+        // Merely scheduling the next alarm leaves a tablet unrestricted until
+        // that alarm fires (often tomorrow when the start time has passed).
+        // Re-evaluate immediately so a 10:00–21:30 choice protects the rest
+        // of today as soon as the parent presses Save.
+        applyForCurrentTime(activity, navigate = false)
     }
 
     fun setStudyAllowed(packageName: String, allowed: Boolean) {
@@ -171,7 +179,7 @@ class KioskPolicy(private val context: Context) {
 
     fun exitStudyMode(activity: Activity? = null) {
         if (!isDeviceOwner) return
-        prefs.edit().remove("paused_until").apply()
+        prefs.edit().remove("paused_until").remove("guarded_until").apply()
         StudySessionService.stop(context)
         releaseLockTask(activity)
         openSystemHome()
@@ -264,9 +272,24 @@ class KioskPolicy(private val context: Context) {
     }
 
     fun pause(minutes: Int, activity: Activity? = null) {
-        prefs.edit().putLong("paused_until", System.currentTimeMillis() + minutes * 60_000L).apply()
+        prefs.edit()
+            .putLong("paused_until", System.currentTimeMillis() + minutes * 60_000L)
+            .remove("guarded_until")
+            .apply()
         StudySessionService.stop(context)
         releaseLockTask(activity)
+        scheduleNextTransitions()
+    }
+
+    /** Immediately enforce the selected-app kiosk for a short, explicit period. */
+    fun guardFor(minutes: Int, activity: Activity? = null) {
+        require(minutes > 0)
+        if (!isDeviceOwner) return
+        prefs.edit()
+            .remove("paused_until")
+            .putLong("guarded_until", System.currentTimeMillis() + minutes * 60_000L)
+            .apply()
+        applyForCurrentTime(activity, navigate = false)
         scheduleNextTransitions()
     }
 
@@ -280,6 +303,7 @@ class KioskPolicy(private val context: Context) {
         scheduleAlarm(alarm, REQUEST_STUDY, nextOccurrence(startMinutes), ACTION_STUDY)
         scheduleAlarm(alarm, REQUEST_NORMAL, nextOccurrence(endMinutes), ACTION_NORMAL)
         if (pausedUntil > System.currentTimeMillis()) scheduleAlarm(alarm, REQUEST_RESUME, pausedUntil, ACTION_REEVALUATE)
+        if (guardedUntil > System.currentTimeMillis()) scheduleAlarm(alarm, REQUEST_RESUME, guardedUntil, ACTION_REEVALUATE)
     }
 
     private fun scheduleAlarm(alarm: AlarmManager, requestCode: Int, at: Long, action: String) {
@@ -368,8 +392,17 @@ class KioskPolicy(private val context: Context) {
     }
 
     private fun openMode(mode: KioskMode) {
-        if (mode == KioskMode.STUDY) context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP))
-        else openSystemHome()
+        if (mode == KioskMode.STUDY) {
+            val intent = Intent(context, MainActivity::class.java).addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP,
+            )
+            // Schedule receivers run in the background. Use the same
+            // BAL-enabled route as the recovery service so Android/HyperOS
+            // does not silently refuse to show the managed home at 10:00.
+            launchFromBackground(intent, REQUEST_OPEN_STUDY)
+        } else {
+            openSystemHome()
+        }
     }
 
     private fun openSystemHome() {
@@ -387,6 +420,7 @@ class KioskPolicy(private val context: Context) {
         private const val REQUEST_RESUME = 1515
         private const val REQUEST_RESTORE_STUDY = 7111
         private const val REQUEST_STUDY_BLOCK = 7112
+        private const val REQUEST_OPEN_STUDY = 7113
         private const val FOREGROUND_WINDOW_MS = 3_000L
         private const val USAGE_FALLBACK_WINDOW_MS = 24 * 60 * 60 * 1_000L
         private const val LAUNCHABLE_CACHE_MS = 60_000L
@@ -403,7 +437,7 @@ class KioskScheduleReceiver : BroadcastReceiver() {
             val policy = KioskPolicy(context)
             when (intent.action) {
                 KioskPolicy.ACTION_STUDY -> policy.enterStudy()
-                KioskPolicy.ACTION_NORMAL -> policy.exitStudyMode()
+                KioskPolicy.ACTION_NORMAL -> policy.applyForCurrentTime(navigate = true)
                 else -> policy.applyForCurrentTime(navigate = true)
             }
             policy.scheduleNextTransitions()
