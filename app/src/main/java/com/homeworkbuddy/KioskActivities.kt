@@ -349,6 +349,9 @@ private fun ChildLauncher(activity: ChildLauncherActivity) {
     val policy = remember { KioskPolicy(activity) }
     val available = remember { policy.launchableApps().associateBy { it.packageName } }
     val apps = policy.studyPackages.mapNotNull(available::get).sortedBy { it.label }
+    var volume by remember { mutableStateOf(policy.currentStudyVolume) }
+    val minimumVolume = policy.minimumStudyVolume
+    val maximumVolume = policy.maximumStudyVolume
     Surface(Modifier.fillMaxSize(), color = Color(0xFFFFFBFF)) {
         Column(Modifier.fillMaxSize().padding(28.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -363,6 +366,22 @@ private fun ChildLauncher(activity: ChildLauncherActivity) {
                 }))
             }
             Text("学习时间只可以打开这里的应用 · 长按标题进入家长设置", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(
+                modifier = Modifier.padding(top = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text("学习音量 ${policy.studyVolumePercent(volume)}%", fontWeight = FontWeight.Medium)
+                OutlinedButton(
+                    enabled = volume > minimumVolume,
+                    onClick = { volume = policy.setStudyVolume(volume - 1) },
+                ) { Text("降低") }
+                Button(
+                    enabled = volume < maximumVolume,
+                    onClick = { volume = policy.setStudyVolume(volume + 1) },
+                ) { Text("提高") }
+                Text("允许范围 30%–70%", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             Spacer(Modifier.height(22.dp))
             LazyVerticalGrid(columns = GridCells.Adaptive(180.dp), modifier = Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 item(key = "homework") {

@@ -36,6 +36,9 @@ class StudySessionService : Service() {
                 stopSelf()
                 return
             }
+            // Enforce the lower and upper bounds even on vendor builds which
+            // do not fully honor DISALLOW_ADJUST_VOLUME in Lock Task mode.
+            policy.enforceStudyVolume()
             val importance = getSystemService(ActivityManager::class.java)
                 .runningAppProcesses
                 ?.firstOrNull { it.pid == Process.myPid() }

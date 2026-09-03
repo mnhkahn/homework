@@ -16,6 +16,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.media.AudioManager
 import android.os.Build
 import android.os.PowerManager
 import android.os.Process
@@ -48,6 +49,43 @@ class KioskPolicy(private val context: Context) {
     val studyPackages: Set<String> get() = prefs.getStringSet("study_packages", prefs.getStringSet("approved_packages", emptySet()))?.toSet().orEmpty()
     private val temporaryPackages: Set<String> get() = prefs.getStringSet("temporary_packages", emptySet())?.toSet().orEmpty()
     val isExternalForegroundAllowed: Boolean get() = prefs.getBoolean("external_foreground_allowed", false)
+
+    /** The child may choose a comfortable level, but never silence learning prompts. */
+    val minimumStudyVolume: Int
+        get() = (maxMediaVolume * STUDY_VOLUME_MIN_FRACTION).toInt().coerceAtLeast(1)
+    val maximumStudyVolume: Int
+        get() = (maxMediaVolume * STUDY_VOLUME_MAX_FRACTION).toInt().coerceAtLeast(minimumStudyVolume)
+    val currentStudyVolume: Int
+        get() = prefs.getInt("study_media_volume", mediaVolume).coerceIn(minimumStudyVolume, maximumStudyVolume)
+
+    fun studyVolumePercent(volume: Int = currentStudyVolume): Int =
+        volume.coerceIn(0, maxMediaVolume) * 100 / maxMediaVolume.coerceAtLeast(1)
+
+    private val audioManager: AudioManager
+        get() = context.getSystemService(AudioManager::class.java)
+    private val maxMediaVolume: Int
+        get() = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+    private val mediaVolume: Int
+        get() = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+
+    /** Sets the saved level and applies it immediately when study mode is active. */
+    fun setStudyVolume(volume: Int): Int {
+        val safeVolume = volume.coerceIn(minimumStudyVolume, maximumStudyVolume)
+        prefs.edit().putInt("study_media_volume", safeVolume).apply()
+        if (mode() == KioskMode.STUDY) {
+            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, safeVolume, 0)
+        }
+        return safeVolume
+    }
+
+    /** Restores the configured safe volume if a vendor UI or app has changed it. */
+    fun enforceStudyVolume() {
+        if (mode() != KioskMode.STUDY) return
+        val safeVolume = currentStudyVolume
+        if (mediaVolume != safeVolume) {
+            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, safeVolume, 0)
+        }
+    }
 
     fun mode(now: LocalDateTime = LocalDateTime.now()): KioskMode {
         if (System.currentTimeMillis() < pausedUntil) return KioskMode.PAUSED
@@ -333,9 +371,15 @@ class KioskPolicy(private val context: Context) {
         runCatching { dpm.setLockTaskPackages(admin, packages.toTypedArray()) }
         if (mode == KioskMode.STUDY) {
             runCatching { dpm.addUserRestriction(admin, UserManager.DISALLOW_CREATE_WINDOWS) }
+            // Hardware volume keys would otherwise let a child take media all
+            // the way to zero while using another allowlisted study app.  The
+            // in-app control remains available, bounded by our safe range.
+            runCatching { dpm.addUserRestriction(admin, UserManager.DISALLOW_ADJUST_VOLUME) }
             runCatching { dpm.setStatusBarDisabled(admin, true) }
+            enforceStudyVolume()
         } else {
             runCatching { dpm.clearUserRestriction(admin, UserManager.DISALLOW_CREATE_WINDOWS) }
+            runCatching { dpm.clearUserRestriction(admin, UserManager.DISALLOW_ADJUST_VOLUME) }
             runCatching { dpm.setStatusBarDisabled(admin, false) }
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -367,6 +411,7 @@ class KioskPolicy(private val context: Context) {
         if (!isDeviceOwner) return
         runCatching { dpm.setLockTaskPackages(admin, emptyArray()) }
         runCatching { dpm.clearUserRestriction(admin, UserManager.DISALLOW_CREATE_WINDOWS) }
+        runCatching { dpm.clearUserRestriction(admin, UserManager.DISALLOW_ADJUST_VOLUME) }
         runCatching { dpm.setStatusBarDisabled(admin, false) }
         prefs.edit().remove("temporary_packages").remove("external_foreground_allowed").apply()
         // Lock-task features are policy state on MIUI too. Explicitly restore the
@@ -424,6 +469,8 @@ class KioskPolicy(private val context: Context) {
         private const val FOREGROUND_WINDOW_MS = 3_000L
         private const val USAGE_FALLBACK_WINDOW_MS = 24 * 60 * 60 * 1_000L
         private const val LAUNCHABLE_CACHE_MS = 60_000L
+        private const val STUDY_VOLUME_MIN_FRACTION = 0.30
+        private const val STUDY_VOLUME_MAX_FRACTION = 0.70
         private var launchableCache: Pair<Long, Set<String>>? = null
     }
 }
