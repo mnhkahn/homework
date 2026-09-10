@@ -157,7 +157,10 @@ private object CelebrationSound {
             startSample += samplesForNote
         }
         val track = AudioTrack.Builder()
-            .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
+            // Study mode locks and maintains STREAM_MUSIC.  Use the matching media
+            // usage instead of the system-sonification stream, which some devices
+            // independently silence even when the configured study volume is audible.
+            .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
             .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(sampleRate).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
             .setBufferSizeInBytes(samples.size)
             .setTransferMode(AudioTrack.MODE_STATIC)

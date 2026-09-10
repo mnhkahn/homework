@@ -380,7 +380,7 @@ private fun ChildLauncher(activity: ChildLauncherActivity) {
                     enabled = volume < maximumVolume,
                     onClick = { volume = policy.setStudyVolume(volume + 1) },
                 ) { Text("提高") }
-                Text("允许范围 30%–70%", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("最低 ${policy.studyVolumePercent(minimumVolume)}%", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Spacer(Modifier.height(22.dp))
             LazyVerticalGrid(columns = GridCells.Adaptive(180.dp), modifier = Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
