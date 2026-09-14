@@ -5,6 +5,8 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -37,7 +39,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 class GameActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val url = intent.getStringExtra(EXTRA_URL)?.takeIf(::isAllowedGameUrl) ?: GAME_24_URL
+        val url = intent.getStringExtra(EXTRA_URL)?.takeIf(::isAllowedCyeamToolUrl) ?: GAME_24_URL
         setContent { MaterialTheme { GameScreen(url, ::finish) } }
     }
 
@@ -49,16 +51,36 @@ class GameActivity : ComponentActivity() {
         }
     }
 
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        val policy = KioskPolicy(this)
+        if (policy.isDeviceOwner && policy.mode() == KioskMode.STUDY) {
+            Handler(Looper.getMainLooper()).postDelayed({
+                policy.applyForCurrentTime(this, navigate = true)
+            }, 200)
+        }
+    }
+
     companion object {
         const val GAME_24_URL = "https://www.cyeam.com/game/24"
         const val SUDOKU_URL = "https://www.cyeam.com/game/sudoku"
+        const val ARITHMETIC_URL = "https://www.cyeam.com/tool/arithmetic"
+        const val ENGLISH_READING_URL = "https://www.cyeam.com/ai/translate"
         private const val EXTRA_URL = "game_url"
 
         fun intent(context: Context, url: String) =
             Intent(context, GameActivity::class.java).putExtra(EXTRA_URL, url)
 
-        private fun isAllowedGameUrl(url: String): Boolean =
-            url == GAME_24_URL || url == SUDOKU_URL
+        private fun isAllowedCyeamToolUrl(url: String): Boolean =
+            url == GAME_24_URL || url == SUDOKU_URL || url == ARITHMETIC_URL || url == ENGLISH_READING_URL
+
+        fun titleFor(url: String): String = when (url) {
+            GAME_24_URL -> "24 点"
+            SUDOKU_URL -> "数独"
+            ARITHMETIC_URL -> "口算"
+            ENGLISH_READING_URL -> "英语跟读"
+            else -> "学习应用"
+        }
     }
 }
 
@@ -81,7 +103,7 @@ private fun GameScreen(initialUrl: String, finish: () -> Unit) {
                     Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回学习应用")
                 }
                 Text(
-                    if (initialUrl == GameActivity.GAME_24_URL) "24 点" else "数独",
+                    GameActivity.titleFor(initialUrl),
                     modifier = Modifier.padding(start = 14.dp),
                     fontSize = 24.sp,
                 )

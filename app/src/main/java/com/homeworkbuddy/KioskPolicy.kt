@@ -231,9 +231,15 @@ class KioskPolicy(private val context: Context) {
     }
 
     fun openStudyLauncher() {
-        if (!isDeviceOwner || mode() != KioskMode.STUDY) return
-        configureAsHome()
-        applyAllowlist(KioskMode.STUDY)
+        // This is also the child's shortcut shelf outside study time.  Only
+        // apply Lock Task restrictions while the study policy is active.
+        // The HOME activity is disabled after a managed session ends, so an
+        // explicit shortcut launch must enable it again first.
+        setStudyLauncherEnabled(true)
+        if (isDeviceOwner && mode() == KioskMode.STUDY) {
+            configureAsHome()
+            applyAllowlist(KioskMode.STUDY)
+        }
         context.startActivity(Intent(context, ChildLauncherActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP))
     }
 
@@ -334,7 +340,10 @@ class KioskPolicy(private val context: Context) {
             .remove("paused_until")
             .putLong("guarded_until", System.currentTimeMillis() + minutes * 60_000L)
             .apply()
-        applyForCurrentTime(activity, navigate = false)
+        // Do not leave the parent settings activity visible as the locked
+        // surface. HyperOS can close that window from its three-dot menu
+        // before the managed home has taken over.
+        applyForCurrentTime(activity, navigate = true)
         scheduleNextTransitions()
     }
 

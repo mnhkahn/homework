@@ -5,6 +5,8 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -66,9 +68,11 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.MenuBook
 import androidx.compose.material.icons.outlined.Alarm
 import androidx.compose.material.icons.outlined.Apps
+import androidx.compose.material.icons.outlined.Calculate
 import androidx.compose.material.icons.outlined.Face
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.LockOpen
+import androidx.compose.material.icons.outlined.RecordVoiceOver
 import androidx.compose.material.icons.outlined.RestartAlt
 import androidx.compose.material.icons.outlined.Save
 import androidx.core.content.ContextCompat
@@ -339,7 +343,19 @@ class ChildLauncherActivity : ComponentActivity() {
         super.onResume()
         val policy = KioskPolicy(this)
         policy.markManagedActivityForeground()
-        if (policy.mode() == KioskMode.STUDY) policy.applyForCurrentTime(this) else policy.exitStudyMode(this)
+        if (policy.mode() == KioskMode.STUDY) policy.applyForCurrentTime(this)
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        val policy = KioskPolicy(this)
+        if (policy.isDeviceOwner && policy.mode() == KioskMode.STUDY) {
+            // Some tablet window managers expose a Home-like close command
+            // even during Lock Task. Reclaim the managed task immediately.
+            Handler(Looper.getMainLooper()).postDelayed({
+                policy.applyForCurrentTime(this, navigate = true)
+            }, 200)
+        }
     }
 }
 
@@ -365,7 +381,7 @@ private fun ChildLauncher(activity: ChildLauncherActivity) {
                     activity.startActivity(Intent(activity, KioskSettingsActivity::class.java))
                 }))
             }
-            Text("学习时间只可以打开这里的应用 · 长按标题进入家长设置", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("学习模式下只可打开这里的应用 · 长按标题进入家长设置", color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(
                 modifier = Modifier.padding(top = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -409,6 +425,20 @@ private fun ChildLauncher(activity: ChildLauncherActivity) {
                         )
                     }) {
                         activity.startActivity(GameActivity.intent(activity, GameActivity.SUDOKU_URL))
+                    }
+                }
+                item(key = "cyeam-arithmetic") {
+                    LauncherCard("口算", icon = {
+                        Icon(Icons.Outlined.Calculate, null, modifier = Modifier.size(52.dp), tint = MaterialTheme.colorScheme.primary)
+                    }) {
+                        activity.startActivity(GameActivity.intent(activity, GameActivity.ARITHMETIC_URL))
+                    }
+                }
+                item(key = "cyeam-english-reading") {
+                    LauncherCard("英语跟读", icon = {
+                        Icon(Icons.Outlined.RecordVoiceOver, null, modifier = Modifier.size(52.dp), tint = MaterialTheme.colorScheme.primary)
+                    }) {
+                        activity.startActivity(GameActivity.intent(activity, GameActivity.ENGLISH_READING_URL))
                     }
                 }
                 items(apps, key = { it.packageName }) { app ->

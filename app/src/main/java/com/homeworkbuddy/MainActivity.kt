@@ -745,7 +745,6 @@ private fun HomeworkBuddyApp() {
             studyActivity = studyActivity,
             xiaoliConnection = xiaoliConnection,
             studyLocked = kioskPolicy.isDeviceOwner && kioskMode == KioskMode.STUDY,
-            hasStudyApps = kioskPolicy.studyPackages.isNotEmpty(),
             remoteNotice = remoteNotice,
             syncError = if (connected) connectionError else null,
             onRefresh = { refreshRequest++ },
@@ -908,7 +907,7 @@ private fun CelebrationDialog(taskTitle: String, allTasksComplete: Boolean, onDi
 }
 
 @Composable
-private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, remainingSeconds: Int, running: Boolean, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, captureStatus: CaptureStatus?, studyActivity: StudyActivity, xiaoliConnection: XiaoliConnectionSnapshot, studyLocked: Boolean, hasStudyApps: Boolean, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photoCount: Int, onAddPhoto: () -> Unit, onRetake: () -> Unit) {
+private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, remainingSeconds: Int, running: Boolean, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, captureStatus: CaptureStatus?, studyActivity: StudyActivity, xiaoliConnection: XiaoliConnectionSnapshot, studyLocked: Boolean, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photoCount: Int, onAddPhoto: () -> Unit, onRetake: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val complete = tasks.count { it.status == TaskStatus.COMPLETED }
     val todayEstimatedSeconds = tasks.sumOf { it.estimatedMinutes.coerceAtLeast(0) * 60 }
@@ -931,7 +930,7 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
             .padding(24.dp),
     ) {
         Column(Modifier.fillMaxSize()) {
-            Header(slogan, refreshing, captureStatus, studyActivity, xiaoliConnection, studyLocked, hasStudyApps, onRefresh, onParent, onStudyApps)
+            Header(slogan, refreshing, captureStatus, studyActivity, xiaoliConnection, studyLocked, onRefresh, onParent, onStudyApps)
             if (remoteNotice != null) {
                 Spacer(Modifier.height(14.dp))
                 RemoteNoticeCard(remoteNotice)
@@ -1185,7 +1184,7 @@ private fun ScheduledTaskList(modifier: Modifier, tasks: List<HomeworkTask>) {
 }
 
 @OptIn(ExperimentalFoundationApi::class)
-@Composable private fun Header(slogan: String, refreshing: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, xiaoliConnection: XiaoliConnectionSnapshot, studyLocked: Boolean, hasStudyApps: Boolean, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit) {
+@Composable private fun Header(slogan: String, refreshing: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, xiaoliConnection: XiaoliConnectionSnapshot, studyLocked: Boolean, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f).combinedClickable(onClick = {}, onLongClick = onParent)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1201,7 +1200,7 @@ private fun ScheduledTaskList(modifier: Modifier, tasks: List<HomeworkTask>) {
                     Icon(Icons.Outlined.Lock, null, modifier = Modifier.size(19.dp)); Spacer(Modifier.width(6.dp)); Text("学习锁定中", fontWeight = FontWeight.Medium)
                 }
             }
-            if (studyLocked && hasStudyApps) FilledTonalButton(onClick = onStudyApps, shape = RoundedCornerShape(18.dp), contentPadding = PaddingValues(horizontal = 13.dp, vertical = 9.dp)) {
+            FilledTonalButton(onClick = onStudyApps, shape = RoundedCornerShape(18.dp), contentPadding = PaddingValues(horizontal = 13.dp, vertical = 9.dp)) {
                 Icon(Icons.Outlined.Apps, null, modifier = Modifier.size(19.dp)); Spacer(Modifier.width(6.dp)); Text("学习应用")
             }
             FilledTonalButton(onClick = onRefresh, enabled = !refreshing, shape = RoundedCornerShape(18.dp), contentPadding = PaddingValues(horizontal = 13.dp, vertical = 9.dp)) {
