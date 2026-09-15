@@ -24,7 +24,10 @@ data class HomeworkTask(
     val completedAtEpochSeconds: Long? = null,
 ) {
     /** System recorder URI retained locally; Trello attachments are never used for playback. */
-    val localAudioUri: String? get() = photoPath?.takeIf { it.startsWith("content://media/") }
+    val localAudioUri: String? get() = photoPath?.takeIf {
+        it.startsWith("content://media/") ||
+            it.startsWith("content://com.android.soundrecorder.fileprovider/")
+    }
 }
 
 /** Legacy preview abstraction; production homework sync is implemented by [HomeworkApi]. */
