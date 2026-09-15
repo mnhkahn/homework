@@ -11,8 +11,13 @@ data class CompletionRecord(
     val title: String,
     val deadlineEpochSeconds: Long,
     val completedAtEpochSeconds: Long?,
-    val photoUrls: List<String>,
-)
+    val durationSeconds: Int?,
+    val localAudioUri: String?,
+    val attachments: List<HomeworkAttachment>,
+) {
+    val photoUrls: List<String> get() = attachments.filterNot(HomeworkAttachment::isAudio).map(HomeworkAttachment::url)
+    val audioAttachments: List<HomeworkAttachment> get() = attachments.filter(HomeworkAttachment::isAudio)
+}
 
 /**
  * Per-day homework history: which tasks existed each day and when each was
@@ -30,6 +35,12 @@ class CompletionHistoryStore(context: Context) {
             val entry = day.optJSONObject(task.id) ?: JSONObject()
             entry.put("title", task.title).put("deadline", deadline)
             entry.put("photo_urls", org.json.JSONArray(task.photoUrls))
+            entry.put("attachments", org.json.JSONArray().also { attachments ->
+                task.attachments.forEach { attachment ->
+                    attachments.put(JSONObject().put("url", attachment.url).put("name", attachment.name).put("mime_type", attachment.mimeType))
+                }
+            })
+            task.localAudioUri?.let { entry.put("local_audio_uri", it) }
             // This also imports completed cards that existed before this feature
             // was installed, so their earned flower is not lost.
             if (task.status == TaskStatus.COMPLETED && !entry.has("completed_at")) {
@@ -41,11 +52,13 @@ class CompletionHistoryStore(context: Context) {
     }
 
     /** Records the first completion of a task; later calls for the same task are ignored. */
-    fun recordCompletion(taskId: String, completedAtEpochSeconds: Long, deadlineEpochSeconds: Long, date: LocalDate = LocalDate.now()) {
+    fun recordCompletion(taskId: String, completedAtEpochSeconds: Long, deadlineEpochSeconds: Long, durationSeconds: Int? = null, localAudioUri: String? = null, date: LocalDate = LocalDate.now()) {
         val day = dayJson(date)
         val entry = day.optJSONObject(taskId) ?: JSONObject().put("title", "").put("deadline", deadlineEpochSeconds)
         if (entry.has("completed_at")) return
         entry.put("completed_at", completedAtEpochSeconds)
+        durationSeconds?.takeIf { it > 0 }?.let { entry.put("duration_seconds", it) }
+        localAudioUri?.let { entry.put("local_audio_uri", it) }
         day.put(taskId, entry)
         save(date, day)
     }
@@ -60,8 +73,14 @@ class CompletionHistoryStore(context: Context) {
                 entry.optString("title"),
                 entry.optLong("deadline"),
                 if (entry.has("completed_at")) entry.getLong("completed_at") else null,
-                entry.optJSONArray("photo_urls")?.let { photos ->
-                    (0 until photos.length()).mapNotNull { index -> photos.optString(index).ifBlank { null } }
+                entry.optInt("duration_seconds").takeIf { entry.has("duration_seconds") },
+                entry.optString("local_audio_uri").ifBlank { null },
+                entry.optJSONArray("attachments")?.let { attachments ->
+                    (0 until attachments.length()).mapNotNull { index -> attachments.optJSONObject(index)?.let { attachment ->
+                        attachment.optString("url").ifBlank { null }?.let { url -> HomeworkAttachment(url, attachment.optString("name"), attachment.optString("mime_type")) }
+                    } }
+                } ?: entry.optJSONArray("photo_urls")?.let { photos ->
+                    (0 until photos.length()).mapNotNull { index -> photos.optString(index).ifBlank { null }?.let { url -> HomeworkAttachment(url, "", "image/*") } }
                 } ?: emptyList(),
             )
         }.toList()

@@ -270,6 +270,48 @@ class KioskPolicy(private val context: Context) {
         if (mode() == KioskMode.STUDY) applyAllowlist(KioskMode.STUDY)
     }
 
+    /** Allows the system recorder only while the child is recording homework. */
+    fun allowSystemRecorderForCapture(): Boolean {
+        if (!isDeviceOwner || mode() != KioskMode.STUDY) return false
+        val packageName = context.packageManager.resolveActivity(
+            Intent(MediaStore.Audio.Media.RECORD_SOUND_ACTION),
+            PackageManager.MATCH_DEFAULT_ONLY,
+        )?.activityInfo?.packageName ?: return false
+        prefs.edit().putBoolean("external_foreground_allowed", true).apply()
+        allowTemporarily(packageName)
+        return true
+    }
+
+    fun revokeSystemRecorderAccess() {
+        if (!isDeviceOwner) return
+        val packageName = context.packageManager.resolveActivity(
+            Intent(MediaStore.Audio.Media.RECORD_SOUND_ACTION),
+            PackageManager.MATCH_DEFAULT_ONLY,
+        )?.activityInfo?.packageName ?: return
+        val updated = temporaryPackages - packageName
+        prefs.edit().putStringSet("temporary_packages", updated).putBoolean("external_foreground_allowed", false).apply()
+        if (mode() == KioskMode.STUDY) applyAllowlist(KioskMode.STUDY)
+    }
+
+    /** Temporarily permits the system audio player for a submitted voice attachment. */
+    fun allowSystemAudioPlayback(): Boolean {
+        if (!isDeviceOwner || mode() != KioskMode.STUDY) return false
+        val intent = Intent(Intent.ACTION_VIEW).setDataAndType(android.net.Uri.parse("content://media/external/audio/media/0"), "audio/*")
+        val packageName = context.packageManager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY)?.activityInfo?.packageName ?: return false
+        prefs.edit().putBoolean("external_foreground_allowed", true).apply()
+        allowTemporarily(packageName)
+        return true
+    }
+
+    fun revokeSystemAudioPlaybackAccess() {
+        if (!isDeviceOwner) return
+        val intent = Intent(Intent.ACTION_VIEW).setDataAndType(android.net.Uri.parse("content://media/external/audio/media/0"), "audio/*")
+        val packageName = context.packageManager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY)?.activityInfo?.packageName ?: return
+        val updated = temporaryPackages - packageName
+        prefs.edit().putStringSet("temporary_packages", updated).putBoolean("external_foreground_allowed", false).apply()
+        if (mode() == KioskMode.STUDY) applyAllowlist(KioskMode.STUDY)
+    }
+
     /** Reassert the selected app's allowlist entry immediately before launch. */
     fun prepareStudyAppLaunch(packageName: String) {
         if (isDeviceOwner && mode() == KioskMode.STUDY && packageName in studyPackages) {
@@ -300,12 +342,17 @@ class KioskPolicy(private val context: Context) {
      * an explicitly BAL-enabled PendingIntent.
      */
     private fun launchFromBackground(launchIntent: Intent, requestCode: Int) {
-        val options = ActivityOptions.makeBasic().apply {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                setPendingIntentBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
-            }
+        // Background-activity-start options have two distinct owners.  Passing
+        // the sender option to PendingIntent.getActivity() is rejected on
+        // Android 16; it belongs exclusively to PendingIntent.send().
+        val creationOptions = ActivityOptions.makeBasic().apply {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
                 setPendingIntentCreatorBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
+            }
+        }
+        val sendOptions = ActivityOptions.makeBasic().apply {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                setPendingIntentBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
             }
         }
         val pending = PendingIntent.getActivity(
@@ -313,10 +360,10 @@ class KioskPolicy(private val context: Context) {
             requestCode,
             launchIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-            options.toBundle(),
+            creationOptions.toBundle(),
         )
         runCatching {
-            pending.send(context, 0, null, null, null, null, options.toBundle())
+            pending.send(context, 0, null, null, null, null, sendOptions.toBundle())
         }.onFailure {
             context.startActivity(launchIntent)
         }

@@ -14,6 +14,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.BatteryManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -95,6 +96,12 @@ private val TodoSurface = Color(0xFFEAF4FF)
 private val OverdueSurface = Color(0xFFFFE8E6)
 private val OverdueInk = Color(0xFFB3261E)
 private const val MAX_HOMEWORK_PHOTOS = 4
+
+private fun elapsedLabel(seconds: Int): String {
+    val minutes = seconds.coerceAtLeast(0) / 60
+    val remainder = seconds.coerceAtLeast(0) % 60
+    return "%02d:%02d".format(minutes, remainder)
+}
 
 private data class MelodyNote(val frequency: Double, val durationMs: Int)
 
@@ -183,16 +190,33 @@ class MainActivity : ComponentActivity() {
     private val clearKeepScreenOn = Runnable {
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
+    private val dimStudyScreen = Runnable {
+        if (isCharging() && KioskPolicy(this).mode() == KioskMode.STUDY) {
+            window.attributes = window.attributes.apply { screenBrightness = IDLE_STUDY_BRIGHTNESS }
+        }
+    }
+
+    private fun isCharging(): Boolean {
+        val battery = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)) ?: return false
+        return when (battery.getIntExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN)) {
+            BatteryManager.BATTERY_STATUS_CHARGING, BatteryManager.BATTERY_STATUS_FULL -> true
+            else -> false
+        }
+    }
+
+    private fun restoreStudyBrightness() {
+        window.attributes = window.attributes.apply { screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE }
+    }
 
     fun allowManagedActivityLaunch() {
         allowNextUserLeaveHint = true
     }
 
     /**
-     * Study mode is deliberately easier to read than the system default: every
-     * touch keeps the screen awake for another three minutes.  Once that grace
-     * period expires we clear the flag, letting MIUI dim and turn the screen off
-     * using its ordinary user-selected timeout instead of changing it globally.
+     * When charging during study time, keep the display awake so the tablet does
+     * not lock in the middle of homework.  A quiet screen dims after three
+     * minutes and returns to the user's normal brightness on the next touch.
+     * On battery we retain the ordinary three-minute wake grace period.
      */
     private fun extendStudyScreenTimeout() {
         if (KioskPolicy(this).mode() != KioskMode.STUDY) {
@@ -201,12 +225,20 @@ class MainActivity : ComponentActivity() {
         }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         screenTimeoutHandler.removeCallbacks(clearKeepScreenOn)
-        screenTimeoutHandler.postDelayed(clearKeepScreenOn, STUDY_SCREEN_AWAKE_MS)
+        screenTimeoutHandler.removeCallbacks(dimStudyScreen)
+        restoreStudyBrightness()
+        if (isCharging()) {
+            screenTimeoutHandler.postDelayed(dimStudyScreen, STUDY_SCREEN_IDLE_DIM_MS)
+        } else {
+            screenTimeoutHandler.postDelayed(clearKeepScreenOn, STUDY_SCREEN_AWAKE_MS)
+        }
     }
 
     private fun clearStudyScreenTimeout() {
         screenTimeoutHandler.removeCallbacks(clearKeepScreenOn)
+        screenTimeoutHandler.removeCallbacks(dimStudyScreen)
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        restoreStudyBrightness()
     }
 
     private val modeChangeReceiver = object : BroadcastReceiver() {
@@ -218,6 +250,9 @@ class MainActivity : ComponentActivity() {
                 extendStudyScreenTimeout()
             }
         }
+    }
+    private val batteryChangeReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) = extendStudyScreenTimeout()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -248,6 +283,12 @@ class MainActivity : ComponentActivity() {
             IntentFilter(KioskPolicy.ACTION_MODE_CHANGED),
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
+        ContextCompat.registerReceiver(
+            this,
+            batteryChangeReceiver,
+            IntentFilter(Intent.ACTION_BATTERY_CHANGED),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
     }
 
     private fun ensureXiaoliConnection() {
@@ -258,12 +299,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         unregisterReceiver(modeChangeReceiver)
+        unregisterReceiver(batteryChangeReceiver)
         super.onStop()
     }
 
     override fun onResume() {
         super.onResume()
         KioskPolicy(this).apply {
+            revokeSystemAudioPlaybackAccess()
             markManagedActivityForeground()
             applyForCurrentTime(this@MainActivity)
         }
@@ -298,6 +341,8 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val STUDY_SCREEN_AWAKE_MS = 3 * 60 * 1_000L
+        private const val STUDY_SCREEN_IDLE_DIM_MS = 3 * 60 * 1_000L
+        private const val IDLE_STUDY_BRIGHTNESS = 0.08f
     }
 }
 
@@ -343,6 +388,8 @@ private fun HomeworkBuddyApp() {
     var selectedId by remember { mutableStateOf("") }
     var remainingSeconds by remember { mutableIntStateOf(0) }
     var running by remember { mutableStateOf(false) }
+    var taskStartedAtMillis by remember { mutableLongStateOf(0L) }
+    var taskElapsedSeconds by remember { mutableIntStateOf(0) }
     var showNameDialog by remember { mutableStateOf(childName.isBlank()) }
     var connected by remember { mutableStateOf(api.isConnected) }
     var showConnectionDialog by remember { mutableStateOf(childName.isNotBlank() && !api.isConnected) }
@@ -354,9 +401,14 @@ private fun HomeworkBuddyApp() {
     var foreground by remember { mutableStateOf(true) }
     var refreshRequest by remember { mutableIntStateOf(0) }
     var refreshing by remember { mutableStateOf(false) }
+    var showSubmissionChoice by remember { mutableStateOf(false) }
     var showCameraConfirm by remember { mutableStateOf(false) }
     var capturePhoto by remember { mutableStateOf<Uri?>(null) }
     var pendingPhotos by remember { mutableStateOf<List<Uri>>(emptyList()) }
+    var pendingAudio by remember { mutableStateOf<Uri?>(null) }
+    var recordedAudioTaskId by remember { mutableStateOf<String?>(null) }
+    var recordedAudioElapsedSeconds by remember { mutableIntStateOf(0) }
+    var recordedAudioUri by remember { mutableStateOf<String?>(null) }
     var submittingTaskId by remember { mutableStateOf<String?>(null) }
     var retryingPendingSubmissions by remember { mutableStateOf(false) }
     var celebration by remember { mutableStateOf<CelebrationEvent?>(null) }
@@ -443,8 +495,16 @@ private fun HomeworkBuddyApp() {
         }
     }
 
-    LaunchedEffect(tasks, selectedId, remainingSeconds, running) {
-        HomeworkStatusStore(context).save(tasks, selectedId, remainingSeconds, running)
+    LaunchedEffect(tasks, selectedId, remainingSeconds, running, taskElapsedSeconds) {
+        HomeworkStatusStore(context).save(tasks, selectedId, remainingSeconds, running, taskElapsedSeconds)
+    }
+
+    LaunchedEffect(running, taskStartedAtMillis, selectedId) {
+        if (!running || taskStartedAtMillis == 0L) return@LaunchedEffect
+        while (running) {
+            taskElapsedSeconds = ((System.currentTimeMillis() - taskStartedAtMillis) / 1_000L).toInt().coerceAtLeast(0)
+            delay(1_000)
+        }
     }
 
     var weekMarks by remember { mutableStateOf(FlowerCalendar(context).currentWeek()) }
@@ -491,6 +551,42 @@ private fun HomeworkBuddyApp() {
         selectedId = next?.id.orEmpty()
         remainingSeconds = next?.estimatedMinutes?.times(60) ?: 0
         running = false
+        taskStartedAtMillis = 0L
+        taskElapsedSeconds = 0
+    }
+
+    LaunchedEffect(recordedAudioTaskId) {
+        val taskId = recordedAudioTaskId ?: return@LaunchedEffect
+        val current = tasks.firstOrNull { it.id == taskId }
+        if (current == null) {
+            recordedAudioTaskId = null
+            return@LaunchedEffect
+        }
+        submittingTaskId = taskId
+        val submissionId = java.util.UUID.randomUUID().toString()
+        runCatching { api.completeWithoutAttachment(taskId) }
+            .onSuccess {
+                CompletionHistoryStore(context).recordCompletion(
+                    taskId,
+                    System.currentTimeMillis() / 1_000,
+                    LocalDate.now().atTime(current.deadline).atZone(ZoneId.systemDefault()).toEpochSecond(),
+                    recordedAudioElapsedSeconds,
+                    recordedAudioUri,
+                )
+                advanceAfterCompletion(taskId, recordedAudioUri)
+                celebration = CelebrationEvent(current.title, tasks.all { it.status == TaskStatus.COMPLETED })
+                refreshRequest++
+            }
+            .onFailure { error ->
+                // The audio remains only in the system recorder.  Queueing this
+                // record retries the Trello completion state, never the file.
+                pendingStore.add(PendingSubmission(taskId, emptyList(), current.status == TaskStatus.OVERTIME, submissionId, completionOnly = true))
+                if (error is AuthorizationExpiredException) reportSyncError(error, "")
+                else connectionError = "录音已保存在系统录音机；作业完成状态将在联网后同步。"
+            }
+        submittingTaskId = null
+        recordedAudioTaskId = null
+        recordedAudioUri = null
     }
 
     fun retryPendingSubmissions() {
@@ -502,7 +598,13 @@ private fun HomeworkBuddyApp() {
             var uploadedAnything = false
             try {
                 pendingStore.items().forEach { pending ->
-                    if (pending.photoPaths.isEmpty()) {
+                    if (pending.completionOnly) {
+                        Log.i("HomeworkSubmit", "retry_local_recording task=${pending.taskId}")
+                        runCatching { api.completeWithoutAttachment(pending.taskId) }.onSuccess {
+                            pendingStore.remove(pending.taskId)
+                            uploadedAnything = true
+                        }
+                    } else if (pending.photoPaths.isEmpty()) {
                         Log.w("HomeworkSubmit", "drop_no_photo_retry task=${pending.taskId} submission=${pending.submissionId}")
                         pendingStore.remove(pending.taskId)
                     } else {
@@ -537,6 +639,16 @@ private fun HomeworkBuddyApp() {
         }
         capturePhoto = null
         KioskPolicy(context).revokeCameraCaptureAccess()
+    }
+    val recordAudio = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            // Keep only the system recorder's local URI. It is never uploaded
+            // or downloaded from Trello when the child views the recording.
+            recordedAudioTaskId = selectedId.takeIf { it.isNotBlank() }
+            recordedAudioElapsedSeconds = taskElapsedSeconds
+            recordedAudioUri = result.data?.data?.toString()
+        }
+        KioskPolicy(context).revokeSystemRecorderAccess()
     }
     val requestCameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         val photo = capturePhoto
@@ -656,9 +768,9 @@ private fun HomeworkBuddyApp() {
                 val selected = merged.firstOrNull { it.id == selectedId && it.status != TaskStatus.COMPLETED }
                     ?: merged.firstOrNull { it.status != TaskStatus.COMPLETED }
                 if (selected == null) {
-                    selectedId = ""; remainingSeconds = 0; running = false
-                } else if (selected.id != selectedId) {
-                    selectedId = selected.id; remainingSeconds = selected.estimatedMinutes * 60; running = false
+                            selectedId = ""; remainingSeconds = 0; running = false; taskStartedAtMillis = 0L; taskElapsedSeconds = 0
+                        } else if (selected.id != selectedId) {
+                            selectedId = selected.id; remainingSeconds = selected.estimatedMinutes * 60; running = false; taskStartedAtMillis = 0L; taskElapsedSeconds = 0
                 }
                 connectionError = null
                 HomeworkReminderScheduler.rescheduleFromTasks(context, merged)
@@ -736,6 +848,7 @@ private fun HomeworkBuddyApp() {
             selected = selected,
             remainingSeconds = remainingSeconds,
             running = running,
+            taskElapsedSeconds = taskElapsedSeconds,
             pianoPractice = pianoPractice,
             submitting = selected?.id == submittingTaskId,
             refreshing = refreshing,
@@ -756,17 +869,27 @@ private fun HomeworkBuddyApp() {
                 (activity as? MainActivity)?.allowManagedActivityLaunch()
                 kioskPolicy.openStudyLauncher()
             },
-            onSelect = { task -> selectedId = task.id; remainingSeconds = task.estimatedMinutes * 60; running = false },
-            onStart = { running = true; tasks = tasks.map { if (it.id == selectedId) it.copy(status = TaskStatus.RUNNING) else it } },
+            onSelect = { task -> selectedId = task.id; remainingSeconds = task.estimatedMinutes * 60; running = false; taskStartedAtMillis = 0L; taskElapsedSeconds = 0 },
+            onStart = {
+                taskStartedAtMillis = System.currentTimeMillis()
+                taskElapsedSeconds = 0
+                running = true
+                tasks = tasks.map { if (it.id == selectedId) it.copy(status = TaskStatus.RUNNING) else it }
+            },
             onPianoRecord = {
                 selected?.takeIf { it.title.contains("钢琴") }?.let { pianoPractice = pianoPracticeStore.record(it.id) }
             },
             onFinish = {
+                showSubmissionChoice = true
+            },
+            onChoosePhoto = {
                 selected?.let { current ->
+                    showSubmissionChoice = false
                     Log.i("HomeworkSubmit", "photo_mode task=${current.id}")
                     pendingStore.remove(current.id)
                     running = false
                     pendingPhotos = emptyList()
+                    pendingAudio = null
                     val file = File(context.cacheDir, "photos/${current.id}-${System.currentTimeMillis()}.jpg").also { it.parentFile?.mkdirs() }
                     capturePhoto = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
                     if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
@@ -783,6 +906,24 @@ private fun HomeworkBuddyApp() {
                     }
                 }
             },
+            onChooseAudio = {
+                selected?.let { current ->
+                    showSubmissionChoice = false
+                    Log.i("HomeworkSubmit", "audio_mode task=${current.id}")
+                    pendingStore.remove(current.id)
+                    running = false
+                    pendingPhotos = emptyList()
+                    pendingAudio = null
+                    KioskPolicy(context).allowSystemRecorderForCapture()
+                    (activity as? MainActivity)?.allowManagedActivityLaunch()
+                    runCatching {
+                        recordAudio.launch(Intent(MediaStore.Audio.Media.RECORD_SOUND_ACTION))
+                    }.onFailure {
+                        KioskPolicy(context).revokeSystemRecorderAccess()
+                        connectionError = "无法打开系统录音机，请检查系统录音应用是否可用。"
+                    }
+                }
+            },
             onSubmit = {
                 val photos = pendingPhotos
                 val current = selected
@@ -794,17 +935,17 @@ private fun HomeworkBuddyApp() {
                     scope.launch {
                         runCatching { api.submit(current.id, photos, current.status == TaskStatus.OVERTIME, submissionId) }
                             .onSuccess {
-                                CompletionHistoryStore(context).recordCompletion(current.id, System.currentTimeMillis() / 1_000, LocalDate.now().atTime(current.deadline).atZone(ZoneId.systemDefault()).toEpochSecond())
+                                CompletionHistoryStore(context).recordCompletion(current.id, System.currentTimeMillis() / 1_000, LocalDate.now().atTime(current.deadline).atZone(ZoneId.systemDefault()).toEpochSecond(), taskElapsedSeconds)
                                 advanceAfterCompletion(current.id, photos.first().toString())
                                 celebration = CelebrationEvent(current.title, tasks.all { it.status == TaskStatus.COMPLETED })
                                 refreshRequest++
-                                showCameraConfirm = false; pendingPhotos = emptyList()
+                                showCameraConfirm = false; pendingPhotos = emptyList(); pendingAudio = null
                             }
                             .onFailure { error ->
                                 pendingStore.add(PendingSubmission(current.id, photos.map(Uri::toString), current.status == TaskStatus.OVERTIME, submissionId))
-                                showCameraConfirm = false; pendingPhotos = emptyList()
+                                showCameraConfirm = false; pendingPhotos = emptyList(); pendingAudio = null
                                 if (error is AuthorizationExpiredException) reportSyncError(error, "")
-                                else connectionError = "照片和完成状态尚未同步到 Trello，任务仍是待完成；联网后会自动重试。"
+                                else connectionError = "作业附件和完成状态尚未同步到 Trello，任务仍是待完成；联网后会自动重试。"
                             }
                         submittingTaskId = null
                     }
@@ -812,6 +953,8 @@ private fun HomeworkBuddyApp() {
             },
             showCameraConfirm = showCameraConfirm,
             photoCount = pendingPhotos.size,
+            audioAttached = pendingAudio != null,
+            showSubmissionChoice = showSubmissionChoice,
             onAddPhoto = {
                 selected?.takeIf { pendingPhotos.size < MAX_HOMEWORK_PHOTOS }?.let { current ->
                     val file = File(context.cacheDir, "photos/${current.id}-${System.currentTimeMillis()}.jpg").also { it.parentFile?.mkdirs() }
@@ -824,7 +967,8 @@ private fun HomeworkBuddyApp() {
                     else requestCameraPermission.launch(Manifest.permission.CAMERA)
                 }
             },
-            onRetake = { showCameraConfirm = false; capturePhoto = null; pendingPhotos = emptyList() },
+            onDismissSubmissionChoice = { showSubmissionChoice = false },
+            onRetake = { showCameraConfirm = false; capturePhoto = null; pendingPhotos = emptyList(); pendingAudio = null },
         )
         celebration?.let { event -> CelebrationDialog(event.taskTitle, event.allTasksComplete) { celebration = null } }
     }
@@ -907,16 +1051,14 @@ private fun CelebrationDialog(taskTitle: String, allTasksComplete: Boolean, onDi
 }
 
 @Composable
-private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, remainingSeconds: Int, running: Boolean, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, captureStatus: CaptureStatus?, studyActivity: StudyActivity, xiaoliConnection: XiaoliConnectionSnapshot, studyLocked: Boolean, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photoCount: Int, onAddPhoto: () -> Unit, onRetake: () -> Unit) {
+private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, remainingSeconds: Int, running: Boolean, taskElapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, captureStatus: CaptureStatus?, studyActivity: StudyActivity, xiaoliConnection: XiaoliConnectionSnapshot, studyLocked: Boolean, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onChoosePhoto: () -> Unit, onChooseAudio: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photoCount: Int, audioAttached: Boolean, showSubmissionChoice: Boolean, onAddPhoto: () -> Unit, onDismissSubmissionChoice: () -> Unit, onRetake: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val complete = tasks.count { it.status == TaskStatus.COMPLETED }
     val todayEstimatedSeconds = tasks.sumOf { it.estimatedMinutes.coerceAtLeast(0) * 60 }
     val completedEstimatedSeconds = tasks.filter { it.status == TaskStatus.COMPLETED }
         .sumOf { it.estimatedMinutes.coerceAtLeast(0) * 60 }
     val activeEstimatedSeconds = selected?.estimatedMinutes?.coerceAtLeast(0)?.times(60) ?: 0
-    val activeElapsedSeconds = if (running && selected?.status != TaskStatus.COMPLETED) {
-        (activeEstimatedSeconds - remainingSeconds).coerceIn(0, activeEstimatedSeconds)
-    } else 0
+    val activeElapsedSeconds = if (running && selected?.status != TaskStatus.COMPLETED) taskElapsedSeconds else 0
     val todayElapsedSeconds = (completedEstimatedSeconds + activeElapsedSeconds).coerceAtMost(todayEstimatedSeconds)
     val waiting = tasks.filter { it.status != TaskStatus.COMPLETED && it.id != selected?.id }
     val completedTasks = tasks.filter { it.status == TaskStatus.COMPLETED }
@@ -955,11 +1097,11 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
             } else if (selected == null && tasks.isEmpty()) {
                 EmptyTaskState(Modifier.fillMaxSize())
             } else if (this@BoxWithConstraints.maxWidth >= 700.dp) Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(22.dp)) {
-                if (selected != null) CurrentTask(Modifier.weight(1.45f).fillMaxHeight(), selected, running, pianoPractice, submitting, onStart, onPianoRecord, onFinish)
+                if (selected != null) CurrentTask(Modifier.weight(1.45f).fillMaxHeight(), selected, running, taskElapsedSeconds, pianoPractice, submitting, onStart, onPianoRecord, onFinish)
                 else AllDoneState(Modifier.weight(1.45f).fillMaxHeight())
                 TaskQueue(Modifier.weight(.8f).fillMaxHeight(), waiting, completedTasks, onSelect)
             } else {
-                if (selected != null) CurrentTask(Modifier.fillMaxWidth(), selected, running, pianoPractice, submitting, onStart, onPianoRecord, onFinish)
+                if (selected != null) CurrentTask(Modifier.fillMaxWidth(), selected, running, taskElapsedSeconds, pianoPractice, submitting, onStart, onPianoRecord, onFinish)
                 else AllDoneState(Modifier.fillMaxWidth())
                 Spacer(Modifier.height(16.dp)); TaskQueue(Modifier.fillMaxWidth(), waiting, completedTasks, onSelect)
             }
@@ -975,7 +1117,39 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
             Text(syncError, modifier = Modifier.padding(horizontal = 16.dp, vertical = 11.dp), fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
     }
-    if (showCameraConfirm) AlertDialog(onDismissRequest = { if (!submitting) onRetake() }, icon = { Icon(Icons.Outlined.CameraAlt, null) }, title = { Text("上传作业照片") }, text = { Column { Text(if (submitting) "正在上传照片并完成任务…" else "已拍 $photoCount 张，将作为附件上传到 Trello。") ; if (!submitting && photoCount < MAX_HOMEWORK_PHOTOS) { Spacer(Modifier.height(12.dp)); OutlinedButton(onClick = onAddPhoto) { Icon(Icons.Outlined.CameraAlt, null); Spacer(Modifier.width(8.dp)); Text("再拍一张（最多 $MAX_HOMEWORK_PHOTOS 张）") } } } }, confirmButton = { Button(onClick = onSubmit, enabled = !submitting) { if (submitting) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)); Text("正在上传…") } else Text("上传并完成") } }, dismissButton = { TextButton(onClick = onRetake, enabled = !submitting) { Text("取消") } })
+    if (showSubmissionChoice) AlertDialog(
+        onDismissRequest = onDismissSubmissionChoice,
+        title = { Text("怎么提交作业？") },
+        text = { Text("可以拍作业照片，也可以打开系统录音机录一段音频。录音只保留在系统录音机里，不会上传。") },
+        confirmButton = { Button(onClick = onChoosePhoto) { Icon(Icons.Outlined.CameraAlt, null); Spacer(Modifier.width(8.dp)); Text("拍照") } },
+        dismissButton = { OutlinedButton(onClick = onChooseAudio) { Text("🎙️ 录音") } },
+    )
+    if (showCameraConfirm) AlertDialog(
+        onDismissRequest = { if (!submitting) onRetake() },
+        icon = { if (audioAttached) Text("🎙️", fontSize = 28.sp) else Icon(Icons.Outlined.CameraAlt, null) },
+        title = { Text(if (audioAttached) "上传作业录音" else "上传作业照片") },
+        text = {
+            Column {
+                Text(
+                    if (submitting) "正在上传作业附件并完成任务…"
+                    else if (audioAttached) "录音已完成，也已保存在系统录音机中，将作为附件上传到 Trello。"
+                    else "已拍 $photoCount 张，将作为附件上传到 Trello。",
+                )
+                if (!submitting && !audioAttached && photoCount < MAX_HOMEWORK_PHOTOS) {
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedButton(onClick = onAddPhoto) {
+                        Icon(Icons.Outlined.CameraAlt, null); Spacer(Modifier.width(8.dp)); Text("再拍一张（最多 $MAX_HOMEWORK_PHOTOS 张）")
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onSubmit, enabled = !submitting) {
+                if (submitting) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)); Text("正在上传…") } else Text("上传并完成")
+            }
+        },
+        dismissButton = { TextButton(onClick = onRetake, enabled = !submitting) { Text("取消") } },
+    )
 }
 
 @Composable
@@ -1130,16 +1304,43 @@ private fun ScheduledTaskList(modifier: Modifier, tasks: List<HomeworkTask>) {
                         Text(record.title.ifBlank { "作业" }, modifier = Modifier.weight(1f), fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         TaskStatusPill(if (done) TaskStatus.COMPLETED else TaskStatus.TODO)
                     }
+                    record.durationSeconds?.let { duration ->
+                        Text("实际用时 ${elapsedLabel(duration)}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                    }
                     if (record.photoUrls.isNotEmpty()) {
                         TextButton(onClick = { photoUrl = record.photoUrls.first() }, contentPadding = PaddingValues(top = 5.dp, bottom = 0.dp)) {
                             Icon(Icons.Outlined.CameraAlt, null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("查看图片（${record.photoUrls.size} 张）")
                         }
                     }
+                    record.localAudioUri?.let { LocalRecordingButton(it) }
                 }
             }
         }
     }
     photoUrl?.let { PhotoViewer(it, HomeworkApi(context)) { photoUrl = null } }
+}
+
+@Composable
+private fun LocalRecordingButton(localUri: String) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    TextButton(
+        onClick = {
+            // Opening the recorder rather than ACTION_VIEW avoids an app picker.
+            // localUri identifies the recording retained by the system recorder.
+            KioskPolicy(context).allowSystemRecorderForCapture()
+            (context as? MainActivity)?.allowManagedActivityLaunch()
+            runCatching {
+                val recorderPackage = context.packageManager.resolveActivity(
+                    Intent(MediaStore.Audio.Media.RECORD_SOUND_ACTION),
+                    PackageManager.MATCH_DEFAULT_ONLY,
+                )?.activityInfo?.packageName ?: error("未找到系统录音机")
+                context.startActivity(context.packageManager.getLaunchIntentForPackage(recorderPackage) ?: error("无法打开系统录音机"))
+            }.onFailure { KioskPolicy(context).revokeSystemRecorderAccess() }
+        },
+        contentPadding = PaddingValues(top = 5.dp, bottom = 0.dp),
+    ) {
+        Text("🎙️ 在录音机中查看")
+    }
 }
 
 @Composable private fun PhotoViewer(url: String, api: HomeworkApi, onDismiss: () -> Unit) {
@@ -1269,7 +1470,7 @@ private fun formatStudyDuration(seconds: Long): String {
     }
 }
 
-@Composable private fun CurrentTask(modifier: Modifier, task: HomeworkTask, running: Boolean, pianoPractice: PianoPracticeStatus?, submitting: Boolean, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit) {
+@Composable private fun CurrentTask(modifier: Modifier, task: HomeworkTask, running: Boolean, elapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit) {
     val overdue = task.status == TaskStatus.OVERTIME
     Column(modifier.clip(RoundedCornerShape(26.dp)).background(if (overdue) OverdueSurface else Sun).padding(28.dp), horizontalAlignment = Alignment.Start) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1280,8 +1481,8 @@ private fun formatStudyDuration(seconds: Long): String {
         Text(if (overdue) "已超过截止时间，请优先完成" else "截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", color = if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = if (overdue) FontWeight.Medium else FontWeight.Normal)
         Spacer(Modifier.weight(1f)); Box(Modifier.size(166.dp).align(Alignment.CenterHorizontally).clip(CircleShape).background(Color.White).padding(10.dp), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(if (overdue) "已超期" else "截止", fontSize = 15.sp, color = if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(task.deadline.format(DateTimeFormatter.ofPattern("HH:mm")), fontSize = 31.sp, fontWeight = FontWeight.Medium)
+                Text(if (running) "已用时" else if (overdue) "已超期" else "截止", fontSize = 15.sp, color = if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(if (running) elapsedLabel(elapsedSeconds) else task.deadline.format(DateTimeFormatter.ofPattern("HH:mm")), fontSize = 31.sp, fontWeight = FontWeight.Medium)
             }
         }
         Spacer(Modifier.weight(1f)); Button(onClick = onStart, modifier = Modifier.align(Alignment.CenterHorizontally), enabled = task.status != TaskStatus.COMPLETED && !submitting && !running) { Text(if (running) "正在做" else "开始做") }
@@ -1324,6 +1525,7 @@ private fun formatStudyDuration(seconds: Long): String {
                             Text("查看照片（${task.photoUrls.size} 张）")
                         }
                     }
+                    if (completed) task.localAudioUri?.let { LocalRecordingButton(it) }
                 }
             }
         }

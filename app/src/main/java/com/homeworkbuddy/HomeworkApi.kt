@@ -5,6 +5,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.webkit.MimeTypeMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -106,16 +107,31 @@ class HomeworkApi(private val context: Context) {
             .sortedWith(compareBy<HomeworkTask> { it.dueDate }.thenBy { it.deadline })
     }
 
-    suspend fun submit(taskId: String, photos: List<Uri>, isOvertime: Boolean, submissionId: String) = withContext(Dispatchers.IO) {
+    suspend fun submit(taskId: String, attachments: List<Uri>, isOvertime: Boolean, submissionId: String) = withContext(Dispatchers.IO) {
         // Trello is the durable record. Submission IDs make attachment retries
-        // idempotent: a retry after a partial upload never adds another photo.
+        // idempotent: a retry after a partial upload never adds another attachment.
         isOvertime.hashCode()
         val existingNames = attachmentNames(taskId)
-        photos.take(MAX_PHOTOS).forEachIndexed { index, photo ->
-            val name = "homework-$submissionId-${index + 1}.jpg"
-            if (name !in existingNames) attachPhoto(taskId, photo, name)
+        val uploadedAudioNames = mutableListOf<String>()
+        attachments.take(MAX_PHOTOS).forEachIndexed { index, attachment ->
+            val (name, mimeType) = attachmentMetadata(attachment, submissionId, index)
+            if (name !in existingNames) {
+                attachFile(taskId, attachment, name, mimeType)
+                if (mimeType.startsWith("audio/")) uploadedAudioNames += name
+            }
         }
-        check(photos.isNotEmpty()) { "需要先拍照再提交作业" }
+        check(attachments.isNotEmpty()) { "需要先拍照或录音再提交作业" }
+        // The comment makes the media type obvious in the Trello activity log.
+        // It is best-effort: an uploaded attachment still must not block a child
+        // from completing homework merely because a comment request times out.
+        if (uploadedAudioNames.isNotEmpty()) runCatching {
+            request("POST", "/cards/${segment(taskId)}/actions/comments", mapOf("text" to "已上传音频作业附件：${uploadedAudioNames.joinToString("、")}"))
+        }
+        request("PUT", "/cards/${segment(taskId)}", mapOf("idList" to requiredDoneList(), "dueComplete" to "true"))
+    }
+
+    /** Marks a task complete without uploading a local-only recording. */
+    suspend fun completeWithoutAttachment(taskId: String) = withContext(Dispatchers.IO) {
         request("PUT", "/cards/${segment(taskId)}", mapOf("idList" to requiredDoneList(), "dueComplete" to "true"))
     }
 
@@ -147,7 +163,7 @@ class HomeworkApi(private val context: Context) {
 
     private suspend fun cards(listId: String, status: TaskStatus, dueOn: LocalDate? = null): List<HomeworkTask> {
         require(listId.isNotBlank()) { "请由家长选择作业看板" }
-        val value = requestArray("GET", "/lists/${segment(listId)}/cards?fields=id,name,desc,due,labels,dateLastActivity&attachments=true&attachment_fields=url")
+        val value = requestArray("GET", "/lists/${segment(listId)}/cards?fields=id,name,desc,due,labels,dateLastActivity&attachments=true&attachment_fields=url,name,mimeType")
         val now = ZonedDateTime.now(HOMEWORK_ZONE)
         return (0 until value.length()).mapNotNull { index ->
             val item = value.getJSONObject(index)
@@ -157,9 +173,11 @@ class HomeworkApi(private val context: Context) {
             val labels = item.optJSONArray("labels")
             val subject = labels?.optJSONObject(0)?.optString("name")?.takeIf { it.isNotBlank() } ?: "作业"
             val taskStatus = if (status == TaskStatus.TODO && !deadline.isAfter(now)) TaskStatus.OVERTIME else status
-            val attachmentUrls = item.optJSONArray("attachments")?.let { attachments ->
-                (0 until attachments.length()).mapNotNull { attachment ->
-                    attachments.optJSONObject(attachment)?.optString("url")?.ifBlank { null }
+            val attachments = item.optJSONArray("attachments")?.let { attachmentArray ->
+                (0 until attachmentArray.length()).mapNotNull { attachment ->
+                    attachmentArray.optJSONObject(attachment)?.let { value ->
+                        value.optString("url").ifBlank { null }?.let { url -> HomeworkAttachment(url, value.optString("name"), value.optString("mimeType")) }
+                    }
                 }
             } ?: emptyList()
             val activityAt = if (status == TaskStatus.COMPLETED) {
@@ -169,7 +187,9 @@ class HomeworkApi(private val context: Context) {
             } else null
             HomeworkTask(
                 item.getString("id"), subject, item.getString("name"), homeworkMinutes(item.optString("desc")),
-                deadline.toLocalTime(), taskStatus, photoUrls = attachmentUrls,
+                deadline.toLocalTime(), taskStatus,
+                photoUrls = attachments.filterNot(HomeworkAttachment::isAudio).map(HomeworkAttachment::url),
+                attachments = attachments,
                 dueDate = deadline.toLocalDate(), completedAtEpochSeconds = activityAt,
             )
         }
@@ -198,7 +218,15 @@ class HomeworkApi(private val context: Context) {
 
     private fun dateAt(epochSeconds: Long) = java.time.Instant.ofEpochSecond(epochSeconds).atZone(HOMEWORK_ZONE).toLocalDate()
 
-    private fun attachPhoto(taskId: String, photo: Uri, name: String) {
+    private fun attachmentMetadata(uri: Uri, submissionId: String, index: Int): Pair<String, String> {
+        val mimeType = context.contentResolver.getType(uri) ?: "application/octet-stream"
+        val extension = MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType)
+            ?: if (mimeType.startsWith("audio/")) "m4a" else "jpg"
+        val prefix = if (mimeType.startsWith("audio/")) "homework-audio" else "homework"
+        return "$prefix-$submissionId-${index + 1}.$extension" to mimeType
+    }
+
+    private fun attachFile(taskId: String, attachment: Uri, name: String, mimeType: String) {
         val boundary = "Trello-${UUID.randomUUID()}"
         val connection = connection("POST", "/cards/${segment(taskId)}/attachments", emptyMap()).apply {
             doOutput = true
@@ -209,8 +237,8 @@ class HomeworkApi(private val context: Context) {
                 out.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"$name\"\r\n\r\n$value\r\n")
             }
             field("name", name)
-            out.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"$name\"\r\nContent-Type: image/jpeg\r\n\r\n")
-            context.contentResolver.openInputStream(photo)?.use { it.copyTo(out) } ?: error("无法读取作业照片")
+            out.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"$name\"\r\nContent-Type: $mimeType\r\n\r\n")
+            context.contentResolver.openInputStream(attachment)?.use { it.copyTo(out) } ?: error("无法读取作业附件")
             out.writeBytes("\r\n--$boundary--\r\n")
         }
         read(connection)

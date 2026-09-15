@@ -5,6 +5,10 @@ import java.time.LocalDate
 
 enum class TaskStatus { TODO, RUNNING, COMPLETED, OVERTIME }
 
+data class HomeworkAttachment(val url: String, val name: String, val mimeType: String) {
+    val isAudio: Boolean get() = mimeType.startsWith("audio/") || name.endsWith(".m4a", true) || name.endsWith(".mp3", true) || name.endsWith(".wav", true)
+}
+
 data class HomeworkTask(
     val id: String,
     val subject: String,
@@ -15,9 +19,13 @@ data class HomeworkTask(
     val photoPath: String? = null,
     /** The Trello attachment URLs are full-resolution originals. */
     val photoUrls: List<String> = emptyList(),
+    val attachments: List<HomeworkAttachment> = emptyList(),
     val dueDate: LocalDate = LocalDate.now(),
     val completedAtEpochSeconds: Long? = null,
-)
+) {
+    /** System recorder URI retained locally; Trello attachments are never used for playback. */
+    val localAudioUri: String? get() = photoPath?.takeIf { it.startsWith("content://media/") }
+}
 
 /** Legacy preview abstraction; production homework sync is implemented by [HomeworkApi]. */
 interface HomeworkTaskSource {

@@ -8,12 +8,12 @@ import org.json.JSONObject
 class HomeworkStatusStore(private val context: Context) {
     private val prefs = context.getSharedPreferences("homework_status", Context.MODE_PRIVATE)
 
-    fun save(tasks: List<HomeworkTask>, selectedId: String, remainingSeconds: Int, running: Boolean) {
+    fun save(tasks: List<HomeworkTask>, selectedId: String, remainingSeconds: Int, running: Boolean, elapsedSeconds: Int = 0) {
         val values = JSONArray().also { list -> tasks.forEach { task ->
             list.put(JSONObject().put("id", task.id).put("subject", task.subject).put("title", task.title).put("status", task.status.name))
         } }
         prefs.edit().putString("tasks", values.toString()).putString("selected_id", selectedId)
-            .putInt("remaining_seconds", remainingSeconds).putBoolean("running", running).apply()
+            .putInt("remaining_seconds", remainingSeconds).putBoolean("running", running).putInt("elapsed_seconds", elapsedSeconds).apply()
     }
 
     fun snapshot(): JSONObject {
@@ -24,6 +24,7 @@ class HomeworkStatusStore(private val context: Context) {
             .put("current_task_id", prefs.getString("selected_id", ""))
             .put("remaining_seconds", prefs.getInt("remaining_seconds", 0))
             .put("timer_running", prefs.getBoolean("running", false))
+            .put("elapsed_seconds", prefs.getInt("elapsed_seconds", 0))
             .put("piano_practice_count_today", PianoPracticeStore(context).todayTotal())
             .put("tasks", tasks)
     }
