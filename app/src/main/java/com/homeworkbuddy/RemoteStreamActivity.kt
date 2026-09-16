@@ -2,6 +2,8 @@ package com.homeworkbuddy
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.ImageFormat
 import android.graphics.Bitmap
@@ -15,6 +17,7 @@ import android.hardware.camera2.CaptureRequest
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.BatteryManager
 import android.util.Base64
 import android.util.Log
 import android.util.Size
@@ -36,6 +39,7 @@ object RemoteStreamCoordinator {
         check(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
             "需要相机权限才能共享学习画面"
         }
+        val allowedDurationSeconds = allowedDurationSeconds(context, durationSeconds)
         val result = CompletableDeferred<JSONObject>()
         synchronized(this) {
             check(pending == null && stopAction == null) { "已有学习画面共享正在进行" }
@@ -44,7 +48,7 @@ object RemoteStreamCoordinator {
         CaptureStatusStore(context).begin(CaptureKind.STREAM)
         CameraShutterSound.play()
         runCatching {
-            InAppRemoteStream(context.applicationContext, fps.coerceIn(1, 3), durationSeconds.coerceIn(1, 60), resolution, ::ready, ::fail)
+            InAppRemoteStream(context.applicationContext, fps.coerceIn(1, 3), allowedDurationSeconds, resolution, ::ready, ::fail)
                 .start()
         }.onFailure { fail(it.message ?: "无法启动学习画面共享") }
         return try {
@@ -72,6 +76,21 @@ object RemoteStreamCoordinator {
         action()
         return JSONObject().put("stopping", true)
     }
+
+    private fun allowedDurationSeconds(context: Context, requestedSeconds: Int): Int {
+        val battery = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val charging = battery?.getIntExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN) in setOf(
+            BatteryManager.BATTERY_STATUS_CHARGING,
+            BatteryManager.BATTERY_STATUS_FULL,
+        )
+        val max = if (charging) MAX_CHARGING_STREAM_SECONDS else MAX_BATTERY_STREAM_SECONDS
+        val default = if (charging) MAX_CHARGING_STREAM_SECONDS else DEFAULT_BATTERY_STREAM_SECONDS
+        return (if (requestedSeconds > 0) requestedSeconds else default).coerceIn(1, max)
+    }
+
+    private const val DEFAULT_BATTERY_STREAM_SECONDS = 30
+    private const val MAX_BATTERY_STREAM_SECONDS = 60
+    private const val MAX_CHARGING_STREAM_SECONDS = 3 * 60
 }
 
 /** Keeps the status cleanup callable from the coordinator's background error path. */

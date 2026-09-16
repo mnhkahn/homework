@@ -239,7 +239,8 @@ private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
                 Spacer(Modifier.size(16.dp))
                 Column {
                     Text("家长设置", fontSize = 30.sp, fontWeight = FontWeight.Medium)
-                    Text(if (policy.isDeviceOwner) "设备管控已启用" else "尚未成为 Device Owner", color = if (policy.isDeviceOwner) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error)
+                    Text(if (policy.isDeviceOwner) "设备管理权限已启用" else "尚未成为 Device Owner", color = if (policy.isDeviceOwner) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error)
+                    Text("当前：${if (policy.mode() == KioskMode.STUDY) "学习模式" else "普通模式"}", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
@@ -258,14 +259,14 @@ private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
                 Column(Modifier.fillMaxWidth().padding(16.dp)) {
                     Text("管控与紧急出口", fontSize = 21.sp, fontWeight = FontWeight.Medium)
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 10.dp)) {
-                        Button(enabled = policy.isDeviceOwner, onClick = { policy.pause(15, activity); message = "已临时开放 15 分钟" }) { Icon(Icons.Outlined.LockOpen, null); Spacer(Modifier.size(7.dp)); Text("临时开放 15 分钟") }
-                        Button(enabled = policy.isDeviceOwner, onClick = { policy.guardFor(15, activity); message = "已立即守护 15 分钟" }) { Icon(Icons.Outlined.Lock, null); Spacer(Modifier.size(7.dp)); Text("守护 15 分钟") }
+                        Button(enabled = policy.isDeviceOwner, onClick = { policy.pause(15, activity); message = "已临时进入普通模式 15 分钟（今日第 ${policy.temporaryOpenCountToday} 次）" }) { Icon(Icons.Outlined.LockOpen, null); Spacer(Modifier.size(7.dp)); Text("临时开放 15 分钟") }
+                        Button(enabled = policy.isDeviceOwner, onClick = { policy.guardFor(0, activity); message = "已进入学习模式，守护至今天结束" }) { Icon(Icons.Outlined.Lock, null); Spacer(Modifier.size(7.dp)); Text("守护至今天结束") }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 10.dp)) {
-                        Button(enabled = policy.isDeviceOwner, onClick = { policy.enterStudy(activity); message = "已立即进入守护模式" }) { Icon(Icons.Outlined.Lock, null); Spacer(Modifier.size(7.dp)); Text("立即进入守护") }
-                        OutlinedButton(enabled = policy.isDeviceOwner, onClick = { policy.resume(activity) }) { Icon(Icons.Outlined.RestartAlt, null); Spacer(Modifier.size(7.dp)); Text("立即应用当前策略") }
+                        OutlinedButton(enabled = policy.isDeviceOwner, onClick = { policy.resume(activity) }) { Icon(Icons.Outlined.RestartAlt, null); Spacer(Modifier.size(7.dp)); Text("结束临时开放") }
                         OutlinedButton(enabled = policy.isDeviceOwner, onClick = policy::openStudyLauncher) { Icon(Icons.Outlined.Apps, null); Spacer(Modifier.size(7.dp)); Text("查看学习应用") }
                     }
+                    Text("今日临时开放 ${policy.temporaryOpenCountToday} 次", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp))
                     message?.let { Text(it, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 10.dp)) }
                 }
             }

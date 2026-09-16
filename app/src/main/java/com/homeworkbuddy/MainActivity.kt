@@ -54,6 +54,7 @@ import androidx.compose.material.icons.outlined.CloudDone
 import androidx.compose.material.icons.outlined.CloudOff
 import androidx.compose.material.icons.outlined.CloudSync
 import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.LockOpen
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material3.*
@@ -213,13 +214,12 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * When charging during study time, keep the display awake so the tablet does
-     * not lock in the middle of homework.  A quiet screen dims after three
-     * minutes and returns to the user's normal brightness on the next touch.
-     * On battery we retain the ordinary three-minute wake grace period.
+     * When plugged in, keep the current app visible in either mode.  Learning
+     * mode additionally keeps its quiet-screen dimming behavior on charging.
      */
     private fun extendStudyScreenTimeout() {
-        if (KioskPolicy(this).mode() != KioskMode.STUDY) {
+        val studyMode = KioskPolicy(this).mode() == KioskMode.STUDY
+        if (!studyMode && !isCharging()) {
             clearStudyScreenTimeout()
             return
         }
@@ -228,7 +228,7 @@ class MainActivity : ComponentActivity() {
         screenTimeoutHandler.removeCallbacks(dimStudyScreen)
         restoreStudyBrightness()
         if (isCharging()) {
-            screenTimeoutHandler.postDelayed(dimStudyScreen, STUDY_SCREEN_IDLE_DIM_MS)
+            if (studyMode) screenTimeoutHandler.postDelayed(dimStudyScreen, STUDY_SCREEN_IDLE_DIM_MS)
         } else {
             screenTimeoutHandler.postDelayed(clearKeepScreenOn, STUDY_SCREEN_AWAKE_MS)
         }
@@ -416,6 +416,8 @@ private fun HomeworkBuddyApp() {
     var remoteNotice by remember { mutableStateOf(remoteNoticeStore.current()) }
     var captureStatus by remember { mutableStateOf(captureStatusStore.current()) }
     var studyActivity by remember { mutableStateOf(studyActivityStore.today()) }
+    var systemNonAllowedApps by remember { mutableStateOf(kioskPolicy.todayNonAllowedAppUsage()) }
+    var showBlockedApps by remember { mutableStateOf(false) }
     var xiaoliConnection by remember { mutableStateOf(XiaoliConnectionState.snapshot()) }
     // Keep the header useful immediately; a network response only replaces this
     // default when it contains a non-blank slogan.
@@ -476,6 +478,7 @@ private fun HomeworkBuddyApp() {
             delay(java.time.Duration.between(now, nextMidnight).toMillis().coerceAtLeast(1_000L))
             remoteNotice = remoteNoticeStore.current()
             studyActivity = studyActivityStore.today()
+            systemNonAllowedApps = kioskPolicy.todayNonAllowedAppUsage()
         }
     }
 
@@ -680,6 +683,7 @@ private fun HomeworkBuddyApp() {
                 Lifecycle.Event.ON_START -> {
                     foreground = true
                     captureStatus = captureStatusStore.current()
+                    systemNonAllowedApps = kioskPolicy.todayNonAllowedAppUsage()
                     refreshRequest++
                 }
                 Lifecycle.Event.ON_STOP -> foreground = false
@@ -857,7 +861,7 @@ private fun HomeworkBuddyApp() {
             captureStatus = captureStatus,
             studyActivity = studyActivity,
             xiaoliConnection = xiaoliConnection,
-            studyLocked = kioskPolicy.isDeviceOwner && kioskMode == KioskMode.STUDY,
+            kioskMode = kioskMode,
             remoteNotice = remoteNotice,
             syncError = if (connected) connectionError else null,
             onRefresh = { refreshRequest++ },
@@ -869,6 +873,8 @@ private fun HomeworkBuddyApp() {
                 (activity as? MainActivity)?.allowManagedActivityLaunch()
                 kioskPolicy.openStudyLauncher()
             },
+            systemNonAllowedApps = systemNonAllowedApps,
+            onBlockedApps = { systemNonAllowedApps = kioskPolicy.todayNonAllowedAppUsage(); showBlockedApps = true },
             onSelect = { task -> selectedId = task.id; remainingSeconds = task.estimatedMinutes * 60; running = false; taskStartedAtMillis = 0L; taskElapsedSeconds = 0 },
             onStart = {
                 taskStartedAtMillis = System.currentTimeMillis()
@@ -971,6 +977,7 @@ private fun HomeworkBuddyApp() {
             onRetake = { showCameraConfirm = false; capturePhoto = null; pendingPhotos = emptyList(); pendingAudio = null },
         )
         celebration?.let { event -> CelebrationDialog(event.taskTitle, event.allTasksComplete) { celebration = null } }
+        if (showBlockedApps) BlockedAppsDialog(systemNonAllowedApps) { showBlockedApps = false }
     }
 }
 
@@ -1051,7 +1058,7 @@ private fun CelebrationDialog(taskTitle: String, allTasksComplete: Boolean, onDi
 }
 
 @Composable
-private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, remainingSeconds: Int, running: Boolean, taskElapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, captureStatus: CaptureStatus?, studyActivity: StudyActivity, xiaoliConnection: XiaoliConnectionSnapshot, studyLocked: Boolean, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onChoosePhoto: () -> Unit, onChooseAudio: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photoCount: Int, audioAttached: Boolean, showSubmissionChoice: Boolean, onAddPhoto: () -> Unit, onDismissSubmissionChoice: () -> Unit, onRetake: () -> Unit) {
+private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, remainingSeconds: Int, running: Boolean, taskElapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, xiaoliConnection: XiaoliConnectionSnapshot, kioskMode: KioskMode, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onChoosePhoto: () -> Unit, onChooseAudio: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photoCount: Int, audioAttached: Boolean, showSubmissionChoice: Boolean, onAddPhoto: () -> Unit, onDismissSubmissionChoice: () -> Unit, onRetake: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val complete = tasks.count { it.status == TaskStatus.COMPLETED }
     val todayEstimatedSeconds = tasks.sumOf { it.estimatedMinutes.coerceAtLeast(0) * 60 }
@@ -1072,7 +1079,7 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
             .padding(24.dp),
     ) {
         Column(Modifier.fillMaxSize()) {
-            Header(slogan, refreshing, captureStatus, studyActivity, xiaoliConnection, studyLocked, onRefresh, onParent, onStudyApps)
+            Header(slogan, refreshing, captureStatus, studyActivity, systemNonAllowedApps, xiaoliConnection, kioskMode, onRefresh, onParent, onStudyApps, onBlockedApps)
             if (remoteNotice != null) {
                 Spacer(Modifier.height(14.dp))
                 RemoteNoticeCard(remoteNotice)
@@ -1385,7 +1392,7 @@ private fun LocalRecordingButton(localUri: String) {
 }
 
 @OptIn(ExperimentalFoundationApi::class)
-@Composable private fun Header(slogan: String, refreshing: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, xiaoliConnection: XiaoliConnectionSnapshot, studyLocked: Boolean, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit) {
+@Composable private fun Header(slogan: String, refreshing: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, xiaoliConnection: XiaoliConnectionSnapshot, kioskMode: KioskMode, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f).combinedClickable(onClick = {}, onLongClick = onParent)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1396,9 +1403,14 @@ private fun LocalRecordingButton(localUri: String) {
             Text(slogan, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (studyLocked) Surface(shape = RoundedCornerShape(18.dp), color = Leaf, contentColor = Color(0xFF24733A)) {
+            val isStudyMode = kioskMode == KioskMode.STUDY
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                color = if (isStudyMode) Leaf else MaterialTheme.colorScheme.secondaryContainer,
+                contentColor = if (isStudyMode) Color(0xFF24733A) else MaterialTheme.colorScheme.onSecondaryContainer,
+            ) {
                 Row(Modifier.padding(horizontal = 13.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Outlined.Lock, null, modifier = Modifier.size(19.dp)); Spacer(Modifier.width(6.dp)); Text("学习锁定中", fontWeight = FontWeight.Medium)
+                    Icon(if (isStudyMode) Icons.Outlined.Lock else Icons.Outlined.LockOpen, null, modifier = Modifier.size(19.dp)); Spacer(Modifier.width(6.dp)); Text(if (isStudyMode) "学习模式" else "普通模式", fontWeight = FontWeight.Medium)
                 }
             }
             FilledTonalButton(onClick = onStudyApps, shape = RoundedCornerShape(18.dp), contentPadding = PaddingValues(horizontal = 13.dp, vertical = 9.dp)) {
@@ -1407,7 +1419,7 @@ private fun LocalRecordingButton(localUri: String) {
             FilledTonalButton(onClick = onRefresh, enabled = !refreshing, shape = RoundedCornerShape(18.dp), contentPadding = PaddingValues(horizontal = 13.dp, vertical = 9.dp)) {
                 Icon(Icons.Outlined.Refresh, null, modifier = Modifier.size(19.dp)); Spacer(Modifier.width(6.dp)); Text(if (refreshing) "刷新中…" else "刷新")
             }
-            StudyActivityBadges(studyActivity)
+            StudyActivityBadges(studyActivity, systemNonAllowedApps, onBlockedApps)
             CaptureStatusBadge(captureStatus)
         }
     }
@@ -1422,15 +1434,67 @@ private fun LocalRecordingButton(localUri: String) {
     Icon(icon, description, modifier = Modifier.size(24.dp), tint = tint)
 }
 
-@Composable private fun StudyActivityBadges(activity: StudyActivity) {
+@Composable private fun StudyActivityBadges(activity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, onBlockedApps: () -> Unit) {
     if (activity.switches > 0) MetricBadge("切换 APP ${activity.switches} 次")
-    if (activity.blockedSeconds > 0) MetricBadge("非允许 APP ${formatStudyDuration(activity.blockedSeconds)}")
+    val totalSeconds = systemNonAllowedApps.sumOf { it.foregroundSeconds }
+    if (totalSeconds > 0) MetricBadge("非允许 APP ${formatStudyDuration(totalSeconds)}", onClick = onBlockedApps)
 }
 
-@Composable private fun MetricBadge(label: String) {
-    Surface(shape = RoundedCornerShape(18.dp), color = Sun, contentColor = Color(0xFF765B11)) {
+@Composable private fun MetricBadge(label: String, onClick: (() -> Unit)? = null) {
+    Surface(modifier = if (onClick == null) Modifier else Modifier.clickable(onClick = onClick), shape = RoundedCornerShape(18.dp), color = Sun, contentColor = Color(0xFF765B11)) {
         Text(label, modifier = Modifier.padding(horizontal = 13.dp, vertical = 9.dp), fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1)
     }
+}
+
+@Composable private fun BlockedAppsDialog(apps: List<SystemAppUsage>, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("今日非允许应用") },
+        text = {
+            Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                Text("来自系统的今日前台使用时长", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(12.dp))
+                if (apps.isEmpty()) {
+                    Text("暂时没有可展示的使用记录。请确认已开启“使用情况访问”权限。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                apps.forEach { usage ->
+                    Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text(usage.label, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                            Text(formatStudyDuration(usage.foregroundSeconds), color = Color(0xFF765B11), fontWeight = FontWeight.Medium)
+                        }
+                        mergeDisplayedUsagePeriods(usage.periods).forEach { period ->
+                            Text(
+                                "${formatUsageTime(period.startedAtMillis)}–${formatUsageTime(period.endedAtMillis)}",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 13.sp,
+                                modifier = Modifier.padding(top = 3.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("知道了") } },
+    )
+}
+
+private fun formatUsageTime(millis: Long): String = DateTimeFormatter.ofPattern("HH:mm")
+    .withZone(ZoneId.systemDefault())
+    .format(Instant.ofEpochMilli(millis))
+
+/** The UI shows minutes, so coalesce event fragments that visually touch. */
+private fun mergeDisplayedUsagePeriods(periods: List<SystemUsagePeriod>): List<SystemUsagePeriod> {
+    val merged = ArrayList<SystemUsagePeriod>()
+    periods.sortedBy { it.startedAtMillis }.forEach { period ->
+        val previous = merged.lastOrNull()
+        if (previous != null && period.startedAtMillis - previous.endedAtMillis <= 60_000L) {
+            merged[merged.lastIndex] = previous.copy(endedAtMillis = maxOf(previous.endedAtMillis, period.endedAtMillis))
+        } else {
+            merged += period
+        }
+    }
+    return merged
 }
 
 private fun formatStudyDuration(seconds: Long): String {

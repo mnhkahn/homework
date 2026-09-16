@@ -29,9 +29,16 @@ import java.time.ZoneId
 
 class HomeworkDeviceAdminReceiver : DeviceAdminReceiver()
 
-enum class KioskMode { STUDY, NORMAL, PAUSED }
+enum class KioskMode { STUDY, NORMAL }
 
 data class LaunchableApp(val packageName: String, val label: String)
+data class SystemUsagePeriod(val startedAtMillis: Long, val endedAtMillis: Long)
+data class SystemAppUsage(
+    val packageName: String,
+    val label: String,
+    val foregroundSeconds: Long,
+    val periods: List<SystemUsagePeriod>,
+)
 
 /** A foreground app as seen by the study-time tracker. */
 data class ForegroundApp(val packageName: String, val launchable: Boolean, val allowed: Boolean)
@@ -44,8 +51,11 @@ class KioskPolicy(private val context: Context) {
     val isDeviceOwner: Boolean get() = dpm.isDeviceOwnerApp(context.packageName)
     val startMinutes: Int get() = prefs.getInt("start_minutes", 17 * 60)
     val endMinutes: Int get() = prefs.getInt("end_minutes", 21 * 60 + 30)
-    val pausedUntil: Long get() = prefs.getLong("paused_until", 0L)
-    private val guardedUntil: Long get() = prefs.getLong("guarded_until", 0L)
+    /** A temporary parent override keeps the device in its ordinary mode. */
+    val temporaryOpenUntil: Long get() = prefs.getLong("normal_override_until", prefs.getLong("paused_until", 0L))
+    /** Kept for the existing remote-tool response contract. */
+    val pausedUntil: Long get() = temporaryOpenUntil
+    private val forcedStudyUntil: Long get() = prefs.getLong("study_override_until", prefs.getLong("guarded_until", 0L))
     val studyPackages: Set<String> get() = prefs.getStringSet("study_packages", prefs.getStringSet("approved_packages", emptySet()))?.toSet().orEmpty()
     private val temporaryPackages: Set<String> get() = prefs.getStringSet("temporary_packages", emptySet())?.toSet().orEmpty()
     val isExternalForegroundAllowed: Boolean get() = prefs.getBoolean("external_foreground_allowed", false)
@@ -95,8 +105,8 @@ class KioskPolicy(private val context: Context) {
     }
 
     fun mode(now: LocalDateTime = LocalDateTime.now()): KioskMode {
-        if (System.currentTimeMillis() < pausedUntil) return KioskMode.PAUSED
-        if (System.currentTimeMillis() < guardedUntil) return KioskMode.STUDY
+        if (System.currentTimeMillis() < temporaryOpenUntil) return KioskMode.NORMAL
+        if (System.currentTimeMillis() < forcedStudyUntil) return KioskMode.STUDY
         val minute = now.hour * 60 + now.minute
         return if (minute in startMinutes until endMinutes) KioskMode.STUDY else KioskMode.NORMAL
     }
@@ -144,6 +154,70 @@ class KioskPolicy(private val context: Context) {
     }
 
     /**
+     * Usage comes from Android's own UsageEvents database.  Unlike the daily
+     * aggregate, events let us exclude time before and after the study schedule.
+     */
+    fun todayNonAllowedAppUsage(): List<SystemAppUsage> {
+        if (!hasUsageAccess()) return emptyList()
+        val zone = ZoneId.systemDefault()
+        val today = LocalDate.now(zone)
+        val startOfDay = today.atStartOfDay(zone).toInstant().toEpochMilli()
+        val now = System.currentTimeMillis()
+        val studyStart = today.atTime(LocalTime.of(startMinutes / 60, startMinutes % 60)).atZone(zone).toInstant().toEpochMilli()
+        val studyEnd = today.atTime(LocalTime.of(endMinutes / 60, endMinutes % 60)).atZone(zone).toInstant().toEpochMilli()
+        val launchable = launchableApps().associateBy { it.packageName }
+        val periodsByPackage = HashMap<String, MutableList<SystemUsagePeriod>>()
+        fun record(packageName: String?, from: Long, until: Long) {
+            if (packageName == null || packageName !in launchable || packageName in studyPackages || packageName in temporaryPackages) return
+            val startedAt = maxOf(from, studyStart)
+            val endedAt = minOf(until, studyEnd)
+            if (endedAt <= startedAt) return
+            val periods = periodsByPackage.getOrPut(packageName) { ArrayList() }
+            val previous = periods.lastOrNull()
+            if (previous != null && startedAt - previous.endedAtMillis <= 1_000) {
+                periods[periods.lastIndex] = previous.copy(endedAtMillis = maxOf(previous.endedAtMillis, endedAt))
+            } else {
+                periods += SystemUsagePeriod(startedAt, endedAt)
+            }
+        }
+        val events = context.getSystemService(UsageStatsManager::class.java).queryEvents(startOfDay, now)
+        val event = UsageEvents.Event()
+        var foregroundPackage: String? = null
+        var foregroundAt = startOfDay
+        while (events.hasNextEvent()) {
+            events.getNextEvent(event)
+            when (event.eventType) {
+                UsageEvents.Event.MOVE_TO_FOREGROUND, UsageEvents.Event.ACTIVITY_RESUMED -> {
+                    if (foregroundPackage != event.packageName) {
+                        record(foregroundPackage, foregroundAt, event.timeStamp)
+                        foregroundPackage = event.packageName
+                        foregroundAt = event.timeStamp
+                    }
+                }
+                UsageEvents.Event.MOVE_TO_BACKGROUND, UsageEvents.Event.ACTIVITY_PAUSED, UsageEvents.Event.ACTIVITY_STOPPED -> {
+                    if (foregroundPackage == event.packageName) {
+                        record(foregroundPackage, foregroundAt, event.timeStamp)
+                        foregroundPackage = null
+                    }
+                }
+            }
+        }
+        record(foregroundPackage, foregroundAt, now)
+        return periodsByPackage.asSequence()
+            .map { (packageName, periods) ->
+                SystemAppUsage(
+                    packageName = packageName,
+                    label = launchable.getValue(packageName).label,
+                    foregroundSeconds = periods.sumOf { (it.endedAtMillis - it.startedAtMillis) / 1_000 },
+                    periods = periods,
+                )
+            }
+            .filter { it.foregroundSeconds > 0 }
+            .sortedByDescending { it.foregroundSeconds }
+            .toList()
+    }
+
+    /**
      * The current foreground app. Our own package is included so returning to
      * 作业小伙伴 counts as an app switch; system components (launcher, dialogs)
      * stay excluded because they are not launchable.
@@ -188,13 +262,13 @@ class KioskPolicy(private val context: Context) {
         return names
     }
 
-    /** Shows the full-screen study-time notice over a blocked app. */
+    /**
+     * A vendor escape put a non-allowed app in front.  Do not leave that app
+     * underneath an explanatory overlay: return straight to the managed study
+     * desktop, whose only launch targets are the allowlisted apps.
+     */
     fun openStudyBlock(blockedPackage: String) {
-        if (mode() != KioskMode.STUDY) return
-        val launchIntent = Intent(context, StudyBlockActivity::class.java)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            .putExtra(StudyBlockActivity.EXTRA_BLOCKED_PACKAGE, blockedPackage)
-        launchFromBackground(launchIntent, REQUEST_STUDY_BLOCK)
+        if (mode() == KioskMode.STUDY) applyAllowlist(KioskMode.STUDY)
     }
 
     fun applyForCurrentTime(activity: Activity? = null, navigate: Boolean = false) {
@@ -202,32 +276,38 @@ class KioskPolicy(private val context: Context) {
         val current = mode()
         if (current != KioskMode.STUDY) {
             StudySessionService.stop(context)
+            // A broadcast receiver cannot call Activity.stopLockTask().  Bring
+            // our already-allowlisted activity forward first so MainActivity
+            // can finish the Lock Task session.  Releasing a restriction must
+            // not choose a new app or desktop for the child.
+            if (navigate && activity == null) {
+                val releaseIntent = Intent(context, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                launchFromBackground(releaseIntent, REQUEST_NORMAL_RELEASE)
+            }
             releaseLockTask(activity)
-            if (navigate) openSystemHome()
             return
         }
-        configureAsHome()
         applyAllowlist(current)
-        StudySessionService.start(context)
+        // Package suspension is the durable boundary. Lock Task is retained
+        // only as the study-time navigation UX: no system-home exit button,
+        // while the app's own back/return paths remain available.
         activity?.let { startLockTaskSafely(it) }
         if (navigate) openMode(current)
     }
 
     fun enterStudy(activity: Activity? = null) {
         if (!isDeviceOwner) return
-        prefs.edit().remove("paused_until").apply()
-        configureAsHome()
-        applyAllowlist(KioskMode.STUDY)
-        StudySessionService.start(context)
-        if (activity is MainActivity) startLockTaskSafely(activity) else openMode(KioskMode.STUDY)
+        // Scheduled alarms call this method.  They must respect an active
+        // temporary opening instead of silently cancelling it.
+        applyForCurrentTime(activity, navigate = true)
     }
 
     fun exitStudyMode(activity: Activity? = null) {
         if (!isDeviceOwner) return
-        prefs.edit().remove("paused_until").remove("guarded_until").apply()
+        prefs.edit().remove("normal_override_until").remove("paused_until").remove("study_override_until").remove("guarded_until").apply()
         StudySessionService.stop(context)
         releaseLockTask(activity)
-        openSystemHome()
     }
 
     fun openStudyLauncher() {
@@ -236,10 +316,7 @@ class KioskPolicy(private val context: Context) {
         // The HOME activity is disabled after a managed session ends, so an
         // explicit shortcut launch must enable it again first.
         setStudyLauncherEnabled(true)
-        if (isDeviceOwner && mode() == KioskMode.STUDY) {
-            configureAsHome()
-            applyAllowlist(KioskMode.STUDY)
-        }
+        if (isDeviceOwner && mode() == KioskMode.STUDY) applyAllowlist(KioskMode.STUDY)
         context.startActivity(Intent(context, ChildLauncherActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP))
     }
 
@@ -328,12 +405,7 @@ class KioskPolicy(private val context: Context) {
 
     fun restoreManagedTask() {
         if (!isDeviceOwner || mode() != KioskMode.STUDY) return
-        configureAsHome()
         applyAllowlist(KioskMode.STUDY)
-        val launchIntent = Intent(context, MainActivity::class.java).addFlags(
-            Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP,
-        )
-        launchFromBackground(launchIntent, REQUEST_RESTORE_STUDY)
     }
 
     /**
@@ -345,11 +417,6 @@ class KioskPolicy(private val context: Context) {
         // Background-activity-start options have two distinct owners.  Passing
         // the sender option to PendingIntent.getActivity() is rejected on
         // Android 16; it belongs exclusively to PendingIntent.send().
-        val creationOptions = ActivityOptions.makeBasic().apply {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
-                setPendingIntentCreatorBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
-            }
-        }
         val sendOptions = ActivityOptions.makeBasic().apply {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 setPendingIntentBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
@@ -360,7 +427,6 @@ class KioskPolicy(private val context: Context) {
             requestCode,
             launchIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-            creationOptions.toBundle(),
         )
         runCatching {
             pending.send(context, 0, null, null, null, null, sendOptions.toBundle())
@@ -369,23 +435,30 @@ class KioskPolicy(private val context: Context) {
         }
     }
 
+    /** Temporarily use ordinary mode while preserving an auditable daily count. */
     fun pause(minutes: Int, activity: Activity? = null) {
+        require(minutes > 0)
+        val until = System.currentTimeMillis() + minutes * 60_000L
         prefs.edit()
-            .putLong("paused_until", System.currentTimeMillis() + minutes * 60_000L)
+            .putLong("normal_override_until", until)
+            .remove("paused_until")
+            .remove("study_override_until")
             .remove("guarded_until")
+            .putInt(temporaryOpenCountKey(LocalDate.now()), temporaryOpenCountToday + 1)
             .apply()
         StudySessionService.stop(context)
         releaseLockTask(activity)
         scheduleNextTransitions()
     }
 
-    /** Immediately enforce the selected-app kiosk for a short, explicit period. */
+    /** Re-enter study mode until the end of the current calendar day. */
     fun guardFor(minutes: Int, activity: Activity? = null) {
-        require(minutes > 0)
         if (!isDeviceOwner) return
         prefs.edit()
+            .remove("normal_override_until")
             .remove("paused_until")
-            .putLong("guarded_until", System.currentTimeMillis() + minutes * 60_000L)
+            .putLong("study_override_until", endOfTodayMillis())
+            .remove("guarded_until")
             .apply()
         // Do not leave the parent settings activity visible as the locked
         // surface. HyperOS can close that window from its three-dot menu
@@ -395,7 +468,7 @@ class KioskPolicy(private val context: Context) {
     }
 
     fun resume(activity: Activity? = null) {
-        prefs.edit().remove("paused_until").apply()
+        prefs.edit().remove("normal_override_until").remove("paused_until").apply()
         applyForCurrentTime(activity, navigate = true)
     }
 
@@ -403,8 +476,8 @@ class KioskPolicy(private val context: Context) {
         val alarm = context.getSystemService(AlarmManager::class.java)
         scheduleAlarm(alarm, REQUEST_STUDY, nextOccurrence(startMinutes), ACTION_STUDY)
         scheduleAlarm(alarm, REQUEST_NORMAL, nextOccurrence(endMinutes), ACTION_NORMAL)
-        if (pausedUntil > System.currentTimeMillis()) scheduleAlarm(alarm, REQUEST_RESUME, pausedUntil, ACTION_REEVALUATE)
-        if (guardedUntil > System.currentTimeMillis()) scheduleAlarm(alarm, REQUEST_RESUME, guardedUntil, ACTION_REEVALUATE)
+        if (temporaryOpenUntil > System.currentTimeMillis()) scheduleAlarm(alarm, REQUEST_RESUME, temporaryOpenUntil, ACTION_REEVALUATE)
+        if (forcedStudyUntil > System.currentTimeMillis()) scheduleAlarm(alarm, REQUEST_RESUME, forcedStudyUntil, ACTION_REEVALUATE)
     }
 
     private fun scheduleAlarm(alarm: AlarmManager, requestCode: Int, at: Long, action: String) {
@@ -425,28 +498,82 @@ class KioskPolicy(private val context: Context) {
         return target.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
     }
 
+    private fun endOfTodayMillis(): Long = LocalDate.now().plusDays(1)
+        .atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+
+    val temporaryOpenCountToday: Int
+        get() = prefs.getInt(temporaryOpenCountKey(LocalDate.now()), 0)
+
+    private fun temporaryOpenCountKey(date: LocalDate) = "temporary_open_count:$date"
+
     private fun applyAllowlist(mode: KioskMode) {
-        val packages = when (mode) {
-            KioskMode.STUDY -> setOf(context.packageName) + studyPackages + temporaryPackages
-            KioskMode.NORMAL -> emptySet()
-            KioskMode.PAUSED -> emptySet()
-        }
-        runCatching { dpm.setLockTaskPackages(admin, packages.toTypedArray()) }
         if (mode == KioskMode.STUDY) {
-            runCatching { dpm.addUserRestriction(admin, UserManager.DISALLOW_CREATE_WINDOWS) }
-            // Keep the hardware controls available.  A previous app version may
-            // have set this restriction, so explicitly clear it on every entry.
+            suspendNonAllowedApps()
+            val lockTaskPackages = setOf(context.packageName) + studyPackages + temporaryPackages + studyInstallSystemPackages()
+            runCatching { dpm.setLockTaskPackages(admin, lockTaskPackages.toTypedArray()) }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                runCatching { dpm.setLockTaskFeatures(admin, DevicePolicyManager.LOCK_TASK_FEATURE_NONE) }
+            }
+        } else {
+            unsuspendManagedApps()
+        }
+        if (mode == KioskMode.STUDY) {
+            runCatching { dpm.clearUserRestriction(admin, UserManager.DISALLOW_CREATE_WINDOWS) }
             runCatching { dpm.clearUserRestriction(admin, UserManager.DISALLOW_ADJUST_VOLUME) }
-            runCatching { dpm.setStatusBarDisabled(admin, true) }
+            runCatching { dpm.setStatusBarDisabled(admin, false) }
             enforceStudyVolume()
         } else {
             runCatching { dpm.clearUserRestriction(admin, UserManager.DISALLOW_CREATE_WINDOWS) }
             runCatching { dpm.clearUserRestriction(admin, UserManager.DISALLOW_ADJUST_VOLUME) }
             runCatching { dpm.setStatusBarDisabled(admin, false) }
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            runCatching { dpm.setLockTaskFeatures(admin, DevicePolicyManager.LOCK_TASK_FEATURE_NONE) }
+    }
+
+    /**
+     * Device-owner package suspension is enforced by Android before an app can
+     * start, survives reboot, and does not require replacing the system home.
+     */
+    private fun suspendNonAllowedApps() {
+        // First clear our earlier set: a parent might have just changed the
+        // allowlist, and an already-suspended package may no longer appear in
+        // launcher queries on some Android builds.
+        unsuspendManagedApps(clearSaved = false)
+        val alwaysAvailable = setOf(context.packageName) + studyPackages + temporaryPackages +
+            studyInstallSystemPackages() + systemHomePackages()
+        val candidates = launchableApps().mapTo(LinkedHashSet()) { it.packageName } - alwaysAvailable
+        if (candidates.isEmpty()) {
+            prefs.edit().remove(SUSPENDED_PACKAGES_KEY).apply()
+            return
         }
+        val refused = runCatching {
+            dpm.setPackagesSuspended(admin, candidates.toTypedArray(), true).toSet()
+        }.getOrElse { candidates }
+        prefs.edit().putStringSet(SUSPENDED_PACKAGES_KEY, candidates - refused).apply()
+    }
+
+    private fun unsuspendManagedApps(clearSaved: Boolean = true) {
+        val packages = prefs.getStringSet(SUSPENDED_PACKAGES_KEY, emptySet()).orEmpty()
+        if (packages.isNotEmpty()) {
+            runCatching { dpm.setPackagesSuspended(admin, packages.toTypedArray(), false) }
+        }
+        if (clearSaved) prefs.edit().remove(SUSPENDED_PACKAGES_KEY).apply()
+    }
+
+    private fun systemHomePackages(): Set<String> {
+        val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+        return context.packageManager.queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY)
+            .mapTo(HashSet()) { it.activityInfo.packageName }
+    }
+
+    private fun studyInstallSystemPackages(): Set<String> = INSTALL_SYSTEM_PACKAGES.filterTo(HashSet()) { packageName ->
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.packageManager.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(0))
+            } else {
+                @Suppress("DEPRECATION")
+                context.packageManager.getPackageInfo(packageName, 0)
+            }
+        }.isSuccess
     }
 
     private fun allowTemporarily(packageName: String) {
@@ -470,12 +597,18 @@ class KioskPolicy(private val context: Context) {
     }
 
     private fun releaseLockTask(activity: Activity?) {
+        unsuspendManagedApps()
+        prefs.edit().remove("temporary_packages").remove("external_foreground_allowed").apply()
+        clearLegacyLockTask(activity)
+    }
+
+    /** Clears restrictions left behind by earlier Lock Task based versions. */
+    private fun clearLegacyLockTask(activity: Activity?) {
         if (!isDeviceOwner) return
         runCatching { dpm.setLockTaskPackages(admin, emptyArray()) }
         runCatching { dpm.clearUserRestriction(admin, UserManager.DISALLOW_CREATE_WINDOWS) }
         runCatching { dpm.clearUserRestriction(admin, UserManager.DISALLOW_ADJUST_VOLUME) }
         runCatching { dpm.setStatusBarDisabled(admin, false) }
-        prefs.edit().remove("temporary_packages").remove("external_foreground_allowed").apply()
         // Lock-task features are policy state on MIUI too. Explicitly restore the
         // normal system navigation controls when study time ends; merely removing
         // the package allowlist can leave the bottom navigation area hidden.
@@ -507,8 +640,6 @@ class KioskPolicy(private val context: Context) {
             // BAL-enabled route as the recovery service so Android/HyperOS
             // does not silently refuse to show the managed home at 10:00.
             launchFromBackground(intent, REQUEST_OPEN_STUDY)
-        } else {
-            openSystemHome()
         }
     }
 
@@ -517,6 +648,10 @@ class KioskPolicy(private val context: Context) {
     }
 
     companion object {
+        private val INSTALL_SYSTEM_PACKAGES = setOf(
+            "com.miui.packageinstaller",
+            "com.miui.securitycenter",
+        )
         const val ACTION_STUDY = "com.homeworkbuddy.action.ENTER_STUDY"
         const val ACTION_NORMAL = "com.homeworkbuddy.action.ENTER_NORMAL"
         const val ACTION_REEVALUATE = "com.homeworkbuddy.action.REEVALUATE"
@@ -528,10 +663,12 @@ class KioskPolicy(private val context: Context) {
         private const val REQUEST_RESTORE_STUDY = 7111
         private const val REQUEST_STUDY_BLOCK = 7112
         private const val REQUEST_OPEN_STUDY = 7113
+        private const val REQUEST_NORMAL_RELEASE = 7114
         private const val FOREGROUND_WINDOW_MS = 3_000L
         private const val USAGE_FALLBACK_WINDOW_MS = 24 * 60 * 60 * 1_000L
         private const val LAUNCHABLE_CACHE_MS = 60_000L
         private const val STUDY_VOLUME_MIN_FRACTION = 0.30
+        private const val SUSPENDED_PACKAGES_KEY = "study_suspended_packages"
         private var launchableCache: Pair<Long, Set<String>>? = null
     }
 }

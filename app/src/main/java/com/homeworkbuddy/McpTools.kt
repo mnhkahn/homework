@@ -64,14 +64,14 @@ object McpTools {
         },
         ToolRegistration("self.camera.start_stream", "开始共享学习画面（平板会提示正在共享）", JSONObject().put("type", "object").put("properties", JSONObject()
             .put("fps", JSONObject().put("type", "integer").put("minimum", 1).put("maximum", 3).put("description", "每秒帧数，范围 1-3"))
-            .put("duration_sec", JSONObject().put("type", "integer").put("description", "最长共享秒数，范围 1-60"))
+            .put("duration_sec", JSONObject().put("type", "integer").put("description", "最长共享秒数；未插电上限 60 秒，插电时上限 180 秒"))
             .put("resolution", JSONObject().put("type", "string").put("enum", JSONArray().put("qqvga").put("qvga").put("vga").put("svga")))
         )) { context, arguments ->
             runBlocking {
                 RemoteStreamCoordinator.start(
                     context,
                     arguments.optInt("fps", 1).coerceIn(1, 3),
-                    arguments.optInt("duration_sec", 30).coerceIn(1, 60),
+                    arguments.optInt("duration_sec", 0),
                     arguments.optString("resolution", "qqvga"),
                 )
             }
