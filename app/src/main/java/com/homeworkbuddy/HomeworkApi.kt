@@ -130,6 +130,13 @@ class HomeworkApi(private val context: Context) {
         request("PUT", "/cards/${segment(taskId)}", mapOf("idList" to requiredDoneList(), "dueComplete" to "true"))
     }
 
+    /** Stores a child's written answer in the card activity before completing it. */
+    suspend fun submitText(taskId: String, text: String) = withContext(Dispatchers.IO) {
+        require(text.isNotBlank()) { "请先输入文字内容" }
+        request("POST", "/cards/${segment(taskId)}/actions/comments", mapOf("text" to "作业文字提交：\n${text.trim()}"))
+        request("PUT", "/cards/${segment(taskId)}", mapOf("idList" to requiredDoneList(), "dueComplete" to "true"))
+    }
+
     /** Marks a task complete without uploading a local-only recording. */
     suspend fun completeWithoutAttachment(taskId: String) = withContext(Dispatchers.IO) {
         request("PUT", "/cards/${segment(taskId)}", mapOf("idList" to requiredDoneList(), "dueComplete" to "true"))

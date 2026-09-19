@@ -10,6 +10,7 @@ import android.app.admin.DeviceAdminReceiver
 import android.app.admin.DevicePolicyManager
 import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
+import android.os.BatteryManager
 import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
@@ -22,6 +23,7 @@ import android.os.PowerManager
 import android.os.Process
 import android.os.UserManager
 import android.provider.MediaStore
+import android.provider.Settings
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
@@ -273,6 +275,7 @@ class KioskPolicy(private val context: Context) {
 
     fun applyForCurrentTime(activity: Activity? = null, navigate: Boolean = false) {
         if (!isDeviceOwner) return
+        enableStayAwakeWhilePluggedIn()
         val current = mode()
         if (current != KioskMode.STUDY) {
             StudySessionService.stop(context)
@@ -563,6 +566,19 @@ class KioskPolicy(private val context: Context) {
         val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
         return context.packageManager.queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY)
             .mapTo(HashSet()) { it.activityInfo.packageName }
+    }
+
+    /**
+     * Device-wide setting equivalent to Android's “Stay awake while charging”.
+     * Unlike FLAG_KEEP_SCREEN_ON, it applies on the system home and every app.
+     */
+    private fun enableStayAwakeWhilePluggedIn() {
+        val plugTypes = BatteryManager.BATTERY_PLUGGED_AC or
+            BatteryManager.BATTERY_PLUGGED_USB or
+            BatteryManager.BATTERY_PLUGGED_WIRELESS
+        if (context.checkSelfPermission(android.Manifest.permission.WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED) {
+            Settings.Global.putInt(context.contentResolver, Settings.Global.STAY_ON_WHILE_PLUGGED_IN, plugTypes)
+        }
     }
 
     private fun studyInstallSystemPackages(): Set<String> = INSTALL_SYSTEM_PACKAGES.filterTo(HashSet()) { packageName ->

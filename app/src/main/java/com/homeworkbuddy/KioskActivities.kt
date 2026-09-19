@@ -332,6 +332,15 @@ private fun SmallTimeField(value: String, onValueChange: (String) -> Unit, label
 }
 
 class ChildLauncherActivity : ComponentActivity() {
+    // HyperOS fires onUserLeaveHint even for app-initiated activity starts.
+    // Same escape hatch as MainActivity.allowManagedActivityLaunch: without it
+    // the study-mode reassert below immediately covers every launched app.
+    private var allowNextUserLeaveHint = false
+
+    fun allowManagedActivityLaunch() {
+        allowNextUserLeaveHint = true
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setShowWhenLocked(true)
@@ -349,6 +358,10 @@ class ChildLauncherActivity : ComponentActivity() {
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
+        if (allowNextUserLeaveHint) {
+            allowNextUserLeaveHint = false
+            return
+        }
         val policy = KioskPolicy(this)
         if (policy.isDeviceOwner && policy.mode() == KioskMode.STUDY) {
             // Some tablet window managers expose a Home-like close command
@@ -373,12 +386,16 @@ private fun ChildLauncher(activity: ChildLauncherActivity) {
         Column(Modifier.fillMaxSize().padding(28.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 FilledTonalIconButton(
-                    onClick = { activity.startActivity(Intent(activity, MainActivity::class.java)) },
+                    onClick = {
+                        activity.allowManagedActivityLaunch()
+                        activity.startActivity(Intent(activity, MainActivity::class.java))
+                    },
                     modifier = Modifier.size(58.dp),
                     colors = IconButtonDefaults.filledTonalIconButtonColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
                 ) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回作业", modifier = Modifier.size(32.dp)) }
                 Spacer(Modifier.size(16.dp))
                 Text("学习应用", fontSize = 32.sp, fontWeight = FontWeight.Medium, modifier = Modifier.combinedClickable(onClick = {}, onLongClick = {
+                    activity.allowManagedActivityLaunch()
                     activity.startActivity(Intent(activity, KioskSettingsActivity::class.java))
                 }))
             }
@@ -402,7 +419,10 @@ private fun ChildLauncher(activity: ChildLauncherActivity) {
             Spacer(Modifier.height(22.dp))
             LazyVerticalGrid(columns = GridCells.Adaptive(180.dp), modifier = Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 item(key = "homework") {
-                    LauncherCard("作业小伙伴", icon = { Icon(Icons.AutoMirrored.Outlined.MenuBook, null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary) }) { activity.startActivity(Intent(activity, MainActivity::class.java)) }
+                    LauncherCard("作业小伙伴", icon = { Icon(Icons.AutoMirrored.Outlined.MenuBook, null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary) }) {
+                        activity.allowManagedActivityLaunch()
+                        activity.startActivity(Intent(activity, MainActivity::class.java))
+                    }
                 }
                 item(key = "cyeam-24") {
                     LauncherCard("24 点", icon = {
@@ -413,6 +433,7 @@ private fun ChildLauncher(activity: ChildLauncherActivity) {
                             contentScale = ContentScale.Fit,
                         )
                     }) {
+                        activity.allowManagedActivityLaunch()
                         activity.startActivity(GameActivity.intent(activity, GameActivity.GAME_24_URL))
                     }
                 }
@@ -425,6 +446,7 @@ private fun ChildLauncher(activity: ChildLauncherActivity) {
                             contentScale = ContentScale.Fit,
                         )
                     }) {
+                        activity.allowManagedActivityLaunch()
                         activity.startActivity(GameActivity.intent(activity, GameActivity.SUDOKU_URL))
                     }
                 }
@@ -432,6 +454,7 @@ private fun ChildLauncher(activity: ChildLauncherActivity) {
                     LauncherCard("口算", icon = {
                         Icon(Icons.Outlined.Calculate, null, modifier = Modifier.size(52.dp), tint = MaterialTheme.colorScheme.primary)
                     }) {
+                        activity.allowManagedActivityLaunch()
                         activity.startActivity(GameActivity.intent(activity, GameActivity.ARITHMETIC_URL))
                     }
                 }
@@ -439,6 +462,7 @@ private fun ChildLauncher(activity: ChildLauncherActivity) {
                     LauncherCard("英语跟读", icon = {
                         Icon(Icons.Outlined.RecordVoiceOver, null, modifier = Modifier.size(52.dp), tint = MaterialTheme.colorScheme.primary)
                     }) {
+                        activity.allowManagedActivityLaunch()
                         activity.startActivity(GameActivity.intent(activity, GameActivity.ENGLISH_READING_URL))
                     }
                 }
@@ -446,7 +470,12 @@ private fun ChildLauncher(activity: ChildLauncherActivity) {
                     val icon = remember(app.packageName) { activity.packageManager.getApplicationIcon(app.packageName).toBitmap(96, 96).asImageBitmap() }
                     LauncherCard(app.label, icon = { Image(icon, null, modifier = Modifier.size(48.dp)) }) {
                         policy.prepareStudyAppLaunch(app.packageName)
-                        activity.packageManager.getLaunchIntentForPackage(app.packageName)?.let(activity::startActivity)
+                        activity.packageManager.getLaunchIntentForPackage(app.packageName)?.let { launch ->
+                            // A new task keeps the external app out of this
+                            // locked task; its package stays allowlisted.
+                            activity.allowManagedActivityLaunch()
+                            activity.startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        }
                     }
                 }
             }

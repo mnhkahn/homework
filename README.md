@@ -26,6 +26,16 @@
 
 不要把 Trello API token 打包进 APK。
 
+## 发布与自动升级
+
+推送 `v*` 或 `x.y.z` 形式的 tag 会触发 `.github/workflows/android-release.yml`：CI 用 GitHub Secrets 里的 keystore 签名 release APK（版本号取自 tag，`versionCode` 取 workflow run number），并以固定文件名 `HomeworkBuddy-release.apk` 上传到 GitHub Release。App 启动时会查询该仓库的最新 Release，发现新版本后弹窗提示，下载 APK 并调起系统安装器完成覆盖升级。
+
+首次配置需要：
+
+1. 生成发布 keystore：`keytool -genkeypair -v -keystore release.keystore -alias homeworkbuddy -keyalg RSA -keysize 2048 -validity 10000`（keystore 只保留在本地，不要提交）。
+2. 在仓库 Settings → Secrets and variables → Actions 添加 `RELEASE_KEYSTORE_BASE64`（`base64 -i release.keystore` 的输出）和 `HOMEWORK_RELEASE_STORE_PASSWORD`。
+3. 平板上首次从 debug 签名切换到 release 签名时需卸载重装一次；之后同签名版本即可自动覆盖升级。
+
 ## 小李 Gateway 连接
 
 家长在小李管理端点击“添加学习平板”生成一次性二维码，再在“家长设置 → 小李连接”中扫描。设备 token 使用 Android Keystore 的 AES-GCM 密钥加密后才会保存到本机。二维码内容是：

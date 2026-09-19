@@ -12,8 +12,8 @@ android {
         applicationId = "com.homeworkbuddy"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = (providers.gradleProperty("releaseVersionCode").orNull ?: "1").toInt()
+        versionName = providers.gradleProperty("releaseVersionName").orNull ?: "0.1.0"
         // Trello documents application keys as public application identifiers.
         // User tokens are never placed in BuildConfig and stay encrypted on the device.
         buildConfigField("String", "TRELLO_API_KEY", "\"4a716dce9dd7f9920377cf16bb355c94\"")

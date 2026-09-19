@@ -39,6 +39,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -62,8 +64,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
@@ -403,6 +407,8 @@ private fun HomeworkBuddyApp() {
     var refreshing by remember { mutableStateOf(false) }
     var showSubmissionChoice by remember { mutableStateOf(false) }
     var showCameraConfirm by remember { mutableStateOf(false) }
+    var showTextSubmission by remember { mutableStateOf(false) }
+    var submissionText by remember { mutableStateOf("") }
     var capturePhoto by remember { mutableStateOf<Uri?>(null) }
     var pendingPhotos by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var pendingAudio by remember { mutableStateOf<Uri?>(null) }
@@ -430,6 +436,14 @@ private fun HomeworkBuddyApp() {
 
     LaunchedEffect(Unit) {
         runCatching { SloganApi.fetch() }.getOrNull()?.let { slogan = it }
+    }
+
+    var updateInfo by remember { mutableStateOf<AppUpdater.UpdateInfo?>(null) }
+    var updateProgress by remember { mutableStateOf<Float?>(null) }
+    var updateError by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        updateInfo = AppUpdater.checkForUpdate()
     }
 
     DisposableEffect(remoteNoticeStore) {
@@ -604,6 +618,11 @@ private fun HomeworkBuddyApp() {
                     if (pending.completionOnly) {
                         Log.i("HomeworkSubmit", "retry_local_recording task=${pending.taskId}")
                         runCatching { api.completeWithoutAttachment(pending.taskId) }.onSuccess {
+                            pendingStore.remove(pending.taskId)
+                            uploadedAnything = true
+                        }
+                    } else if (pending.textContent != null) {
+                        runCatching { api.submitText(pending.taskId, pending.textContent) }.onSuccess {
                             pendingStore.remove(pending.taskId)
                             uploadedAnything = true
                         }
@@ -930,6 +949,16 @@ private fun HomeworkBuddyApp() {
                     }
                 }
             },
+            onChooseText = {
+                selected?.let { current ->
+                    showSubmissionChoice = false
+                    Log.i("HomeworkSubmit", "text_mode task=${current.id}")
+                    pendingStore.remove(current.id)
+                    running = false
+                    submissionText = ""
+                    showTextSubmission = true
+                }
+            },
             onSubmit = {
                 val photos = pendingPhotos
                 val current = selected
@@ -957,6 +986,37 @@ private fun HomeworkBuddyApp() {
                     }
                 }
             },
+            showTextSubmission = showTextSubmission,
+            submissionText = submissionText,
+            onSubmissionTextChange = { submissionText = it },
+            onSubmitText = {
+                val current = selected
+                val text = submissionText.trim()
+                if (!connected || current == null) {
+                    connectionError = "请先关联 Trello 后再提交作业。"
+                } else if (text.isBlank()) {
+                    connectionError = "请输入要提交的文字内容。"
+                } else if (submittingTaskId == null) {
+                    submittingTaskId = current.id
+                    scope.launch {
+                        runCatching { api.submitText(current.id, text) }
+                            .onSuccess {
+                                CompletionHistoryStore(context).recordCompletion(current.id, System.currentTimeMillis() / 1_000, LocalDate.now().atTime(current.deadline).atZone(ZoneId.systemDefault()).toEpochSecond(), taskElapsedSeconds)
+                                advanceAfterCompletion(current.id)
+                                celebration = CelebrationEvent(current.title, tasks.all { it.status == TaskStatus.COMPLETED })
+                                refreshRequest++
+                                showTextSubmission = false; submissionText = ""
+                            }
+                            .onFailure { error ->
+                                pendingStore.add(PendingSubmission(current.id, emptyList(), current.status == TaskStatus.OVERTIME, textContent = text))
+                                showTextSubmission = false; submissionText = ""
+                                if (error is AuthorizationExpiredException) reportSyncError(error, "")
+                                else connectionError = "文字作业和完成状态尚未同步到 Trello，任务仍是待完成；联网后会自动重试。"
+                            }
+                        submittingTaskId = null
+                    }
+                }
+            },
             showCameraConfirm = showCameraConfirm,
             photoCount = pendingPhotos.size,
             audioAttached = pendingAudio != null,
@@ -975,8 +1035,47 @@ private fun HomeworkBuddyApp() {
             },
             onDismissSubmissionChoice = { showSubmissionChoice = false },
             onRetake = { showCameraConfirm = false; capturePhoto = null; pendingPhotos = emptyList(); pendingAudio = null },
+            onDismissTextSubmission = { if (submittingTaskId == null) { showTextSubmission = false; submissionText = "" } },
         )
         celebration?.let { event -> CelebrationDialog(event.taskTitle, event.allTasksComplete) { celebration = null } }
+        updateInfo?.let { info ->
+            UpdateDialog(
+                info = info,
+                progress = updateProgress,
+                error = updateError,
+                onUpdate = {
+                    if (updateProgress != null) return@UpdateDialog
+                    updateError = null
+                    scope.launch {
+                        updateProgress = 0f
+                        runCatching { AppUpdater.download(context, info) { updateProgress = it } }
+                            .onSuccess { apk ->
+                                updateProgress = null
+                                // The system installer is outside the Lock Task
+                                // allowlist, so a study-mode tablet needs the
+                                // same temporary pause as the Trello consent flow.
+                                (activity as? MainActivity)?.allowManagedActivityLaunch()
+                                if (kioskPolicy.isDeviceOwner && kioskPolicy.mode() == KioskMode.STUDY) {
+                                    kioskPolicy.pause(15, activity)
+                                }
+                                if (AppUpdater.canInstallPackages(context)) {
+                                    runCatching { AppUpdater.install(context, apk) }
+                                        .onSuccess { updateInfo = null }
+                                        .onFailure { updateError = "无法打开系统安装器，请稍后再试。" }
+                                } else {
+                                    updateError = "请先允许“安装未知应用”，然后点击重试。"
+                                    AppUpdater.openInstallPermissionSettings(context)
+                                }
+                            }
+                            .onFailure { error ->
+                                updateProgress = null
+                                updateError = error.message ?: "下载失败，请稍后再试。"
+                            }
+                    }
+                },
+                onDismiss = { updateInfo = null },
+            )
+        }
         if (showBlockedApps) BlockedAppsDialog(systemNonAllowedApps) { showBlockedApps = false }
     }
 }
@@ -1058,7 +1157,7 @@ private fun CelebrationDialog(taskTitle: String, allTasksComplete: Boolean, onDi
 }
 
 @Composable
-private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, remainingSeconds: Int, running: Boolean, taskElapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, xiaoliConnection: XiaoliConnectionSnapshot, kioskMode: KioskMode, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onChoosePhoto: () -> Unit, onChooseAudio: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photoCount: Int, audioAttached: Boolean, showSubmissionChoice: Boolean, onAddPhoto: () -> Unit, onDismissSubmissionChoice: () -> Unit, onRetake: () -> Unit) {
+private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, remainingSeconds: Int, running: Boolean, taskElapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, xiaoliConnection: XiaoliConnectionSnapshot, kioskMode: KioskMode, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onChoosePhoto: () -> Unit, onChooseAudio: () -> Unit, onChooseText: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photoCount: Int, audioAttached: Boolean, showSubmissionChoice: Boolean, showTextSubmission: Boolean, submissionText: String, onSubmissionTextChange: (String) -> Unit, onSubmitText: () -> Unit, onAddPhoto: () -> Unit, onDismissSubmissionChoice: () -> Unit, onRetake: () -> Unit, onDismissTextSubmission: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val complete = tasks.count { it.status == TaskStatus.COMPLETED }
     val todayEstimatedSeconds = tasks.sumOf { it.estimatedMinutes.coerceAtLeast(0) * 60 }
@@ -1127,7 +1226,12 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
     if (showSubmissionChoice) AlertDialog(
         onDismissRequest = onDismissSubmissionChoice,
         title = { Text("怎么提交作业？") },
-        text = { Text("可以拍作业照片，也可以打开系统录音机录一段音频。录音只保留在系统录音机里，不会上传。") },
+        text = {
+            Column {
+                Text("可以拍作业照片、录一段音频，或直接提交文字内容。录音只保留在系统录音机里，不会上传。")
+                TextButton(onClick = onChooseText) { Text("✏️ 提交文字") }
+            }
+        },
         confirmButton = { Button(onClick = onChoosePhoto) { Icon(Icons.Outlined.CameraAlt, null); Spacer(Modifier.width(8.dp)); Text("拍照") } },
         dismissButton = { OutlinedButton(onClick = onChooseAudio) { Text("🎙️ 录音") } },
     )
@@ -1156,6 +1260,13 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
             }
         },
         dismissButton = { TextButton(onClick = onRetake, enabled = !submitting) { Text("取消") } },
+    )
+    if (showTextSubmission) AlertDialog(
+        onDismissRequest = onDismissTextSubmission,
+        title = { Text("提交文字作业") },
+        text = { OutlinedTextField(value = submissionText, onValueChange = onSubmissionTextChange, modifier = Modifier.fillMaxWidth(), label = { Text("文字内容") }, placeholder = { Text("写下你的答案或完成情况") }, minLines = 4, enabled = !submitting) },
+        confirmButton = { Button(onClick = onSubmitText, enabled = !submitting && submissionText.isNotBlank()) { Text(if (submitting) "正在提交…" else "提交并完成") } },
+        dismissButton = { TextButton(onClick = onDismissTextSubmission, enabled = !submitting) { Text("取消") } },
     )
 }
 
@@ -1352,6 +1463,14 @@ private fun LocalRecordingButton(localUri: String) {
 
 @Composable private fun PhotoViewer(url: String, api: HomeworkApi, onDismiss: () -> Unit) {
     val state by produceState(PhotoLoadState(), url) { value = PhotoLoadState(api.loadPhoto(url), finished = true) }
+    var scale by remember(url) { mutableFloatStateOf(1f) }
+    var offset by remember(url) { mutableStateOf(Offset.Zero) }
+    val transformState = rememberTransformableState { zoomChange, panChange, _ ->
+        val newScale = (scale * zoomChange).coerceIn(1f, 4f)
+        if (newScale == 1f) offset = Offset.Zero
+        else offset += panChange
+        scale = newScale
+    }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize().padding(24.dp), shape = RoundedCornerShape(24.dp), color = Color.Black) {
             Column(Modifier.fillMaxSize()) {
@@ -1359,10 +1478,23 @@ private fun LocalRecordingButton(localUri: String) {
                     TextButton(onClick = onDismiss, colors = ButtonDefaults.textButtonColors(contentColor = Color.White)) { Text("关闭") }
                 }
                 Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
-                    state.bitmap?.let { Image(it.asImageBitmap(), "作业图片", Modifier.fillMaxSize(), contentScale = ContentScale.Fit) }
+                    state.bitmap?.let {
+                        Image(
+                            it.asImageBitmap(),
+                            "作业图片（可双指缩放）",
+                            Modifier.fillMaxSize().transformable(transformState).graphicsLayer {
+                                scaleX = scale
+                                scaleY = scale
+                                translationX = offset.x
+                                translationY = offset.y
+                            },
+                            contentScale = ContentScale.Fit,
+                        )
+                    }
                     if (!state.finished) CircularProgressIndicator(color = Color.White)
                     else if (state.bitmap == null) Text("图片加载失败，请稍后重试", color = Color.White)
                 }
+                Text("双指可放大缩小，放大后可拖动查看", modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 12.dp), color = Color.White, fontSize = 13.sp)
             }
         }
     }
@@ -1556,7 +1688,7 @@ private fun formatStudyDuration(seconds: Long): String {
                 Text(if (pianoPractice.cooldownSeconds > 0) "已记 ${pianoPractice.count} 次 · ${pianoPractice.cooldownSeconds} 秒后可再记" else "🎹 练琴记一次（已记 ${pianoPractice.count} 次）")
             }
         }
-        Spacer(Modifier.height(10.dp)); FilledTonalButton(onClick = onFinish, modifier = Modifier.align(Alignment.CenterHorizontally), enabled = task.status != TaskStatus.COMPLETED && !submitting) { Icon(Icons.Outlined.CameraAlt, null); Spacer(Modifier.width(8.dp)); Text("完成并拍照") }
+        Spacer(Modifier.height(10.dp)); FilledTonalButton(onClick = onFinish, modifier = Modifier.align(Alignment.CenterHorizontally), enabled = task.status != TaskStatus.COMPLETED && !submitting) { Icon(Icons.Outlined.CameraAlt, null); Spacer(Modifier.width(8.dp)); Text("完成并提交") }
     }
 }
 
