@@ -48,6 +48,9 @@ class HomeworkCacheStore(context: Context) {
         put("attachments", JSONArray().also { attachments -> task.attachments.forEach { attachment -> attachments.put(JSONObject().put("url", attachment.url).put("name", attachment.name).put("mime_type", attachment.mimeType)) } })
         put("due_date", task.dueDate.toString())
         put("completed_at", task.completedAtEpochSeconds)
+        put("type", task.type.name)
+        put("task", task.task)
+        put("link", task.link)
     }
 
     private fun decode(value: JSONObject): HomeworkTask = HomeworkTask(
@@ -68,5 +71,8 @@ class HomeworkCacheStore(context: Context) {
         } ?: emptyList(),
         dueDate = value.optString("due_date").let { runCatching { LocalDate.parse(it) }.getOrDefault(LocalDate.now()) },
         completedAtEpochSeconds = value.optLong("completed_at").takeIf { it > 0 },
+        type = value.optString("type").let { runCatching { HomeworkTaskType.valueOf(it) }.getOrDefault(HomeworkTaskType.NORMAL) },
+        task = value.optString("task").ifBlank { null },
+        link = value.optString("link").ifBlank { null },
     )
 }

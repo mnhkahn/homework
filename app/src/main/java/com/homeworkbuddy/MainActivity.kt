@@ -1668,6 +1668,7 @@ private fun formatStudyDuration(seconds: Long): String {
 
 @Composable private fun CurrentTask(modifier: Modifier, task: HomeworkTask, running: Boolean, elapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit) {
     val overdue = task.status == TaskStatus.OVERTIME
+    val context = androidx.compose.ui.platform.LocalContext.current
     Column(modifier.clip(RoundedCornerShape(26.dp)).background(if (overdue) OverdueSurface else Sun).padding(28.dp), horizontalAlignment = Alignment.Start) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             if (task.subject != "作业") AssistChip(onClick = {}, label = { Text(task.subject) })
@@ -1681,7 +1682,18 @@ private fun formatStudyDuration(seconds: Long): String {
                 Text(if (running) elapsedLabel(elapsedSeconds) else task.deadline.format(DateTimeFormatter.ofPattern("HH:mm")), fontSize = 31.sp, fontWeight = FontWeight.Medium)
             }
         }
-        Spacer(Modifier.weight(1f)); Button(onClick = onStart, modifier = Modifier.align(Alignment.CenterHorizontally), enabled = task.status != TaskStatus.COMPLETED && !submitting && !running) { Text(if (running) "正在做" else "开始做") }
+        Spacer(Modifier.weight(1f))
+        task.link?.let { link ->
+            FilledTonalButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) }, modifier = Modifier.align(Alignment.CenterHorizontally), enabled = task.status != TaskStatus.COMPLETED && !submitting) {
+                Text(when (task.type) {
+                    HomeworkTaskType.WORD_MEMORIZATION -> "打开背单词"
+                    HomeworkTaskType.ENGLISH_READING -> "打开英语阅读"
+                    HomeworkTaskType.NORMAL -> "打开作业链接"
+                })
+            }
+            Spacer(Modifier.height(10.dp))
+        }
+        Button(onClick = onStart, modifier = Modifier.align(Alignment.CenterHorizontally), enabled = task.status != TaskStatus.COMPLETED && !submitting && !running) { Text(if (running) "正在做" else "开始做") }
         if (pianoPractice != null) {
             Spacer(Modifier.height(10.dp))
             FilledTonalButton(onClick = onPianoRecord, modifier = Modifier.align(Alignment.CenterHorizontally), enabled = pianoPractice.cooldownSeconds == 0 && task.status != TaskStatus.COMPLETED && !submitting) {

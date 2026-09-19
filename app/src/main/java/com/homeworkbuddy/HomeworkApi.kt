@@ -192,12 +192,14 @@ class HomeworkApi(private val context: Context) {
                     ?: item.optString("dateLastActivity").takeIf { it.isNotBlank() }
                         ?.let { runCatching { OffsetDateTime.parse(it).toEpochSecond() }.getOrNull() }
             } else null
+            val details = HomeworkTaskDetails.fromDescription(item.optString("desc"))
             HomeworkTask(
                 item.getString("id"), subject, item.getString("name"), homeworkMinutes(item.optString("desc")),
                 deadline.toLocalTime(), taskStatus,
                 photoUrls = attachments.filterNot(HomeworkAttachment::isAudio).map(HomeworkAttachment::url),
                 attachments = attachments,
                 dueDate = deadline.toLocalDate(), completedAtEpochSeconds = activityAt,
+                type = details.type, task = details.task, link = details.link,
             )
         }
     }

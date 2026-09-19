@@ -5,6 +5,13 @@ import java.time.LocalDate
 
 enum class TaskStatus { TODO, RUNNING, COMPLETED, OVERTIME }
 
+/**
+ * The task mode is intentionally separate from the card subject.  Parents can
+ * set it explicitly; [HomeworkTaskDetails] only infers a mode for legacy
+ * cards that do not carry one.
+ */
+enum class HomeworkTaskType { NORMAL, WORD_MEMORIZATION, ENGLISH_READING }
+
 data class HomeworkAttachment(val url: String, val name: String, val mimeType: String) {
     val isAudio: Boolean get() = mimeType.startsWith("audio/") || name.endsWith(".m4a", true) || name.endsWith(".mp3", true) || name.endsWith(".wav", true)
 }
@@ -22,6 +29,11 @@ data class HomeworkTask(
     val attachments: List<HomeworkAttachment> = emptyList(),
     val dueDate: LocalDate = LocalDate.now(),
     val completedAtEpochSeconds: Long? = null,
+    val type: HomeworkTaskType = HomeworkTaskType.NORMAL,
+    /** The assignment payload, such as the normalized vocabulary list. */
+    val task: String? = null,
+    /** A safe, child-facing learning destination when this task has one. */
+    val link: String? = null,
 ) {
     /** System recorder URI retained locally; Trello attachments are never used for playback. */
     val localAudioUri: String? get() = photoPath?.takeIf {

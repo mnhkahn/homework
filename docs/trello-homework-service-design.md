@@ -42,6 +42,26 @@ One family uses one board.
 
 This keeps parent-side entry simple and avoids requiring Trello custom fields for v1.
 
+### Type-specific homework links
+
+The parent app should use these task types: `normal`, `word_memorization`, and
+`english_reading`. Explicit type selection always wins over automatic detection.
+For a Trello card description, either store the parent payload as JSON or use
+readable lines such as `类型: word_memorization` and `作业内容: bedroom, armchair`.
+
+- `word_memorization`: normalize an English word list to comma-separated words
+  and put only `https://www.cyeam.com/ai/translate?words=word1,word2` in the
+  card description. The `words` query value keeps literal English commas.
+- `english_reading`: preserve a supplied
+  `https://www.cyeam.com/ai/translate?textbook=<number>&article=<number>` URL
+  exactly; do not reconstruct it.
+- With no selected type, identify the reading URL first, then an English word
+  list; otherwise retain the existing `normal` behavior.
+
+Creating one homework must create exactly one Trello card. Put the link in its
+`desc`; do not add an attachment, comment, or additional card. The tablet
+shows an **打开背单词** or **打开英语阅读** button for recognized types.
+
 ## HTTP API
 
 All `/api/homework/*` routes return JSON and use an opaque bearer device token after pairing.
