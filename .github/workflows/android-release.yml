@@ -59,7 +59,8 @@ jobs:
         env:
           HOMEWORK_RELEASE_STORE_FILE: ${{ runner.temp }}/release.keystore
           HOMEWORK_RELEASE_STORE_PASSWORD: ${{ secrets.HOMEWORK_RELEASE_STORE_PASSWORD }}
-        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace \
+        run: |
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace \
           -PreleaseVersionName="${GITHUB_REF_NAME#v}" \
           -PreleaseVersionCode="${{ github.run_number }}"
 
