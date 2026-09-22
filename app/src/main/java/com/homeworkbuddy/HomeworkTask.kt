@@ -28,6 +28,8 @@ data class HomeworkTask(
     val photoUrls: List<String> = emptyList(),
     val attachments: List<HomeworkAttachment> = emptyList(),
     val dueDate: LocalDate = LocalDate.now(),
+    /** When this tablet's child started the assignment. */
+    val startedAtEpochSeconds: Long? = null,
     val completedAtEpochSeconds: Long? = null,
     val type: HomeworkTaskType = HomeworkTaskType.NORMAL,
     /** The assignment payload, such as the normalized vocabulary list. */

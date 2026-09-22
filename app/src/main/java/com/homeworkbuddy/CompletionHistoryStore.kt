@@ -10,6 +10,7 @@ data class CompletionRecord(
     val taskId: String,
     val title: String,
     val deadlineEpochSeconds: Long,
+    val startedAtEpochSeconds: Long?,
     val completedAtEpochSeconds: Long?,
     val durationSeconds: Int?,
     val localAudioUri: String?,
@@ -34,6 +35,7 @@ class CompletionHistoryStore(context: Context) {
             val deadline = date.atTime(task.deadline).atZone(ZoneId.systemDefault()).toEpochSecond()
             val entry = day.optJSONObject(task.id) ?: JSONObject()
             entry.put("title", task.title).put("deadline", deadline)
+            task.startedAtEpochSeconds?.let { entry.put("started_at", it) }
             entry.put("photo_urls", org.json.JSONArray(task.photoUrls))
             entry.put("attachments", org.json.JSONArray().also { attachments ->
                 task.attachments.forEach { attachment ->
@@ -52,10 +54,11 @@ class CompletionHistoryStore(context: Context) {
     }
 
     /** Records the first completion of a task; later calls for the same task are ignored. */
-    fun recordCompletion(taskId: String, completedAtEpochSeconds: Long, deadlineEpochSeconds: Long, durationSeconds: Int? = null, localAudioUri: String? = null, date: LocalDate = LocalDate.now()) {
+    fun recordCompletion(taskId: String, completedAtEpochSeconds: Long, deadlineEpochSeconds: Long, startedAtEpochSeconds: Long? = null, durationSeconds: Int? = null, localAudioUri: String? = null, date: LocalDate = LocalDate.now()) {
         val day = dayJson(date)
         val entry = day.optJSONObject(taskId) ?: JSONObject().put("title", "").put("deadline", deadlineEpochSeconds)
         if (entry.has("completed_at")) return
+        startedAtEpochSeconds?.let { entry.put("started_at", it) }
         entry.put("completed_at", completedAtEpochSeconds)
         durationSeconds?.takeIf { it > 0 }?.let { entry.put("duration_seconds", it) }
         localAudioUri?.let { entry.put("local_audio_uri", it) }
@@ -72,6 +75,7 @@ class CompletionHistoryStore(context: Context) {
                 id,
                 entry.optString("title"),
                 entry.optLong("deadline"),
+                entry.optLong("started_at").takeIf { entry.has("started_at") },
                 if (entry.has("completed_at")) entry.getLong("completed_at") else null,
                 entry.optInt("duration_seconds").takeIf { entry.has("duration_seconds") },
                 entry.optString("local_audio_uri").ifBlank { null },

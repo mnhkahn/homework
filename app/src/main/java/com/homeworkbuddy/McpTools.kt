@@ -50,13 +50,26 @@ object McpTools {
         ToolRegistration("self.audio_speaker.stop", "停止当前音频播放", emptySchema()) { context, _ ->
             RemoteAudioPlayer.stop(context)
         },
-        ToolRegistration("self.camera.take_photo", "应用内拍摄一张学习照片，并在平板提示正在拍照", emptySchema()) { context, _ ->
-            runBlocking { RemotePhotoCoordinator.take(context) }
+        ToolRegistration("self.camera.take_photo", "拍摄学习照片并由小李视觉模型回答检查问题", JSONObject()
+            .put("type", "object")
+            .put("properties", JSONObject().put("question", JSONObject().put("type", "string")))
+            .put("required", JSONArray().put("question"))) { context, arguments ->
+            val question = arguments.optString("question").trim()
+            if (question.isBlank()) throw McpException(-32602, "self.camera.take_photo 缺少 question")
+            val photo = runBlocking { RemotePhotoCoordinator.take(context, "vga") }
+            JSONObject().put("raw_response", VisionExplainUploader.explain(context, photo, question))
         },
-        // The admin console's snapshot button uses this established protocol
-        // name. It returns the same JPEG payload as take_photo.
-        ToolRegistration("self.camera.snapshot", "应用内拍摄一张学习照片并返回 JPEG 数据", emptySchema()) { context, _ ->
-            runBlocking { RemotePhotoCoordinator.take(context) }
+        ToolRegistration("self.camera.snapshot", "拍摄学习照片并安全上传到小李服务端", JSONObject()
+            .put("type", "object")
+            .put("properties", JSONObject().put("resolution", JSONObject()
+                .put("type", "string")
+                .put("enum", JSONArray().put("qqvga").put("qvga").put("vga").put("svga"))))) { context, arguments ->
+            val resolution = arguments.optString("resolution", "vga").lowercase()
+            if (resolution !in setOf("qqvga", "qvga", "vga", "svga")) {
+                throw McpException(-32602, "resolution 必须为 qqvga、qvga、vga 或 svga")
+            }
+            val photo = runBlocking { RemotePhotoCoordinator.take(context, resolution) }
+            VisionSnapshotUploader.upload(context, photo, resolution)
         },
         ToolRegistration("self.camera.record_video", "请求在平板前台录制一段学习小视频", JSONObject().put("type", "object").put("properties", JSONObject().put("max_seconds", JSONObject().put("type", "integer").put("description", "最长录制秒数，默认 15，上限 30")))) { context, arguments ->
             val maxSeconds = arguments.optInt("max_seconds", 15).coerceIn(1, 30)
@@ -94,9 +107,10 @@ object McpTools {
     }
 
     fun call(context: Context, params: JSONObject): JSONObject {
-        val name = params.getString("name")
+        val name = params.optString("name")
+        if (name.isBlank()) throw McpException(-32602, "tools/call 缺少工具名称")
         val arguments = params.optJSONObject("arguments") ?: JSONObject()
-        val tool = tools.firstOrNull { it.name == name } ?: throw IllegalArgumentException("未注册工具：$name")
+        val tool = tools.firstOrNull { it.name == name } ?: throw McpException(-32601, "未注册工具：$name")
         val result = tool.handler(context, arguments)
         // The Xiaoli admin preview reads image fields from the tool result.  Do
         // not hide a JPEG inside MCP's human-readable text content.
@@ -106,7 +120,22 @@ object McpTools {
                 .put("mime_type", result.optString("mime_type", "image/jpeg"))
                 .put("image_base64", result.getString("image_base64"))
         }
-        return JSONObject().put("content", JSONArray().put(JSONObject().put("type", "text").put("text", result.toString())))
+        if (result.has("raw_response")) {
+            return JSONObject().put("content", JSONArray().put(JSONObject()
+                .put("type", "text").put("text", result.getString("raw_response"))))
+        }
+        // Keep structured snapshot metadata at the top level as well.  The
+        // management console can render its preview without parsing text
+        // content, while this remains a valid MCP tool result for other hosts.
+        return JSONObject()
+            .put("content", JSONArray().put(JSONObject().put("type", "text").put("text", result.toString())))
+            .put("uploaded", result.optBoolean("uploaded", false))
+            .put("preview_url", result.optString("preview_url"))
+            .put("image_size", result.optLong("image_size", 0))
+            .put("width", result.optInt("width", 0))
+            .put("height", result.optInt("height", 0))
+            .put("resolution", result.optString("resolution"))
+            .put("stream_event_id", result.optString("stream_event_id"))
     }
 
     private fun notify(context: Context, title: String, body: String) {

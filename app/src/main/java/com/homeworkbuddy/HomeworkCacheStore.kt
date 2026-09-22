@@ -47,6 +47,7 @@ class HomeworkCacheStore(context: Context) {
         put("photo_urls", JSONArray(task.photoUrls))
         put("attachments", JSONArray().also { attachments -> task.attachments.forEach { attachment -> attachments.put(JSONObject().put("url", attachment.url).put("name", attachment.name).put("mime_type", attachment.mimeType)) } })
         put("due_date", task.dueDate.toString())
+        put("started_at", task.startedAtEpochSeconds)
         put("completed_at", task.completedAtEpochSeconds)
         put("type", task.type.name)
         put("task", task.task)
@@ -70,6 +71,7 @@ class HomeworkCacheStore(context: Context) {
             } }
         } ?: emptyList(),
         dueDate = value.optString("due_date").let { runCatching { LocalDate.parse(it) }.getOrDefault(LocalDate.now()) },
+        startedAtEpochSeconds = value.optLong("started_at").takeIf { it > 0 },
         completedAtEpochSeconds = value.optLong("completed_at").takeIf { it > 0 },
         type = value.optString("type").let { runCatching { HomeworkTaskType.valueOf(it) }.getOrDefault(HomeworkTaskType.NORMAL) },
         task = value.optString("task").ifBlank { null },

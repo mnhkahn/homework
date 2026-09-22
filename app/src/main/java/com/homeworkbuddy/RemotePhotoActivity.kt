@@ -33,9 +33,9 @@ object RemotePhotoCoordinator {
     val isCaptureInProgress: Boolean
         get() = synchronized(this) { pending?.isActive == true }
 
-    suspend fun take(context: Context): JSONObject {
-        check(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-            "需要相机权限才能拍照"
+    suspend fun take(context: Context, resolution: String = "vga"): JSONObject {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            throw McpException(-32001, "相机权限被拒绝")
         }
         val result = CompletableDeferred<JSONObject>()
         synchronized(this) {
@@ -45,7 +45,7 @@ object RemotePhotoCoordinator {
         CaptureStatusStore(context).begin(CaptureKind.PHOTO)
         CameraShutterSound.play()
         runCatching {
-            InAppPhotoCapture(context.applicationContext, ::complete, ::fail).also {
+            InAppPhotoCapture(context.applicationContext, resolution, ::complete, ::fail).also {
                 synchronized(this) { capture = it }
                 it.start()
             }
@@ -82,6 +82,7 @@ object RemotePhotoCoordinator {
 
 private class InAppPhotoCapture(
     private val context: Context,
+    private val resolution: String,
     private val onSuccess: (JSONObject) -> Unit,
     private val onFailure: (String) -> Unit,
 ) {
@@ -108,8 +109,16 @@ private class InAppPhotoCapture(
             val sizes = manager.getCameraCharacteristics(cameraId)
                 .get(android.hardware.camera2.CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
                 ?.getOutputSizes(ImageFormat.JPEG) ?: error("相机不支持 JPEG 拍照")
-            val size = sizes.filter { maxOf(it.width, it.height) <= 1280 }.maxByOrNull { it.width * it.height }
-                ?: sizes.minByOrNull { it.width * it.height } ?: error("未找到可用拍照尺寸")
+            val target = when (resolution) {
+                "qqvga" -> Size(160, 120)
+                "qvga" -> Size(320, 240)
+                "svga" -> Size(800, 600)
+                else -> Size(640, 480)
+            }
+            // Pick a hardware size close to the requested resolution. The JPEG is
+            // normalized again below because camera sensors are often landscape.
+            val size = sizes.minByOrNull { kotlin.math.abs(it.width * it.height - target.width * target.height) }
+                ?: error("未找到可用拍照尺寸")
             openCamera(manager, cameraId, size)
         }.onFailure { finishError(it.message ?: "无法打开相机") }
     }
@@ -128,7 +137,13 @@ private class InAppPhotoCapture(
                 val bytes = image.planes[0].buffer.let { buffer -> ByteArray(buffer.remaining()).also(buffer::get) }
                 image.close()
                 Log.i("RemotePhoto", "received JPEG bytes=${bytes.size}")
-                finishSuccess(JSONObject().put("mime_type", "image/jpeg").put("image_base64", encodePhoto(bytes)))
+                val encoded = encodePhoto(bytes)
+                finishSuccess(JSONObject()
+                    .put("mime_type", "image/jpeg")
+                    .put("image_base64", encoded.base64)
+                    .put("width", encoded.width)
+                    .put("height", encoded.height)
+                    .put("image_size", encoded.size))
             }.onFailure { finishError(it.message ?: "照片编码失败") }
         }, handler)
         manager.openCamera(cameraId, object : CameraDevice.StateCallback() {
@@ -200,14 +215,31 @@ private class InAppPhotoCapture(
         return true
     }
 
-    private fun encodePhoto(bytes: ByteArray): String {
+    private data class EncodedPhoto(val base64: String, val width: Int, val height: Int, val size: Int)
+
+    private fun encodePhoto(bytes: ByteArray): EncodedPhoto {
         val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: error("无法读取照片")
-        val scale = (maxOf(bitmap.width, bitmap.height) / 1280f).coerceAtLeast(1f)
+        val maxDimension = when (resolution) {
+            "qqvga" -> 160
+            "qvga" -> 320
+            "svga" -> 800
+            else -> 640
+        }
+        val scale = (maxOf(bitmap.width, bitmap.height) / maxDimension.toFloat()).coerceAtLeast(1f)
         val resized = if (scale == 1f) bitmap else Bitmap.createScaledBitmap(bitmap, (bitmap.width / scale).toInt(), (bitmap.height / scale).toInt(), true)
         val watermarked = CaptureWatermark.draw(resized)
-        return ByteArrayOutputStream().use { stream ->
-            watermarked.compress(Bitmap.CompressFormat.JPEG, 75, stream)
-            Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
+        return run {
+            var quality = 80
+            var encoded: ByteArray
+            do {
+                encoded = ByteArrayOutputStream().use { stream ->
+                    watermarked.compress(Bitmap.CompressFormat.JPEG, quality, stream)
+                    stream.toByteArray()
+                }
+                quality -= 10
+            } while (encoded.size > 2 * 1024 * 1024 && quality >= 40)
+            if (encoded.size > 2 * 1024 * 1024) error("图片压缩后仍超过 2 MB")
+            EncodedPhoto(Base64.encodeToString(encoded, Base64.NO_WRAP), watermarked.width, watermarked.height, encoded.size)
         }.also {
             if (watermarked !== resized) watermarked.recycle()
             if (resized !== bitmap) resized.recycle()

@@ -24,7 +24,14 @@ import java.util.concurrent.CopyOnWriteArraySet
 private const val XIAOLI_CHANNEL = "xiaoli_connection"
 private const val XIAOLI_NOTIFICATION_ID = 7101
 
-data class XiaoliConnectionConfig(val deviceId: String, val deviceName: String, val websocketUrl: String, val token: String)
+data class XiaoliConnectionConfig(
+    val deviceId: String,
+    val deviceName: String,
+    val websocketUrl: String,
+    val token: String,
+    /** Optional explicit endpoint supplied by newer pairing servers. */
+    val snapshotUrl: String? = null,
+)
 
 object XiaoliDeviceStore {
     private const val PREFS = "xiaoli_device"
@@ -32,6 +39,7 @@ object XiaoliDeviceStore {
     private const val DEVICE_NAME = "device_name"
     private const val WS_URL = "websocket_url"
     private const val TOKEN = "token"
+    private const val SNAPSHOT_URL = "snapshot_url"
 
     fun defaultDeviceId(context: Context): String = "homework-tablet-" + android.provider.Settings.Secure.getString(context.contentResolver, android.provider.Settings.Secure.ANDROID_ID).takeLast(8)
 
@@ -44,6 +52,7 @@ object XiaoliDeviceStore {
             prefs.getString(DEVICE_NAME, "学习平板") ?: "学习平板",
             url,
             token,
+            prefs.getString(SNAPSHOT_URL, null),
         )
     }
 
@@ -53,6 +62,7 @@ object XiaoliDeviceStore {
             .putString(DEVICE_NAME, config.deviceName)
             .putString(WS_URL, config.websocketUrl)
             .putString(TOKEN, DeviceTokenCipher.encrypt(config.token))
+            .putString(SNAPSHOT_URL, config.snapshotUrl)
             .apply()
     }
 
@@ -105,6 +115,7 @@ object XiaoliMcpNotifications {
  * QR format is server-owned and intentionally small. The QR contains a short lived pair URL and code:
  * {"pair_url":"https://gateway.example/xiaozhi/pair","code":"one-time-code"}.
  * The endpoint returns {"device":{"id":"...","name":"..."},"websocket":{"url":"wss://...","token":"..."}}.
+ * Newer servers may also return `device_id` and `vision_snapshot_url` at the top level.
  */
 object XiaoliPairingClient {
     fun pair(context: Context, rawQr: String, requestedName: String): XiaoliConnectionConfig {
@@ -131,10 +142,12 @@ object XiaoliPairingClient {
         val device = result.optJSONObject("device")
         val websocket = result.getJSONObject("websocket")
         return XiaoliConnectionConfig(
-            device?.optString("id").orEmpty().ifBlank { XiaoliDeviceStore.defaultDeviceId(context) },
+            result.optString("device_id").ifBlank { device?.optString("id").orEmpty() }
+                .ifBlank { XiaoliDeviceStore.defaultDeviceId(context) },
             device?.optString("name").orEmpty().ifBlank { requestedName },
             websocket.getString("url"),
             websocket.getString("token"),
+            result.optString("vision_snapshot_url").ifBlank { result.optString("snapshot_url") }.ifBlank { null },
         )
     }
 }
@@ -207,7 +220,7 @@ class XiaoliConnectionService : Service() {
         val request = Request.Builder()
             .url(config.websocketUrl)
             .header("Device-Id", config.deviceId)
-            .header("Authorization", config.token)
+            .header("Authorization", "Bearer ${config.token}")
             .build()
         socket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -272,8 +285,13 @@ class XiaoliConnectionService : Service() {
                 }
                 JSONObject().put("jsonrpc", "2.0").put("id", id).put("result", result)
             } catch (error: Throwable) {
+                val code = (error as? McpException)?.rpcCode ?: when {
+                    error is kotlinx.coroutines.TimeoutCancellationException -> -32004
+                    error.message?.contains("相机", ignoreCase = true) == true -> -32004
+                    else -> -32000
+                }
                 JSONObject().put("jsonrpc", "2.0").put("id", id)
-                    .put("error", JSONObject().put("code", -32000).put("message", error.message ?: "执行失败"))
+                    .put("error", JSONObject().put("code", code).put("message", error.message ?: "执行失败"))
             }
             sendMcp(webSocket, response)
         }

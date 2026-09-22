@@ -108,6 +108,14 @@ private fun elapsedLabel(seconds: Int): String {
     return "%02d:%02d".format(minutes, remainder)
 }
 
+private fun homeworkTimeLabel(epochSeconds: Long): String =
+    Instant.ofEpochSecond(epochSeconds).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("HH:mm"))
+
+private fun homeworkTimingLabel(task: HomeworkTask): String = buildList {
+    task.startedAtEpochSeconds?.let { add("开始 ${homeworkTimeLabel(it)}") }
+    task.completedAtEpochSeconds?.let { add("完成 ${homeworkTimeLabel(it)}") }
+}.joinToString(" · ")
+
 private data class MelodyNote(val frequency: Double, val durationMs: Int)
 
 private fun shortFanfare(vararg notes: Double) = notes.map { MelodyNote(it, 180) }
@@ -192,6 +200,7 @@ private object CelebrationSound {
 class MainActivity : ComponentActivity() {
     private val screenTimeoutHandler = Handler(Looper.getMainLooper())
     private var allowNextUserLeaveHint = false
+    private var homeworkInProgress = false
     private val clearKeepScreenOn = Runnable {
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
@@ -217,11 +226,24 @@ class MainActivity : ComponentActivity() {
         allowNextUserLeaveHint = true
     }
 
+    /** A child explicitly started an assignment, so do not let the display sleep mid-work. */
+    fun setHomeworkInProgress(inProgress: Boolean) {
+        homeworkInProgress = inProgress
+        if (inProgress) extendStudyScreenTimeout() else clearStudyScreenTimeout()
+    }
+
     /**
      * When plugged in, keep the current app visible in either mode.  Learning
      * mode additionally keeps its quiet-screen dimming behavior on charging.
      */
     private fun extendStudyScreenTimeout() {
+        if (homeworkInProgress) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            screenTimeoutHandler.removeCallbacks(clearKeepScreenOn)
+            screenTimeoutHandler.removeCallbacks(dimStudyScreen)
+            restoreStudyBrightness()
+            return
+        }
         val studyMode = KioskPolicy(this).mode() == KioskMode.STUDY
         if (!studyMode && !isCharging()) {
             clearStudyScreenTimeout()
@@ -239,6 +261,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun clearStudyScreenTimeout() {
+        if (homeworkInProgress) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            restoreStudyBrightness()
+            return
+        }
         screenTimeoutHandler.removeCallbacks(clearKeepScreenOn)
         screenTimeoutHandler.removeCallbacks(dimStudyScreen)
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -391,8 +418,8 @@ private fun HomeworkBuddyApp() {
     var weekTasks by remember { mutableStateOf(taskCache.weekTasks()) }
     var selectedId by remember { mutableStateOf("") }
     var remainingSeconds by remember { mutableIntStateOf(0) }
-    var running by remember { mutableStateOf(false) }
-    var taskStartedAtMillis by remember { mutableLongStateOf(0L) }
+    var running by remember { mutableStateOf(tasks.any { it.status == TaskStatus.RUNNING }) }
+    var taskStartedAtMillis by remember { mutableLongStateOf(tasks.firstOrNull { it.status == TaskStatus.RUNNING }?.startedAtEpochSeconds?.times(1_000) ?: 0L) }
     var taskElapsedSeconds by remember { mutableIntStateOf(0) }
     var showNameDialog by remember { mutableStateOf(childName.isBlank()) }
     var connected by remember { mutableStateOf(api.isConnected) }
@@ -516,6 +543,10 @@ private fun HomeworkBuddyApp() {
         HomeworkStatusStore(context).save(tasks, selectedId, remainingSeconds, running, taskElapsedSeconds)
     }
 
+    LaunchedEffect(running) {
+        (activity as? MainActivity)?.setHomeworkInProgress(running)
+    }
+
     LaunchedEffect(running, taskStartedAtMillis, selectedId) {
         if (!running || taskStartedAtMillis == 0L) return@LaunchedEffect
         while (running) {
@@ -556,8 +587,9 @@ private fun HomeworkBuddyApp() {
 
     fun advanceAfterCompletion(taskId: String, photoPath: String? = null) {
         val currentIndex = tasks.indexOfFirst { it.id == taskId }
+        val completedAt = System.currentTimeMillis() / 1_000
         val updated = tasks.map { task ->
-            if (task.id == taskId) task.copy(status = TaskStatus.COMPLETED, photoPath = photoPath ?: task.photoPath) else task
+            if (task.id == taskId) task.copy(status = TaskStatus.COMPLETED, completedAtEpochSeconds = completedAt, photoPath = photoPath ?: task.photoPath) else task
         }
         tasks = updated
         taskCache.saveToday(updated)
@@ -587,6 +619,7 @@ private fun HomeworkBuddyApp() {
                     taskId,
                     System.currentTimeMillis() / 1_000,
                     LocalDate.now().atTime(current.deadline).atZone(ZoneId.systemDefault()).toEpochSecond(),
+                    current.startedAtEpochSeconds,
                     recordedAudioElapsedSeconds,
                     recordedAudioUri,
                 )
@@ -775,11 +808,11 @@ private fun HomeworkBuddyApp() {
                             // retry finished the upload; the completion was not
                             // recorded on this device yet.
                             if (old.status != TaskStatus.COMPLETED) {
-                                completionHistory.recordCompletion(fresh.id, System.currentTimeMillis() / 1_000, today.atTime(fresh.deadline).atZone(ZoneId.systemDefault()).toEpochSecond())
+                                completionHistory.recordCompletion(fresh.id, System.currentTimeMillis() / 1_000, today.atTime(fresh.deadline).atZone(ZoneId.systemDefault()).toEpochSecond(), old.startedAtEpochSeconds)
                             }
-                            fresh.copy(photoPath = old.photoPath)
+                            fresh.copy(startedAtEpochSeconds = old.startedAtEpochSeconds, photoPath = old.photoPath)
                         }
-                        else fresh.copy(status = if (old.status == TaskStatus.RUNNING) TaskStatus.RUNNING else fresh.status, photoPath = old.photoPath)
+                        else fresh.copy(status = if (old.status == TaskStatus.RUNNING) TaskStatus.RUNNING else fresh.status, startedAtEpochSeconds = old.startedAtEpochSeconds, photoPath = old.photoPath)
                     } ?: fresh
                 }
                 tasks = merged
@@ -894,12 +927,14 @@ private fun HomeworkBuddyApp() {
             },
             systemNonAllowedApps = systemNonAllowedApps,
             onBlockedApps = { systemNonAllowedApps = kioskPolicy.todayNonAllowedAppUsage(); showBlockedApps = true },
-            onSelect = { task -> selectedId = task.id; remainingSeconds = task.estimatedMinutes * 60; running = false; taskStartedAtMillis = 0L; taskElapsedSeconds = 0 },
+            onSelect = { task -> selectedId = task.id; remainingSeconds = task.estimatedMinutes * 60; running = task.status == TaskStatus.RUNNING; taskStartedAtMillis = task.startedAtEpochSeconds?.times(1_000) ?: 0L; taskElapsedSeconds = taskStartedAtMillis.takeIf { it > 0 }?.let { ((System.currentTimeMillis() - it) / 1_000L).toInt().coerceAtLeast(0) } ?: 0 },
             onStart = {
-                taskStartedAtMillis = System.currentTimeMillis()
+                val startedAt = System.currentTimeMillis()
+                taskStartedAtMillis = startedAt
                 taskElapsedSeconds = 0
                 running = true
-                tasks = tasks.map { if (it.id == selectedId) it.copy(status = TaskStatus.RUNNING) else it }
+                tasks = tasks.map { if (it.id == selectedId) it.copy(status = TaskStatus.RUNNING, startedAtEpochSeconds = startedAt / 1_000) else it }
+                taskCache.saveToday(tasks)
             },
             onPianoRecord = {
                 selected?.takeIf { it.title.contains("钢琴") }?.let { pianoPractice = pianoPracticeStore.record(it.id) }
@@ -912,7 +947,6 @@ private fun HomeworkBuddyApp() {
                     showSubmissionChoice = false
                     Log.i("HomeworkSubmit", "photo_mode task=${current.id}")
                     pendingStore.remove(current.id)
-                    running = false
                     pendingPhotos = emptyList()
                     pendingAudio = null
                     val file = File(context.cacheDir, "photos/${current.id}-${System.currentTimeMillis()}.jpg").also { it.parentFile?.mkdirs() }
@@ -936,7 +970,6 @@ private fun HomeworkBuddyApp() {
                     showSubmissionChoice = false
                     Log.i("HomeworkSubmit", "audio_mode task=${current.id}")
                     pendingStore.remove(current.id)
-                    running = false
                     pendingPhotos = emptyList()
                     pendingAudio = null
                     KioskPolicy(context).allowSystemRecorderForCapture()
@@ -954,7 +987,6 @@ private fun HomeworkBuddyApp() {
                     showSubmissionChoice = false
                     Log.i("HomeworkSubmit", "text_mode task=${current.id}")
                     pendingStore.remove(current.id)
-                    running = false
                     submissionText = ""
                     showTextSubmission = true
                 }
@@ -970,7 +1002,7 @@ private fun HomeworkBuddyApp() {
                     scope.launch {
                         runCatching { api.submit(current.id, photos, current.status == TaskStatus.OVERTIME, submissionId) }
                             .onSuccess {
-                                CompletionHistoryStore(context).recordCompletion(current.id, System.currentTimeMillis() / 1_000, LocalDate.now().atTime(current.deadline).atZone(ZoneId.systemDefault()).toEpochSecond(), taskElapsedSeconds)
+                                CompletionHistoryStore(context).recordCompletion(current.id, System.currentTimeMillis() / 1_000, LocalDate.now().atTime(current.deadline).atZone(ZoneId.systemDefault()).toEpochSecond(), current.startedAtEpochSeconds, taskElapsedSeconds)
                                 advanceAfterCompletion(current.id, photos.first().toString())
                                 celebration = CelebrationEvent(current.title, tasks.all { it.status == TaskStatus.COMPLETED })
                                 refreshRequest++
@@ -1001,7 +1033,7 @@ private fun HomeworkBuddyApp() {
                     scope.launch {
                         runCatching { api.submitText(current.id, text) }
                             .onSuccess {
-                                CompletionHistoryStore(context).recordCompletion(current.id, System.currentTimeMillis() / 1_000, LocalDate.now().atTime(current.deadline).atZone(ZoneId.systemDefault()).toEpochSecond(), taskElapsedSeconds)
+                                CompletionHistoryStore(context).recordCompletion(current.id, System.currentTimeMillis() / 1_000, LocalDate.now().atTime(current.deadline).atZone(ZoneId.systemDefault()).toEpochSecond(), current.startedAtEpochSeconds, taskElapsedSeconds)
                                 advanceAfterCompletion(current.id)
                                 celebration = CelebrationEvent(current.title, tasks.all { it.status == TaskStatus.COMPLETED })
                                 refreshRequest++
@@ -1373,7 +1405,7 @@ private fun ScheduledTaskList(modifier: Modifier, tasks: List<HomeworkTask>) {
                         Text(task.title, modifier = Modifier.weight(1f), fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         TaskStatusPill(task.status)
                     }
-                    Text(if (completed) "已完成" else "截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                    Text(homeworkTimingLabel(task).ifBlank { if (completed) "已完成" else "截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}" }, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
                 }
             }
         }
@@ -1424,6 +1456,12 @@ private fun ScheduledTaskList(modifier: Modifier, tasks: List<HomeworkTask>) {
                     }
                     record.durationSeconds?.let { duration ->
                         Text("实际用时 ${elapsedLabel(duration)}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                    }
+                    buildList {
+                        record.startedAtEpochSeconds?.let { add("开始 ${homeworkTimeLabel(it)}") }
+                        record.completedAtEpochSeconds?.let { add("完成 ${homeworkTimeLabel(it)}") }
+                    }.joinToString(" · ").takeIf { it.isNotBlank() }?.let { timing ->
+                        Text(timing, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
                     }
                     if (record.photoUrls.isNotEmpty()) {
                         TextButton(onClick = { photoUrl = record.photoUrls.first() }, contentPadding = PaddingValues(top = 5.dp, bottom = 0.dp)) {
@@ -1676,6 +1714,7 @@ private fun formatStudyDuration(seconds: Long): String {
         }
         Spacer(Modifier.height(14.dp)); Text(task.title, fontSize = 30.sp, fontWeight = FontWeight.Medium)
         Text(if (overdue) "已超过截止时间，请优先完成" else "截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", color = if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = if (overdue) FontWeight.Medium else FontWeight.Normal)
+        task.startedAtEpochSeconds?.let { Text("开始 ${homeworkTimeLabel(it)}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp) }
         Spacer(Modifier.weight(1f)); Box(Modifier.size(166.dp).align(Alignment.CenterHorizontally).clip(CircleShape).background(Color.White).padding(10.dp), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(if (running) "已用时" else if (overdue) "已超期" else "截止", fontSize = 15.sp, color = if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1724,7 +1763,7 @@ private fun formatStudyDuration(seconds: Long): String {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Text(task.title, modifier = Modifier.weight(1f), fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Spacer(Modifier.width(8.dp))
-                        Text(if (completed) "已完成" else "截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", color = if (completed) Color(0xFF24733A) else if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                        Text(homeworkTimingLabel(task).ifBlank { if (completed) "已完成" else "截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}" }, color = if (completed) Color(0xFF24733A) else if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
                     }
                     if (completed && task.photoUrls.isNotEmpty()) {
                         TextButton(onClick = { photoUrl = task.photoUrls.first() }, contentPadding = PaddingValues(top = 4.dp, bottom = 0.dp)) {
