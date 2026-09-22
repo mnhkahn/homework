@@ -2,8 +2,10 @@ package com.homeworkbuddy
 
 import android.content.Context
 import android.content.Intent
+import android.app.DownloadManager
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.provider.Settings
 import android.util.Log
 import androidx.compose.foundation.layout.Column
@@ -79,31 +81,44 @@ object AppUpdater {
         }.onFailure { Log.w(TAG, "update check failed", it) }.getOrNull()
     }
 
-    /** Downloads the release APK into the update cache, reporting 0..1 progress. */
-    suspend fun download(context: Context, info: UpdateInfo, onProgress: (Float) -> Unit): File = withContext(Dispatchers.IO) {
-        val dir = File(context.cacheDir, "updates").apply { mkdirs() }
-        val target = File(dir, APK_ASSET_NAME)
-        client.newCall(Request.Builder().url(info.apkUrl).build()).execute().use { response ->
-            if (!response.isSuccessful) error("下载失败（HTTP ${response.code}）")
-            val body = response.body ?: error("下载失败（响应为空）")
-            val total = body.contentLength()
-            body.byteStream().use { input ->
-                target.outputStream().use { output ->
-                    val buffer = ByteArray(64 * 1024)
-                    var copied = 0L
-                    while (true) {
-                        val read = input.read(buffer)
-                        if (read < 0) break
-                        output.write(buffer, 0, read)
-                        copied += read
-                        if (total > 0) onProgress(copied.toFloat() / total)
-                    }
-                }
+    /**
+     * Android's DownloadManager owns this task: it persists outside our
+     * activity/process, shows notification-bar progress, and retries temporary
+     * network failures. The system may resume an interrupted HTTP download.
+     */
+    fun enqueueDownload(context: Context, info: UpdateInfo): Long {
+        val destination = updateFile(context).also { it.parentFile?.mkdirs(); it.delete() }
+        val request = DownloadManager.Request(Uri.parse(info.apkUrl))
+            .setTitle("作业小伙伴更新 ${info.versionName}")
+            .setDescription("正在后台下载更新")
+            .setMimeType("application/vnd.android.package-archive")
+            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            .setAllowedOverRoaming(false)
+            .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, "updates/$APK_ASSET_NAME")
+        return (context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(request)
+    }
+
+    data class DownloadStatus(val complete: Boolean, val failed: Boolean, val progress: Float, val error: String? = null)
+
+    fun downloadStatus(context: Context, id: Long): DownloadStatus {
+        val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        manager.query(DownloadManager.Query().setFilterById(id)).use { cursor ->
+            if (!cursor.moveToFirst()) return DownloadStatus(false, true, 0f, "系统下载任务不存在")
+            val status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+            val soFar = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
+            val total = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
+            val progress = if (total > 0) soFar.toFloat() / total else 0f
+            return when (status) {
+                DownloadManager.STATUS_SUCCESSFUL -> DownloadStatus(true, false, 1f)
+                DownloadManager.STATUS_FAILED -> DownloadStatus(false, true, progress, "系统下载失败（${cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))}）")
+                else -> DownloadStatus(false, false, progress)
             }
         }
-        if (target.length() == 0L) error("下载的安装包为空")
-        target
     }
+
+    fun downloadedFile(context: Context): File = updateFile(context)
+
+    private fun updateFile(context: Context) = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "updates/$APK_ASSET_NAME")
 
     fun canInstallPackages(context: Context): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.O || context.packageManager.canRequestPackageInstalls()

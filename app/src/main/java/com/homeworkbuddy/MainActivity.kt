@@ -602,6 +602,10 @@ private fun HomeworkBuddyApp() {
         running = false
         taskStartedAtMillis = 0L
         taskElapsedSeconds = 0
+        // The flower is earned at the instant the final task is submitted.
+        // Do not wait for the next day's import (or the next 60-second sync)
+        // to make the calendar recalculate today's completed records.
+        historyRevision++
     }
 
     LaunchedEffect(recordedAudioTaskId) {
@@ -1080,29 +1084,41 @@ private fun HomeworkBuddyApp() {
                     updateError = null
                     scope.launch {
                         updateProgress = 0f
-                        runCatching { AppUpdater.download(context, info) { updateProgress = it } }
-                            .onSuccess { apk ->
-                                updateProgress = null
-                                // The system installer is outside the Lock Task
-                                // allowlist, so a study-mode tablet needs the
-                                // same temporary pause as the Trello consent flow.
-                                (activity as? MainActivity)?.allowManagedActivityLaunch()
-                                if (kioskPolicy.isDeviceOwner && kioskPolicy.mode() == KioskMode.STUDY) {
-                                    kioskPolicy.pause(15, activity)
-                                }
-                                if (AppUpdater.canInstallPackages(context)) {
-                                    runCatching { AppUpdater.install(context, apk) }
-                                        .onSuccess { updateInfo = null }
-                                        .onFailure { updateError = "无法打开系统安装器，请稍后再试。" }
-                                } else {
-                                    updateError = "请先允许“安装未知应用”，然后点击重试。"
-                                    AppUpdater.openInstallPermissionSettings(context)
-                                }
+                        val downloadId = AppUpdater.enqueueDownload(context, info)
+                        while (true) {
+                            val status = AppUpdater.downloadStatus(context, downloadId)
+                            updateProgress = status.progress
+                            if (!status.complete && !status.failed) {
+                                delay(500)
+                                continue
                             }
-                            .onFailure { error ->
-                                updateProgress = null
-                                updateError = error.message ?: "下载失败，请稍后再试。"
+                            updateProgress = null
+                            if (status.failed) {
+                                updateError = status.error ?: "下载失败，请稍后再试。"
+                                break
                             }
+                            val apk = AppUpdater.downloadedFile(context)
+                            if (!apk.isFile || apk.length() == 0L) {
+                                updateError = "更新下载结果无效，请稍后再试。"
+                                break
+                            }
+                            // The system installer is outside the Lock Task
+                            // allowlist, so a study-mode tablet needs the
+                            // same temporary pause as the Trello consent flow.
+                            (activity as? MainActivity)?.allowManagedActivityLaunch()
+                            if (kioskPolicy.isDeviceOwner && kioskPolicy.mode() == KioskMode.STUDY) {
+                                kioskPolicy.pause(15, activity)
+                            }
+                            if (AppUpdater.canInstallPackages(context)) {
+                                runCatching { AppUpdater.install(context, apk) }
+                                    .onSuccess { updateInfo = null }
+                                    .onFailure { updateError = "无法打开系统安装器，请稍后再试。" }
+                            } else {
+                                updateError = "请先允许“安装未知应用”，然后点击重试。"
+                                AppUpdater.openInstallPermissionSettings(context)
+                            }
+                            break
+                        }
                     }
                 },
                 onDismiss = { updateInfo = null },

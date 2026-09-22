@@ -4,4 +4,5 @@
     <cache-path name="mcp_photos" path="mcp_photos/" />
     <cache-path name="mcp_videos" path="mcp_videos/" />
     <cache-path name="updates" path="updates/" />
+    <external-files-path name="downloaded_updates" path="Download/updates/" />
 </paths>
