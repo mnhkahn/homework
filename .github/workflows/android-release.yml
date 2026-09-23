@@ -6,6 +6,11 @@ on:
       - 'v*'
       - '[0-9]+.[0-9]+.[0-9]+'
   workflow_dispatch:
+    inputs:
+      version:
+        description: Release version to embed in the APK (for example, 0.1.6)
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -74,16 +79,18 @@ jobs:
         env:
           HOMEWORK_RELEASE_STORE_FILE: ${{ runner.temp }}/release.keystore
           HOMEWORK_RELEASE_STORE_PASSWORD: ${{ secrets.HOMEWORK_RELEASE_STORE_PASSWORD }}
+          RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
         run: |
           ./gradlew :app:assembleRelease --no-daemon --stacktrace \
-          -PreleaseVersionName="${GITHUB_REF_NAME#v}" \
+          -PreleaseVersionName="${RELEASE_VERSION#v}" \
           -PreleaseVersionCode="${{ github.run_number }}"
 
       - name: Rename APKs
         env:
           HOMEWORK_RELEASE_STORE_PASSWORD: ${{ secrets.HOMEWORK_RELEASE_STORE_PASSWORD }}
+          RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
         run: |
-          VERSION="${GITHUB_REF_NAME:-manual}"
+          VERSION="${RELEASE_VERSION#v}"
           mkdir -p artifacts
           cp app/build/outputs/apk/debug/app-debug.apk \
              "artifacts/HomeworkBuddy-${VERSION}-debug.apk"
@@ -119,7 +126,7 @@ jobs:
       - name: Publish release APK to Pgyer
         env:
           PGYER_API_KEY: ${{ secrets.PGYER_API_KEY }}
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ inputs.version || github.ref_name }}
         run: |
           set -euo pipefail
           if [ -z "$PGYER_API_KEY" ]; then
