@@ -1088,44 +1088,16 @@ private fun HomeworkBuddyApp() {
                 onUpdate = {
                     if (updateProgress != null) return@UpdateDialog
                     updateError = null
-                    scope.launch {
-                        updateProgress = 0f
-                        val downloadId = AppUpdater.enqueueDownload(context, info)
-                        while (true) {
-                            val status = AppUpdater.downloadStatus(context, downloadId)
-                            updateProgress = status.progress
-                            if (!status.complete && !status.failed) {
-                                delay(500)
-                                continue
-                            }
-                            updateProgress = null
-                            if (status.failed) {
-                                updateError = status.error ?: "下载失败，请稍后再试。"
-                                break
-                            }
-                            val apk = AppUpdater.downloadedFile(context)
-                            if (!apk.isFile || apk.length() == 0L) {
-                                updateError = "更新下载结果无效，请稍后再试。"
-                                break
-                            }
-                            // The system installer is outside the Lock Task
-                            // allowlist, so a study-mode tablet needs the
-                            // same temporary pause as the Trello consent flow.
-                            (activity as? MainActivity)?.allowManagedActivityLaunch()
-                            if (kioskPolicy.isDeviceOwner && kioskPolicy.mode() == KioskMode.STUDY) {
-                                kioskPolicy.pause(15, activity)
-                            }
-                            if (AppUpdater.canInstallPackages(context)) {
-                                runCatching { AppUpdater.install(context, apk) }
-                                    .onSuccess { updateInfo = null }
-                                    .onFailure { updateError = "无法打开系统安装器，请稍后再试。" }
-                            } else {
-                                updateError = "请先允许“安装未知应用”，然后点击重试。"
-                                AppUpdater.openInstallPermissionSettings(context)
-                            }
-                            break
-                        }
+                    // Pgyer creates a short-lived download URL from its public
+                    // page. Browser and installer are outside Lock Task, so
+                    // grant the same temporary escape used by consent flows.
+                    (activity as? MainActivity)?.allowManagedActivityLaunch()
+                    if (kioskPolicy.isDeviceOwner && kioskPolicy.mode() == KioskMode.STUDY) {
+                        kioskPolicy.pause(15, activity)
                     }
+                    runCatching { AppUpdater.openDownloadPage(context, info) }
+                        .onSuccess { updateInfo = null }
+                        .onFailure { updateError = "无法打开蒲公英下载页，请稍后再试。" }
                 },
                 onDismiss = { updateInfo = null },
             )
@@ -1745,7 +1717,13 @@ private fun formatStudyDuration(seconds: Long): String {
         }
         Spacer(Modifier.weight(1f))
         task.link?.let { link ->
-            FilledTonalButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) }, modifier = Modifier.align(Alignment.CenterHorizontally), enabled = task.status != TaskStatus.COMPLETED && !submitting) {
+            FilledTonalButton(onClick = {
+                if (task.type == HomeworkTaskType.WORD_MEMORIZATION) {
+                    context.startActivity(GameActivity.intent(context, link))
+                } else {
+                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link)))
+                }
+            }, modifier = Modifier.align(Alignment.CenterHorizontally), enabled = task.status != TaskStatus.COMPLETED && !submitting) {
                 Text(when (task.type) {
                     HomeworkTaskType.WORD_MEMORIZATION -> "打开背单词"
                     HomeworkTaskType.ENGLISH_READING -> "打开英语阅读"
