@@ -28,7 +28,7 @@
 
 ## 发布与自动升级
 
-推送 `v*` 或 `x.y.z` 形式的 tag 会触发 `.github/workflows/android-release.yml`：CI 用 GitHub Secrets 里的 keystore 签名 release APK（版本号取自 tag，`versionCode` 取 workflow run number），同时发布到蒲公英和 GitHub Release。构建完成后，飞书通知会带上蒲公英下载页；日常安装优先使用该链接，避免 GitHub 下载慢的问题。App 内原有自动升级仍通过 GitHub Release 进行。
+推送 `v*` 或 `x.y.z` 形式的 tag 会触发 `.github/workflows/android-release.yml`：CI 用 GitHub Secrets 里的 keystore 签名 release APK（版本号取自 tag，`versionCode` 取 workflow run number），同时发布到蒲公英和 GitHub Release。发布时会用 `git-chglog` 按版本号生成变更说明，并同时写入 GitHub Release 与蒲公英更新说明。构建完成后，飞书通知会带上蒲公英下载页；日常安装优先使用该链接，避免 GitHub 下载慢的问题。App 内原有自动升级仍通过 GitHub Release 进行。
 
 首次配置需要：
 
