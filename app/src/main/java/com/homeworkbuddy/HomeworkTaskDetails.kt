@@ -14,8 +14,10 @@ data class HomeworkTaskDetails(
     companion object {
         private const val TRANSLATE_HOST = "www.cyeam.com"
         private const val TRANSLATE_PATH = "/ai/translate"
-        private val typeLine = Regex("(?im)^\\s*(?:type|类型)\\s*[:：]\\s*(normal|word_memorization|english_reading)\\s*$")
+        private val typeLine = Regex("(?im)^\\s*(?:type|类型|作业类型)\\s*[:：]\\s*(normal|word_memorization|english_reading|普通作业|背单词|阅读英语)\\s*$")
         private val taskLine = Regex("(?im)^\\s*(?:task|作业内容)\\s*[:：]\\s*(.+?)\\s*$")
+        private val wordLine = Regex("(?im)^\\s*背单词\\s*[:：]\\s*(.+?)\\s*$")
+        private val translationLinkLine = Regex("(?im)^\\s*翻译链接\\s*[:：]\\s*(https?://\\S+)\\s*$")
         private val durationLine = Regex("(?im)^\\s*预计用时\\s*[:：].*$")
         private val vocabulary = Regex("^[A-Za-z]+(?:['’-][A-Za-z]+)?(?:[\\s,，]+[A-Za-z]+(?:['’-][A-Za-z]+)?)*$")
 
@@ -28,9 +30,11 @@ data class HomeworkTaskDetails(
             val explicit = json?.optString("type")?.toTaskType()
                 ?: typeLine.find(description)?.groupValues?.getOrNull(1)?.toTaskType()
             val rawTask = json?.optString("task")?.ifBlank { null }
+                ?: wordLine.find(description)?.groupValues?.getOrNull(1)?.trim()
                 ?: taskLine.find(description)?.groupValues?.getOrNull(1)?.trim()
                 ?: description.withoutMetadata().ifBlank { null }
             val suppliedLink = json?.optString("link")?.ifBlank { null }
+                ?: translationLinkLine.find(description)?.groupValues?.getOrNull(1)?.trim()
 
             return when (explicit) {
                 HomeworkTaskType.WORD_MEMORIZATION -> (words(rawTask)
@@ -58,6 +62,8 @@ data class HomeworkTaskDetails(
 
         private fun String.withoutMetadata(): String = durationLine.replace(this, "")
             .let { typeLine.replace(it, "") }
+            .let { wordLine.replace(it, "") }
+            .let { translationLinkLine.replace(it, "") }
             .trim()
 
         private fun words(value: String?): String? {
@@ -84,8 +90,11 @@ data class HomeworkTaskDetails(
 
         private fun String.toTaskType(): HomeworkTaskType? = when (lowercase()) {
             "normal" -> HomeworkTaskType.NORMAL
+            "普通作业" -> HomeworkTaskType.NORMAL
             "word_memorization" -> HomeworkTaskType.WORD_MEMORIZATION
+            "背单词" -> HomeworkTaskType.WORD_MEMORIZATION
             "english_reading" -> HomeworkTaskType.ENGLISH_READING
+            "阅读英语" -> HomeworkTaskType.ENGLISH_READING
             else -> null
         }
     }
