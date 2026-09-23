@@ -114,6 +114,71 @@ jobs:
           path: artifacts/*.apk
           if-no-files-found: error
 
+      # 蒲公英使用新版「获取凭证 → 上传 → 查询发布结果」接口；上传成功
+      # 只表示文件已传到存储，必须等到 buildInfo 返回成功才算真正可下载。
+      - name: Publish release APK to Pgyer
+        env:
+          PGYER_API_KEY: ${{ secrets.PGYER_API_KEY }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PGYER_API_KEY" ]; then
+            echo "::error::PGYER_API_KEY secret is not set"
+            exit 1
+          fi
+
+          APK_PATH="artifacts/HomeworkBuddy-release.apk"
+          UPDATE_DESCRIPTION="Homework Buddy ${VERSION:-manual}"
+          TOKEN_RESPONSE=$(curl --fail-with-body --silent --show-error \
+            --form "_api_key=${PGYER_API_KEY}" \
+            --form "buildType=android" \
+            --form "buildInstallType=1" \
+            --form "buildInstallDate=2" \
+            --form "buildUpdateDescription=${UPDATE_DESCRIPTION}" \
+            https://www.pgyer.com/apiv2/app/getCOSToken)
+          if [ "$(jq -r '.code' <<<"$TOKEN_RESPONSE")" != "0" ]; then
+            echo "::error::Pgyer did not issue an upload token: $(jq -r '.message // "unknown error"' <<<"$TOKEN_RESPONSE")"
+            exit 1
+          fi
+
+          UPLOAD_ENDPOINT=$(jq -r '.data.endpoint' <<<"$TOKEN_RESPONSE")
+          UPLOAD_KEY=$(jq -r '.data.params.key' <<<"$TOKEN_RESPONSE")
+          SIGNATURE=$(jq -r '.data.params.signature' <<<"$TOKEN_RESPONSE")
+          SECURITY_TOKEN=$(jq -r '.data.params["x-cos-security-token"]' <<<"$TOKEN_RESPONSE")
+          curl --fail-with-body --silent --show-error \
+            --form "key=${UPLOAD_KEY}" \
+            --form "signature=${SIGNATURE}" \
+            --form "x-cos-security-token=${SECURITY_TOKEN}" \
+            --form "x-cos-meta-file-name=HomeworkBuddy-release.apk" \
+            --form "file=@${APK_PATH}" \
+            "$UPLOAD_ENDPOINT"
+
+          # Pgyer documents 1246/1247 as processing states.  Other non-zero
+          # codes are terminal failures and must fail the release job.
+          for attempt in $(seq 1 60); do
+            BUILD_RESPONSE=$(curl --fail-with-body --silent --show-error --get \
+              --data-urlencode "_api_key=${PGYER_API_KEY}" \
+              --data-urlencode "buildKey=${UPLOAD_KEY}" \
+              https://www.pgyer.com/apiv2/app/buildInfo)
+            BUILD_CODE=$(jq -r '.code' <<<"$BUILD_RESPONSE")
+            if [ "$BUILD_CODE" = "0" ]; then
+              SHORT_URL=$(jq -r '.data.buildShortcutUrl' <<<"$BUILD_RESPONSE")
+              PGYER_RELEASE_URL="https://www.pgyer.com/${SHORT_URL}"
+              echo "PGYER_RELEASE_URL=${PGYER_RELEASE_URL}" >> "$GITHUB_ENV"
+              echo "Pgyer release: ${PGYER_RELEASE_URL}"
+              exit 0
+            fi
+            if [ "$BUILD_CODE" != "1246" ] && [ "$BUILD_CODE" != "1247" ]; then
+              echo "::error::Pgyer publish failed (${BUILD_CODE}): $(jq -r '.message // "unknown error"' <<<"$BUILD_RESPONSE")"
+              exit 1
+            fi
+            echo "Pgyer is publishing (attempt ${attempt}/60)"
+            sleep 3
+          done
+
+          echo "::error::Timed out waiting for Pgyer to publish the APK"
+          exit 1
+
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
@@ -133,6 +198,7 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           STATUS: ${{ job.status }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PGYER_RELEASE_URL: ${{ env.PGYER_RELEASE_URL }}
         run: |
           if [ -z "$FEISHU_WEBHOOK_URL" ]; then
             echo "FEISHU_WEBHOOK_URL not set, skip"
@@ -141,7 +207,7 @@ jobs:
           if [ "$STATUS" = "success" ]; then
             ICON="✅"
             RELEASE_URL="https://github.com/${REPO}/releases/tag/${REF_NAME}"
-            TEXT=$(printf '%s %s 构建成功 %s\nRelease: %s\nRun: %s' "$ICON" "$REPO" "$REF_NAME" "$RELEASE_URL" "$RUN_URL")
+            TEXT=$(printf '%s %s 构建成功 %s\n蒲公英: %s\nRelease: %s\nRun: %s' "$ICON" "$REPO" "$REF_NAME" "$PGYER_RELEASE_URL" "$RELEASE_URL" "$RUN_URL")
           else
             ICON="❌"
             TEXT=$(printf '%s %s 构建失败 %s\nRun: %s' "$ICON" "$REPO" "$REF_NAME" "$RUN_URL")

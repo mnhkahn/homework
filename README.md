@@ -28,13 +28,14 @@
 
 ## 发布与自动升级
 
-推送 `v*` 或 `x.y.z` 形式的 tag 会触发 `.github/workflows/android-release.yml`：CI 用 GitHub Secrets 里的 keystore 签名 release APK（版本号取自 tag，`versionCode` 取 workflow run number），并以固定文件名 `HomeworkBuddy-release.apk` 上传到 GitHub Release。App 启动时会查询该仓库的最新 Release，发现新版本后弹窗提示，下载 APK 并调起系统安装器完成覆盖升级。
+推送 `v*` 或 `x.y.z` 形式的 tag 会触发 `.github/workflows/android-release.yml`：CI 用 GitHub Secrets 里的 keystore 签名 release APK（版本号取自 tag，`versionCode` 取 workflow run number），同时发布到蒲公英和 GitHub Release。构建完成后，飞书通知会带上蒲公英下载页；日常安装优先使用该链接，避免 GitHub 下载慢的问题。App 内原有自动升级仍通过 GitHub Release 进行。
 
 首次配置需要：
 
 1. 生成发布 keystore：`keytool -genkeypair -v -keystore release.keystore -alias homeworkbuddy -keyalg RSA -keysize 2048 -validity 10000`（keystore 只保留在本地，不要提交）。
-2. 在仓库 Settings → Secrets and variables → Actions 添加 `RELEASE_KEYSTORE_BASE64`（`base64 -i release.keystore` 的输出）和 `HOMEWORK_RELEASE_STORE_PASSWORD`。
-3. 平板上首次从 debug 签名切换到 release 签名时需卸载重装一次；之后同签名版本即可自动覆盖升级。
+2. 在仓库 Settings → Secrets and variables → Actions 添加 `RELEASE_KEYSTORE_BASE64`（`base64 -i release.keystore` 的输出）、`HOMEWORK_RELEASE_STORE_PASSWORD`，以及蒲公英后台获取的 `PGYER_API_KEY`。
+3. 每个发布构建都会等待蒲公英完成发布；成功后 Actions 日志和飞书通知会显示固定的蒲公英下载页链接。安装方式为公开安装、无有效期。
+4. 平板上首次从 debug 签名切换到 release 签名时需卸载重装一次；之后同签名版本即可自动覆盖升级。
 
 ## 小李 Gateway 连接
 
