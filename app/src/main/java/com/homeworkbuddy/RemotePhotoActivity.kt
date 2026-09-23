@@ -43,7 +43,6 @@ object RemotePhotoCoordinator {
             pending = result
         }
         CaptureStatusStore(context).begin(CaptureKind.PHOTO)
-        CameraShutterSound.play()
         runCatching {
             InAppPhotoCapture(context.applicationContext, resolution, ::complete, ::fail).also {
                 synchronized(this) { capture = it }
@@ -189,6 +188,9 @@ private class InAppPhotoCapture(
     private fun finishSuccess(result: JSONObject) {
         if (closeResources()) {
             CaptureStatusStore(context).complete(CaptureKind.PHOTO)
+            // The sound confirms a completed capture, rather than merely an
+            // attempt to open the camera (which can fail while the device sleeps).
+            CameraShutterSound.play()
             onSuccess(result)
         }
     }
