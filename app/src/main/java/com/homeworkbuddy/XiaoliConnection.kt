@@ -13,6 +13,7 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import okio.ByteString
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -179,6 +180,7 @@ class XiaoliConnectionService : Service() {
 
     override fun onDestroy() {
         XiaoliMcpNotifications.clear()
+        RemoteTtsStreamPlayer.reset()
         reconnectFuture?.cancel(true)
         socket?.cancel()
         worker.shutdownNow()
@@ -235,17 +237,23 @@ class XiaoliConnectionService : Service() {
                     .put("version", 1)
                     .put("transport", "websocket")
                     .put("device_id", config.deviceId)
-                    .put("features", JSONObject().put("mcp", true).put("audio", false))
+                    .put("features", JSONObject().put("mcp", true).put("audio", true))
+                    .put("audio_params", JSONObject().put("format", "opus").put("sample_rate", 16_000).put("channels", 1).put("frame_duration", 60))
                     .put("client_info", JSONObject().put("name", "homework-buddy-android").put("version", "0.1.0"))
                     .toString())
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) = handleMessage(webSocket, text)
 
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                RemoteTtsStreamPlayer.offer(bytes.toByteArray())
+            }
+
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 if (socket !== webSocket) return
                 socket = null
                 XiaoliMcpNotifications.clear()
+                RemoteTtsStreamPlayer.reset()
                 XiaoliConnectionState.disconnected(t.message ?: "连接失败")
                 reconnect()
             }
@@ -254,6 +262,7 @@ class XiaoliConnectionService : Service() {
                 if (socket !== webSocket) return
                 socket = null
                 XiaoliMcpNotifications.clear()
+                RemoteTtsStreamPlayer.reset()
                 XiaoliConnectionState.disconnected(reason.ifBlank { "连接已关闭" })
                 reconnect()
             }
@@ -266,6 +275,15 @@ class XiaoliConnectionService : Service() {
             sessionId = message.optString("session_id").ifBlank { null }
             XiaoliConnectionState.connected()
             updateNotification("已连接小李")
+            return
+        }
+        if (message.optString("type") == "tts") {
+            val state = message.optString("state")
+            val ttsSession = message.optString("session_id").ifBlank { sessionId.orEmpty() }
+            when (state) {
+                "start" -> if (ttsSession.isNotBlank()) RemoteTtsStreamPlayer.start(applicationContext, ttsSession) { webSocket.send(it.toString()) }
+                "stop" -> RemoteTtsStreamPlayer.stop()
+            }
             return
         }
         if (message.optString("type") != "mcp") return
