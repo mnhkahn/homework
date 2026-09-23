@@ -226,7 +226,7 @@ class MainActivity : ComponentActivity() {
         allowNextUserLeaveHint = true
     }
 
-    /** A child explicitly started an assignment, so do not let the display sleep mid-work. */
+    /** Keep the display awake during an assignment or an external recorder session. */
     fun setHomeworkInProgress(inProgress: Boolean) {
         homeworkInProgress = inProgress
         if (inProgress) extendStudyScreenTimeout() else clearStudyScreenTimeout()
@@ -439,6 +439,7 @@ private fun HomeworkBuddyApp() {
     var capturePhoto by remember { mutableStateOf<Uri?>(null) }
     var pendingPhotos by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var pendingAudio by remember { mutableStateOf<Uri?>(null) }
+    var recordingAudio by remember { mutableStateOf(false) }
     var recordedAudioTaskId by remember { mutableStateOf<String?>(null) }
     var recordedAudioElapsedSeconds by remember { mutableIntStateOf(0) }
     var recordedAudioUri by remember { mutableStateOf<String?>(null) }
@@ -543,8 +544,10 @@ private fun HomeworkBuddyApp() {
         HomeworkStatusStore(context).save(tasks, selectedId, remainingSeconds, running, taskElapsedSeconds)
     }
 
-    LaunchedEffect(running) {
-        (activity as? MainActivity)?.setHomeworkInProgress(running)
+    LaunchedEffect(running, recordingAudio) {
+        // Recording uses the system recorder, which may otherwise let the
+        // display sleep when the tablet is not charging.
+        (activity as? MainActivity)?.setHomeworkInProgress(running || recordingAudio)
     }
 
     LaunchedEffect(running, taskStartedAtMillis, selectedId) {
@@ -700,6 +703,7 @@ private fun HomeworkBuddyApp() {
         KioskPolicy(context).revokeCameraCaptureAccess()
     }
     val recordAudio = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        recordingAudio = false
         if (result.resultCode == Activity.RESULT_OK) {
             // Keep only the system recorder's local URI. It is never uploaded
             // or downloaded from Trello when the child views the recording.
@@ -979,8 +983,10 @@ private fun HomeworkBuddyApp() {
                     KioskPolicy(context).allowSystemRecorderForCapture()
                     (activity as? MainActivity)?.allowManagedActivityLaunch()
                     runCatching {
+                        recordingAudio = true
                         recordAudio.launch(Intent(MediaStore.Audio.Media.RECORD_SOUND_ACTION))
                     }.onFailure {
+                        recordingAudio = false
                         KioskPolicy(context).revokeSystemRecorderAccess()
                         connectionError = "无法打开系统录音机，请检查系统录音应用是否可用。"
                     }
