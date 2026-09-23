@@ -142,14 +142,15 @@ jobs:
           fi
 
           UPLOAD_ENDPOINT=$(jq -r '.data.endpoint' <<<"$TOKEN_RESPONSE")
+          BUILD_KEY=$(jq -r '.data.key' <<<"$TOKEN_RESPONSE")
           UPLOAD_KEY=$(jq -r '.data.params.key' <<<"$TOKEN_RESPONSE")
           SIGNATURE=$(jq -r '.data.params.signature' <<<"$TOKEN_RESPONSE")
           SECURITY_TOKEN=$(jq -r '.data.params["x-cos-security-token"]' <<<"$TOKEN_RESPONSE")
           curl --fail-with-body --silent --show-error \
-            --form "key=${UPLOAD_KEY}" \
-            --form "signature=${SIGNATURE}" \
-            --form "x-cos-security-token=${SECURITY_TOKEN}" \
-            --form "x-cos-meta-file-name=HomeworkBuddy-release.apk" \
+            --form-string "key=${UPLOAD_KEY}" \
+            --form-string "signature=${SIGNATURE}" \
+            --form-string "x-cos-security-token=${SECURITY_TOKEN}" \
+            --form-string "x-cos-meta-file-name=HomeworkBuddy-release.apk" \
             --form "file=@${APK_PATH}" \
             "$UPLOAD_ENDPOINT"
 
@@ -158,7 +159,7 @@ jobs:
           for attempt in $(seq 1 60); do
             BUILD_RESPONSE=$(curl --fail-with-body --silent --show-error --get \
               --data-urlencode "_api_key=${PGYER_API_KEY}" \
-              --data-urlencode "buildKey=${UPLOAD_KEY}" \
+              --data-urlencode "buildKey=${BUILD_KEY}" \
               https://www.pgyer.com/apiv2/app/buildInfo)
             BUILD_CODE=$(jq -r '.code' <<<"$BUILD_RESPONSE")
             if [ "$BUILD_CODE" = "0" ]; then
