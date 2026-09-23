@@ -71,15 +71,23 @@ class GameActivity : ComponentActivity() {
         fun intent(context: Context, url: String) =
             Intent(context, GameActivity::class.java).putExtra(EXTRA_URL, url)
 
-        private fun isAllowedCyeamToolUrl(url: String): Boolean =
-            url == GAME_24_URL || url == SUDOKU_URL || url == ARITHMETIC_URL || url == ENGLISH_READING_URL
+        private fun isAllowedCyeamToolUrl(url: String): Boolean {
+            if (url == GAME_24_URL || url == SUDOKU_URL || url == ARITHMETIC_URL || url == ENGLISH_READING_URL) return true
+
+            // Vocabulary tasks append the assigned words as a query parameter to the
+            // same first-party translate page. Keep that learning flow in the
+            // app-owned WebView instead of handing the URL to an external browser.
+            val uri = Uri.parse(url)
+            return uri.scheme == "https" && uri.host == "www.cyeam.com" &&
+                uri.path == "/ai/translate" && !uri.getQueryParameter("words").isNullOrBlank()
+        }
 
         fun titleFor(url: String): String = when (url) {
             GAME_24_URL -> "24 点"
             SUDOKU_URL -> "数独"
             ARITHMETIC_URL -> "口算"
             ENGLISH_READING_URL -> "英语跟读"
-            else -> "学习应用"
+            else -> if (Uri.parse(url).path == "/ai/translate") "背单词" else "学习应用"
         }
     }
 }
