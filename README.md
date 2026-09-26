@@ -14,6 +14,14 @@
 
 用 Android Studio 打开该目录，并选择 Android API 35 的模拟器或实体平板运行即可。
 
+## 学习模式网站管控
+
+Device Owner 模式下，Chrome 始终加入学习应用白名单。进入学习模式时向 Chrome 下发 `URLBlocklist = ["*"]` 和 `URLAllowlist = ["cyeam.com"]`；Chrome 的域名规则包含主域名及全部子域名（无需使用 `*.cyeam.com`）。页面静态资源不逐个加入导航白名单，跨站导航仍受限制。
+
+进入学习模式前持久保存原有的两项网址策略，退出、定时结束或临时开放时恢复；其他 Chrome 托管配置保留。应用内 WebView 继续使用现有的 HTTPS Cyeam 域名检查。
+
+设备验收：在 `chrome://policy` 确认两项策略状态和值，测试主域名、子域名、站外跳转及登录/音频流程；再测试临时开放、恢复学习、定时结束和学习期间重启。Chrome 策略实际生效需要在目标设备验证。
+
 ## Trello 同步
 
 任务模型和 `HomeworkTaskSource` 已作为独立接口放在 `app/src/main/java/com/homeworkbuddy/HomeworkTask.kt`。当前页面使用 `PreviewTaskSource` 的演示任务，以便在尚未配置服务端时完整验证界面和交互。

@@ -19,6 +19,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.media.AudioManager
 import android.os.Build
+import android.os.Bundle
 import android.os.PowerManager
 import android.os.Process
 import android.os.UserManager
@@ -28,6 +29,8 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.ZoneId
+import org.json.JSONArray
+import org.json.JSONObject
 
 class HomeworkDeviceAdminReceiver : DeviceAdminReceiver()
 
@@ -58,7 +61,7 @@ class KioskPolicy(private val context: Context) {
     /** Kept for the existing remote-tool response contract. */
     val pausedUntil: Long get() = temporaryOpenUntil
     private val forcedStudyUntil: Long get() = prefs.getLong("study_override_until", prefs.getLong("guarded_until", 0L))
-    val studyPackages: Set<String> get() = prefs.getStringSet("study_packages", prefs.getStringSet("approved_packages", emptySet()))?.toSet().orEmpty()
+    val studyPackages: Set<String> get() = prefs.getStringSet("study_packages", prefs.getStringSet("approved_packages", emptySet()))?.toSet().orEmpty() + LEARNING_BROWSER_PACKAGE
     private val temporaryPackages: Set<String> get() = prefs.getStringSet("temporary_packages", emptySet())?.toSet().orEmpty()
     val isExternalForegroundAllowed: Boolean get() = prefs.getBoolean("external_foreground_allowed", false)
 
@@ -126,6 +129,7 @@ class KioskPolicy(private val context: Context) {
     }
 
     fun setStudyAllowed(packageName: String, allowed: Boolean) {
+        if (packageName == LEARNING_BROWSER_PACKAGE) return
         val updated = studyPackages.toMutableSet().apply { if (allowed) add(packageName) else remove(packageName) }
         prefs.edit().putStringSet("study_packages", updated).remove("approved_packages").apply()
         if (isDeviceOwner && mode() == KioskMode.STUDY) applyAllowlist(KioskMode.STUDY)
@@ -527,6 +531,7 @@ class KioskPolicy(private val context: Context) {
     private fun temporaryOpenCountKey(date: LocalDate) = "temporary_open_count:$date"
 
     private fun applyAllowlist(mode: KioskMode) {
+        applyBrowserRestrictions(mode == KioskMode.STUDY)
         if (mode == KioskMode.STUDY) {
             suspendNonAllowedApps()
             val lockTaskPackages = setOf(context.packageName) + studyPackages + temporaryPackages + studyInstallSystemPackages()
@@ -547,6 +552,39 @@ class KioskPolicy(private val context: Context) {
             runCatching { dpm.clearUserRestriction(admin, UserManager.DISALLOW_ADJUST_VOLUME) }
             runCatching { dpm.setStatusBarDisabled(admin, false) }
         }
+    }
+
+    /** Chrome domain filters include every subdomain; do not use a leading "*.". */
+    private fun applyBrowserRestrictions(study: Boolean) {
+        if (!isDeviceOwner) return
+        val restrictions = Bundle(dpm.getApplicationRestrictions(admin, LEARNING_BROWSER_PACKAGE))
+        val keys = listOf("URLBlocklist", "URLAllowlist")
+        if (study) {
+            if (!prefs.contains(BROWSER_RESTRICTIONS_BACKUP_KEY)) {
+                val backup = JSONObject()
+                keys.forEach { key ->
+                    restrictions.getStringArray(key)?.let { backup.put(key, JSONArray(it.toList())) }
+                }
+                // Persist before changing device policy so a restart can still restore it.
+                check(prefs.edit().putString(BROWSER_RESTRICTIONS_BACKUP_KEY, backup.toString()).commit())
+            }
+            if (restrictions.getStringArray("URLBlocklist")?.contentEquals(arrayOf("*")) == true &&
+                restrictions.getStringArray("URLAllowlist")?.contentEquals(arrayOf("cyeam.com")) == true) return
+            restrictions.putStringArray("URLBlocklist", arrayOf("*"))
+            restrictions.putStringArray("URLAllowlist", arrayOf("cyeam.com"))
+        } else {
+            val saved = prefs.getString(BROWSER_RESTRICTIONS_BACKUP_KEY, null) ?: return
+            val backup = JSONObject(saved)
+            keys.forEach { key ->
+                restrictions.remove(key)
+                backup.optJSONArray(key)?.let { values ->
+                    restrictions.putStringArray(key, Array(values.length()) { values.getString(it) })
+                }
+            }
+        }
+        // Preserve unrelated Chrome managed settings in both modes.
+        dpm.setApplicationRestrictions(admin, LEARNING_BROWSER_PACKAGE, restrictions)
+        if (!study) prefs.edit().remove(BROWSER_RESTRICTIONS_BACKUP_KEY).commit()
     }
 
     /**
@@ -630,6 +668,7 @@ class KioskPolicy(private val context: Context) {
     }
 
     private fun releaseLockTask(activity: Activity?) {
+        applyBrowserRestrictions(study = false)
         unsuspendManagedApps()
         prefs.edit().remove("temporary_packages").remove("external_foreground_allowed")
             .remove("learning_browser_package").apply()
@@ -703,6 +742,8 @@ class KioskPolicy(private val context: Context) {
         private const val LAUNCHABLE_CACHE_MS = 60_000L
         private const val STUDY_VOLUME_MIN_FRACTION = 0.30
         private const val SUSPENDED_PACKAGES_KEY = "study_suspended_packages"
+        const val LEARNING_BROWSER_PACKAGE = "com.android.chrome"
+        private const val BROWSER_RESTRICTIONS_BACKUP_KEY = "study_browser_restrictions_backup"
         private var launchableCache: Pair<Long, Set<String>>? = null
     }
 }

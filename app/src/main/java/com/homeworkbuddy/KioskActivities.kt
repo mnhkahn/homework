@@ -302,7 +302,7 @@ private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
         }
         item {
             Text("学习时间允许的应用", fontSize = 21.sp, fontWeight = FontWeight.Medium)
-            Text("作业小伙伴始终允许；未勾选的应用在学习时间无法打开。21:30 后恢复正常系统。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("作业小伙伴和 Chrome 始终允许；学习时间 Chrome 仅可访问 cyeam.com 及其所有子域名。其他未勾选的应用在学习时间无法打开。", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if (!policy.hasUsageAccess()) item {
             Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3CE))) {
@@ -316,7 +316,7 @@ private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
         }
         items(apps, key = { it.packageName }) { app ->
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(checked = app.packageName in approved, onCheckedChange = { checked ->
+                Checkbox(checked = app.packageName in approved, enabled = app.packageName != KioskPolicy.LEARNING_BROWSER_PACKAGE, onCheckedChange = { checked ->
                     policy.setStudyAllowed(app.packageName, checked)
                     approved = policy.studyPackages
                 })
