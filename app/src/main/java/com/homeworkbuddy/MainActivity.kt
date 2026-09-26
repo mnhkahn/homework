@@ -226,6 +226,32 @@ class MainActivity : ComponentActivity() {
         allowNextUserLeaveHint = true
     }
 
+    fun openWordLearningPage(url: String) {
+        val policy = KioskPolicy(this)
+        val chromeIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+            .addCategory(Intent.CATEGORY_BROWSABLE)
+            .setPackage("com.android.chrome")
+        allowManagedActivityLaunch()
+        try {
+            // Chrome may currently be suspended by study mode. Allow it before
+            // launching, instead of mistaking a suspended browser for a missing one.
+            policy.allowLearningBrowser("com.android.chrome")
+            startActivity(chromeIntent)
+            return
+        } catch (error: android.content.ActivityNotFoundException) {
+            Log.i("HomeworkBuddy", "Chrome unavailable; opening vocabulary in WebView", error)
+        } catch (error: SecurityException) {
+            Log.w("HomeworkBuddy", "Chrome launch denied; opening vocabulary in WebView", error)
+        }
+        policy.revokeLearningBrowserAccess()
+        try {
+            startActivity(GameActivity.intent(this, url))
+        } catch (error: RuntimeException) {
+            allowNextUserLeaveHint = false
+            throw error
+        }
+    }
+
     /** Keep the display awake during an assignment or an external recorder session. */
     fun setHomeworkInProgress(inProgress: Boolean) {
         homeworkInProgress = inProgress
@@ -1719,7 +1745,7 @@ private fun formatStudyDuration(seconds: Long): String {
         task.link?.let { link ->
             FilledTonalButton(onClick = {
                 if (task.type == HomeworkTaskType.WORD_MEMORIZATION) {
-                    context.startActivity(GameActivity.intent(context, link))
+                    (context as? MainActivity)?.openWordLearningPage(link)
                 } else {
                     context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link)))
                 }

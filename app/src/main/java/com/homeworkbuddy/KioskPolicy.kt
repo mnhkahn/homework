@@ -400,7 +400,24 @@ class KioskPolicy(private val context: Context) {
         }
     }
 
+    /** Browser access lasts only for the homework link session. */
+    fun allowLearningBrowser(packageName: String) {
+        if (!isDeviceOwner || mode() != KioskMode.STUDY) return
+        prefs.edit().putString("learning_browser_package", packageName)
+            .putBoolean("external_foreground_allowed", true).apply()
+        allowTemporarily(packageName)
+    }
+
+    fun revokeLearningBrowserAccess() {
+        val packageName = prefs.getString("learning_browser_package", null) ?: return
+        prefs.edit().remove("learning_browser_package")
+            .putStringSet("temporary_packages", temporaryPackages - packageName)
+            .putBoolean("external_foreground_allowed", false).apply()
+        if (isDeviceOwner && mode() == KioskMode.STUDY) applyAllowlist(KioskMode.STUDY)
+    }
+
     fun markManagedActivityForeground() {
+        revokeLearningBrowserAccess()
         if (isExternalForegroundAllowed) {
             prefs.edit().putBoolean("external_foreground_allowed", false).apply()
         }
@@ -614,7 +631,8 @@ class KioskPolicy(private val context: Context) {
 
     private fun releaseLockTask(activity: Activity?) {
         unsuspendManagedApps()
-        prefs.edit().remove("temporary_packages").remove("external_foreground_allowed").apply()
+        prefs.edit().remove("temporary_packages").remove("external_foreground_allowed")
+            .remove("learning_browser_package").apply()
         clearLegacyLockTask(activity)
     }
 
