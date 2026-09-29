@@ -18,6 +18,7 @@ import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.BatteryManager
+import android.os.PowerManager
 import android.util.Base64
 import android.util.Log
 import android.util.Size
@@ -34,6 +35,8 @@ import kotlin.math.abs
 object RemoteStreamCoordinator {
     private var pending: CompletableDeferred<JSONObject>? = null
     private var stopAction: (() -> Unit)? = null
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var appContext: Context? = null
 
     suspend fun start(context: Context, fps: Int, durationSeconds: Int, resolution: String): JSONObject {
         check(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
@@ -44,7 +47,15 @@ object RemoteStreamCoordinator {
         synchronized(this) {
             check(pending == null && stopAction == null) { "已有学习画面共享正在进行" }
             pending = result
+            appContext = context.applicationContext
+            // The frame loop is timer-driven, so a dozing locked tablet freezes
+            // after the first frame. Hold the CPU and the camera foreground
+            // service type for the whole session.
+            wakeLock = context.applicationContext.getSystemService(PowerManager::class.java)
+                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "homework:remote_stream")
+                .also { it.acquire((allowedDurationSeconds + 30) * 1_000L) }
         }
+        XiaoliConnectionService.beginCameraCapture(context.applicationContext)
         CaptureStatusStore(context).begin(CaptureKind.STREAM)
         CameraShutterSound.play()
         runCatching {
@@ -63,13 +74,28 @@ object RemoteStreamCoordinator {
         pending?.complete(result)
     }
 
-    private fun fail(message: String) = synchronized(this) {
-        pending?.completeExceptionally(IllegalStateException(message))
-        stopAction = null
+    private fun fail(message: String) {
+        synchronized(this) {
+            pending?.completeExceptionally(IllegalStateException(message))
+            stopAction = null
+        }
         CaptureStatusStoreHolder.clear()
+        releaseSession()
     }
 
-    fun stopped() = synchronized(this) { stopAction = null }
+    fun stopped() {
+        synchronized(this) { stopAction = null }
+        releaseSession()
+    }
+
+    private fun releaseSession() {
+        val context = synchronized(this) {
+            wakeLock?.let { runCatching { if (it.isHeld) it.release() } }
+            wakeLock = null
+            appContext
+        } ?: return
+        XiaoliConnectionService.endCameraCapture(context)
+    }
 
     fun stop(): JSONObject {
         val action = synchronized(this) { stopAction } ?: throw IllegalStateException("当前没有正在共享的学习画面")

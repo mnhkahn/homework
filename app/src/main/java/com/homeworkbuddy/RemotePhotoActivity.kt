@@ -15,6 +15,7 @@ import android.hardware.camera2.CaptureRequest
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Looper
 import android.os.PowerManager
 import android.util.Base64
 import android.util.Log
@@ -83,7 +84,11 @@ object RemotePhotoCoordinator {
             XiaoliConnectionService.endCameraCapture(appContext)
             screenLock?.let { runCatching { if (it.isHeld) it.release() } }
             runCatching { if (cpuLock.isHeld) cpuLock.release() }
-            if (wokeScreen) relockScreen(appContext)
+            if (wokeScreen) {
+                // Relock immediately after the capture would cut off the
+                // shutter click, so give the sound a moment to play.
+                Handler(Looper.getMainLooper()).postDelayed({ relockScreen(appContext) }, 1_500)
+            }
         }
     }
 
