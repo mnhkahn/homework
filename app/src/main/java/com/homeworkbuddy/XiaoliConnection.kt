@@ -1,12 +1,17 @@
 package com.homeworkbuddy
 
+import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -162,20 +167,47 @@ class XiaoliConnectionService : Service() {
     private var sessionId: String? = null
     private var reconnectAttempts = 0
     private var stopped = false
+    private var cameraCaptureDepth = 0
+    private var foregroundText = "正在连接小李…"
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            stopped = true
-            socket?.close(1000, "user disconnected")
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
-            return START_NOT_STICKY
+        when (intent?.action) {
+            ACTION_STOP -> {
+                stopped = true
+                socket?.close(1000, "user disconnected")
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            ACTION_CAMERA_CAPTURE_BEGIN -> {
+                cameraCaptureDepth++
+                refreshForeground()
+                return START_STICKY
+            }
+            ACTION_CAMERA_CAPTURE_END -> {
+                cameraCaptureDepth = (cameraCaptureDepth - 1).coerceAtLeast(0)
+                refreshForeground()
+                return START_STICKY
+            }
         }
-        ensureChannel()
-        startForeground(XIAOLI_NOTIFICATION_ID, notification("正在连接小李…"))
         stopped = false
+        refreshForeground()
         if (socket == null) connect()
         return START_STICKY
+    }
+
+    private fun refreshForeground() {
+        ensureChannel()
+        var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING
+        // Opening the camera while the device is locked requires a camera-type
+        // foreground service (Android 12+); carry the type only while a remote
+        // capture runs so boot-time starts stay a plain remoteMessaging service.
+        if (cameraCaptureDepth > 0 && ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+        }
+        runCatching {
+            ServiceCompat.startForeground(this, XIAOLI_NOTIFICATION_ID, notification(foregroundText), types)
+        }.onFailure { Log.w("XiaoliConnection", "startForeground(types=$types) failed", it) }
     }
 
     override fun onDestroy() {
@@ -346,11 +378,24 @@ class XiaoliConnectionService : Service() {
     }
     private fun notification(text: String) = NotificationCompat.Builder(this, XIAOLI_CHANNEL)
         .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth).setContentTitle("作业小伙伴").setContentText(text).setOngoing(true).build()
-    private fun updateNotification(text: String) = getSystemService(NotificationManager::class.java).notify(XIAOLI_NOTIFICATION_ID, notification(text))
+    private fun updateNotification(text: String) {
+        foregroundText = text
+        getSystemService(NotificationManager::class.java).notify(XIAOLI_NOTIFICATION_ID, notification(text))
+    }
 
     companion object {
         private const val ACTION_STOP = "com.homeworkbuddy.xiaoli.STOP"
+        private const val ACTION_CAMERA_CAPTURE_BEGIN = "com.homeworkbuddy.xiaoli.CAMERA_CAPTURE_BEGIN"
+        private const val ACTION_CAMERA_CAPTURE_END = "com.homeworkbuddy.xiaoli.CAMERA_CAPTURE_END"
         fun connect(context: Context) = ContextCompat.startForegroundService(context, Intent(context, XiaoliConnectionService::class.java))
         fun disconnect(context: Context) = context.startService(Intent(context, XiaoliConnectionService::class.java).setAction(ACTION_STOP))
+
+        /** Adds/removes the camera foreground-service type while a remote capture runs. */
+        fun beginCameraCapture(context: Context) {
+            runCatching { context.startService(Intent(context, XiaoliConnectionService::class.java).setAction(ACTION_CAMERA_CAPTURE_BEGIN)) }
+        }
+        fun endCameraCapture(context: Context) {
+            runCatching { context.startService(Intent(context, XiaoliConnectionService::class.java).setAction(ACTION_CAMERA_CAPTURE_END)) }
+        }
     }
 }

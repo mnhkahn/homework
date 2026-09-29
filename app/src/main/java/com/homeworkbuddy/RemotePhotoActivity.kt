@@ -1,6 +1,7 @@
 package com.homeworkbuddy
 
 import android.Manifest
+import android.app.admin.DevicePolicyManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -14,6 +15,7 @@ import android.hardware.camera2.CaptureRequest
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.PowerManager
 import android.util.Base64
 import android.util.Log
 import android.util.Size
@@ -37,28 +39,58 @@ object RemotePhotoCoordinator {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             throw McpException(-32001, "相机权限被拒绝")
         }
-        val result = CompletableDeferred<JSONObject>()
-        synchronized(this) {
-            check(pending == null) { "已有拍照请求正在进行" }
-            pending = result
+        val appContext = context.applicationContext
+        val power = appContext.getSystemService(PowerManager::class.java)
+        val cpuLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "homework:remote_photo")
+        cpuLock.acquire(30_000L)
+        // A locked tablet dozes the CPU and, on several OEM builds, the camera
+        // pipeline stops producing frames while the display is off. Wake the
+        // screen for the capture and lock it back afterwards; the device is
+        // kiosk-managed, so relocking is a single DevicePolicyManager call.
+        val wokeScreen = !power.isInteractive
+        var screenLock: PowerManager.WakeLock? = null
+        if (wokeScreen) {
+            @Suppress("DEPRECATION")
+            screenLock = power.newWakeLock(PowerManager.FULL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP, "homework:remote_photo_screen")
+            screenLock.acquire(30_000L)
         }
-        CaptureStatusStore(context).begin(CaptureKind.PHOTO)
-        runCatching {
-            InAppPhotoCapture(context.applicationContext, resolution, ::complete, ::fail).also {
-                synchronized(this) { capture = it }
-                it.start()
-            }
-        }.onFailure { fail(it.message ?: "无法打开相机") }
-        return try {
-            withTimeout(20_000) { result.await() }
-        } finally {
+        XiaoliConnectionService.beginCameraCapture(appContext)
+        try {
+            val result = CompletableDeferred<JSONObject>()
             synchronized(this) {
-                if (pending === result) {
-                    pending = null
-                    capture?.cancel()
-                    capture = null
+                check(pending == null) { "已有拍照请求正在进行" }
+                pending = result
+            }
+            CaptureStatusStore(appContext).begin(CaptureKind.PHOTO)
+            runCatching {
+                InAppPhotoCapture(appContext, resolution, ::complete, ::fail).also {
+                    synchronized(this) { capture = it }
+                    it.start()
+                }
+            }.onFailure { fail(it.message ?: "无法打开相机") }
+            try {
+                return withTimeout(20_000) { result.await() }
+            } finally {
+                synchronized(this) {
+                    if (pending === result) {
+                        pending = null
+                        capture?.cancel()
+                        capture = null
+                    }
                 }
             }
+        } finally {
+            XiaoliConnectionService.endCameraCapture(appContext)
+            screenLock?.let { runCatching { if (it.isHeld) it.release() } }
+            runCatching { if (cpuLock.isHeld) cpuLock.release() }
+            if (wokeScreen) relockScreen(appContext)
+        }
+    }
+
+    private fun relockScreen(context: Context) {
+        runCatching {
+            val dpm = context.getSystemService(DevicePolicyManager::class.java) ?: return@runCatching
+            if (dpm.isDeviceOwnerApp(context.packageName)) dpm.lockNow()
         }
     }
 
