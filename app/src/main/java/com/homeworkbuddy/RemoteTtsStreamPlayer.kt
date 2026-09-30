@@ -141,7 +141,8 @@ object RemoteTtsStreamPlayer {
         val minBuffer = AudioTrack.getMinBufferSize(sampleRate, mask, encoding)
         check(minBuffer > 0) { "设备不支持解码后的 PCM 格式" }
         val audio = AudioTrack.Builder()
-            .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANT).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+            // Match URL playback and use media volume rather than the system assistant's volume.
+            .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
             .setAudioFormat(AudioFormat.Builder().setSampleRate(sampleRate).setChannelMask(mask).setEncoding(encoding).build())
             .setBufferSizeInBytes(minBuffer * 2)
             .setTransferMode(AudioTrack.MODE_STREAM)
