@@ -38,9 +38,9 @@ internal fun HeadPoseSettingsCard() {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedTextField(trigger, { trigger = it }, label = { Text("持续超限秒数") }, singleLine = true, modifier = Modifier.width(160.dp))
                 OutlinedTextField(recovery, { recovery = it }, label = { Text("恢复正常秒数") }, singleLine = true, modifier = Modifier.width(160.dp))
-                Row { Checkbox(sound, { sound = it }); Text("提示音（跟随媒体音量）", Modifier.padding(top = 12.dp)) }
+                Row { Checkbox(sound, { sound = it }); Text("循环提示音（跟随媒体音量）", Modifier.padding(top = 12.dp)) }
             }
-            Text("角度范围 −90～90°；距离 0.2～5×；超限 1～60 秒、恢复 1～30 秒。下限必须小于上限。提示音每次超限开始时响一次，至少间隔 30 秒。", fontSize = 12.sp)
+            Text("角度范围 −90～90°；距离 0.2～5×；超限 1～60 秒、恢复 1～30 秒。下限必须小于上限。超限后循环播放柔和旋律，恢复正常并解除提醒后停止；检测暂停时也会停止。", fontSize = 12.sp)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Button(onClick = {
                     val values = listOf(pitchMin, pitchMax, yawMin, yawMax, distanceMin, distanceMax).map { it.trim().toFloatOrNull() }

@@ -1,8 +1,6 @@
 package com.homeworkbuddy
 
 import android.Manifest
-import android.media.AudioManager
-import android.media.ToneGenerator
 import android.content.SharedPreferences
 import android.app.Activity
 import android.content.pm.PackageManager
@@ -118,19 +116,15 @@ internal fun HeadPosePanel(available: Boolean) {
     val distance = HeadPoseMetrics.distanceRatio(savedBaseline, reading?.eyeSpan)
     val engine = remember(limits) { HeadPoseAlertEngine(limits) }
     var warnings by remember { mutableStateOf(emptySet<PoseWarning>()) }
-    var lastSoundAt by remember { mutableStateOf<Long?>(null) }
-    val tone = remember { runCatching { ToneGenerator(AudioManager.STREAM_MUSIC, 45) }.getOrNull() }
-    DisposableEffect(tone) { onDispose { tone?.release() } }
     LaunchedEffect(reading, distance, engine) {
-        val previous = warnings
         warnings = engine.update(reading, distance)
-        val time = SystemClock.elapsedRealtime()
-        if (limits.sound && (warnings - previous).isNotEmpty() && lastSoundAt?.let { time - it >= 30_000 } != false) {
-            runCatching { tone?.startTone(ToneGenerator.TONE_PROP_BEEP, 180) }
-            lastSoundAt = time
-        }
     }
     val visibleWarnings = if (reading != null) warnings else emptySet()
+    val soundActive = limits.sound && visibleWarnings.isNotEmpty()
+    DisposableEffect(soundActive) {
+        val sound = if (soundActive) HeadPoseReminderSound(context.applicationContext) else null
+        onDispose { sound?.close() }
+    }
     val pitchWarning = visibleWarnings.any { it == PoseWarning.PITCH_HIGH || it == PoseWarning.PITCH_LOW }
     val yawWarning = visibleWarnings.any { it == PoseWarning.YAW_HIGH || it == PoseWarning.YAW_LOW }
     val distanceWarning = visibleWarnings.any { it == PoseWarning.TOO_CLOSE || it == PoseWarning.TOO_FAR }
