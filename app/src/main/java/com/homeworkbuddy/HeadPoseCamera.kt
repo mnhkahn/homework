@@ -82,7 +82,7 @@ internal class HeadPoseCamera(
                 val rotation = ((characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0) + degrees) % 360
                 val output = ImageReader.newInstance(size.width, size.height, ImageFormat.YUV_420_888, 2)
                 reader = output
-                output.setOnImageAvailableListener({ source -> analyze(source, rotation) }, handler)
+                output.setOnImageAvailableListener({ source -> analyze(source, rotation, "$id:${size.width}:${size.height}:$rotation") }, handler)
                 opening = true
                 manager.openCamera(id, object : CameraDevice.StateCallback() {
                     override fun onOpened(device: CameraDevice) {
@@ -132,7 +132,7 @@ internal class HeadPoseCamera(
         }
     }
 
-    private fun analyze(source: ImageReader, rotation: Int) {
+    private fun analyze(source: ImageReader, rotation: Int, calibrationKey: String) {
         if (stopping) return
         val image = source.acquireLatestImage() ?: return
         image.use {
@@ -160,6 +160,7 @@ internal class HeadPoseCamera(
                     smooth(face.headEulerAngleY, previous?.yaw),
                     span?.let { smooth(it, previous?.eyeSpan) },
                     SystemClock.elapsedRealtime(),
+                    calibrationKey,
                 )
                 filtered = reading
                 onState(HeadPoseState("本地检测中", reading))

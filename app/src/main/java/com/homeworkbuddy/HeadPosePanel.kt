@@ -1,6 +1,9 @@
 package com.homeworkbuddy
 
 import android.Manifest
+import android.media.AudioManager
+import android.media.ToneGenerator
+import android.content.SharedPreferences
 import android.app.Activity
 import android.content.pm.PackageManager
 import android.os.Handler
@@ -35,6 +38,17 @@ import java.util.concurrent.TimeUnit
 @Composable
 internal fun HeadPosePanel(available: Boolean) {
     val context = LocalContext.current
+    val store = remember { HeadPoseSettings(context) }
+    var limits by remember { mutableStateOf(store.load()) }
+    var calibrationRevision by remember { mutableIntStateOf(0) }
+    DisposableEffect(store) {
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            limits = store.load()
+            if (key?.startsWith("baseline_") == true) calibrationRevision++
+        }
+        store.prefs.registerOnSharedPreferenceChangeListener(listener)
+        onDispose { store.prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
     val owner = LocalLifecycleOwner.current
     var resumed by remember { mutableStateOf(owner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) }
     var permitted by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
@@ -59,7 +73,7 @@ internal fun HeadPosePanel(available: Boolean) {
         }
     }
     LaunchedEffect(Unit) { while (true) { now = SystemClock.elapsedRealtime(); delay(500) } }
-    LaunchedEffect(resumed, available, permitted, busy) {
+    LaunchedEffect(resumed, available, permitted, busy, limits) {
         state = HeadPoseState(when {
             !permitted -> "需要相机权限"
             busy || !available -> "相机用于拍照或共享，检测暂停"
@@ -78,7 +92,11 @@ internal fun HeadPosePanel(available: Boolean) {
                 main.post {
                     if (accepting) {
                         state = next
-                        baseline = calibration.update(next.reading)
+                        val reading = next.reading
+                        val saved = reading?.let { store.baseline(it.calibrationKey) }
+                        val suitable = reading?.takeIf { it.pitch in limits.pitchMin..limits.pitchMax && it.yaw in limits.yawMin..limits.yawMax }
+                        baseline = saved ?: calibration.update(suitable)
+                        if (saved == null && baseline != null && reading != null) store.saveBaseline(reading.calibrationKey, baseline!!)
                     }
                 }
             }
@@ -95,27 +113,55 @@ internal fun HeadPosePanel(available: Boolean) {
         }
     }
     val reading = state.reading?.takeIf { now - it.atMillis < 2_000 && resumed && available && !busy }
-    val distance = HeadPoseMetrics.distanceRatio(baseline, reading?.eyeSpan)
+    // Preference changes also refresh a persisted baseline when returning from parent settings.
+    val savedBaseline = remember(reading?.calibrationKey, calibrationRevision) { reading?.let { store.baseline(it.calibrationKey) } }
+    val distance = HeadPoseMetrics.distanceRatio(savedBaseline, reading?.eyeSpan)
+    val engine = remember(limits) { HeadPoseAlertEngine(limits) }
+    var warnings by remember { mutableStateOf(emptySet<PoseWarning>()) }
+    var lastSoundAt by remember { mutableStateOf<Long?>(null) }
+    val tone = remember { runCatching { ToneGenerator(AudioManager.STREAM_MUSIC, 45) }.getOrNull() }
+    DisposableEffect(tone) { onDispose { tone?.release() } }
+    LaunchedEffect(reading, distance, engine) {
+        val previous = warnings
+        warnings = engine.update(reading, distance)
+        val time = SystemClock.elapsedRealtime()
+        if (limits.sound && (warnings - previous).isNotEmpty() && lastSoundAt?.let { time - it >= 30_000 } != false) {
+            runCatching { tone?.startTone(ToneGenerator.TONE_PROP_BEEP, 180) }
+            lastSoundAt = time
+        }
+    }
+    val visibleWarnings = if (reading != null) warnings else emptySet()
+    val pitchWarning = visibleWarnings.any { it == PoseWarning.PITCH_HIGH || it == PoseWarning.PITCH_LOW }
+    val yawWarning = visibleWarnings.any { it == PoseWarning.YAW_HIGH || it == PoseWarning.YAW_LOW }
+    val distanceWarning = visibleWarnings.any { it == PoseWarning.TOO_CLOSE || it == PoseWarning.TOO_FAR }
+    val warningColor = Color(0xFFB3261E)
     val message = if (state.reading != null && reading == null) "等待相机画面" else state.message
-    Surface(color = Color(0xFFF1F6FC), shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+    Surface(color = if (visibleWarnings.isEmpty()) Color(0xFFF1F6FC) else Color(0xFFFFE8E6), shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+        Column {
         FlowRow(Modifier.padding(horizontal = 18.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(30.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Column(Modifier.widthIn(min = 140.dp)) {
                 Text("头部状态", fontSize = 18.sp, fontWeight = FontWeight.Medium)
                 Text(message, fontSize = 12.sp, color = Color(0xFF668074))
                 if (!permitted) TextButton(onClick = { permission.launch(Manifest.permission.CAMERA) }, contentPadding = PaddingValues(0.dp)) { Text("允许使用相机") }
             }
-            PoseMetric("俯仰角", reading?.pitch?.let { String.format(Locale.CHINA, "%+.0f°", it) } ?: "—", "正值抬头 · 负值低头")
-            PoseMetric("左右转角", reading?.yaw?.let { String.format(Locale.CHINA, "%+.0f°", it) } ?: "—", "相对摄像头")
+            PoseMetric("俯仰角", reading?.pitch?.let { String.format(Locale.CHINA, "%+.0f°", it) } ?: "—", "正值抬头 · 负值低头", pitchWarning)
+            PoseMetric("左右转角", reading?.yaw?.let { String.format(Locale.CHINA, "%+.0f°", it) } ?: "—", "相对摄像头", yawWarning)
             PoseMetric("相对距离", distance?.let { String.format(Locale.CHINA, "%.2f×", it) } ?: "—", when {
                 reading == null -> "等待人脸"
                 reading.eyeSpan == null -> "转头或遮挡，暂无法估算"
-                baseline == null -> "正在自动记录基准"
+                savedBaseline == null -> "请保持正常写字姿势校准"
                 else -> "距平板 · 估算"
-            })
+            }, distanceWarning)
             Column {
                 Text("基准距离 = 1.00×", fontSize = 12.sp, color = Color(0xFF697789))
                 Text("画面仅在本机处理", fontSize = 12.sp, color = Color(0xFF697789))
             }
+        }
+        if (visibleWarnings.isNotEmpty()) Text(
+            visibleWarnings.map { it.message }.distinct().joinToString("；"),
+            color = warningColor, fontWeight = FontWeight.Medium,
+            modifier = Modifier.padding(start = 18.dp, end = 18.dp, bottom = 10.dp),
+        )
         }
     }
 }
@@ -124,10 +170,10 @@ internal fun HeadPosePanel(available: Boolean) {
 private fun rememberSaveablePermission() = androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
 
 @Composable
-private fun PoseMetric(label: String, value: String, hint: String) {
+private fun PoseMetric(label: String, value: String, hint: String, warning: Boolean = false) {
     Column(Modifier.widthIn(min = 120.dp)) {
         Text(label, fontSize = 12.sp, color = Color(0xFF6E7783))
-        Text(value, fontSize = 23.sp, color = Color(0xFF263E67))
+        Text(value, fontSize = 23.sp, color = if (warning) Color(0xFFB3261E) else Color(0xFF263E67))
         Text(hint, fontSize = 11.sp, color = Color(0xFF697789))
     }
 }

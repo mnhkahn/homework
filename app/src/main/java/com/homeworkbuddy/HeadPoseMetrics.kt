@@ -24,6 +24,7 @@ internal data class HeadPoseReading(
     val yaw: Float,
     val eyeSpan: Float?,
     val atMillis: Long,
+    val calibrationKey: String = "default",
 )
 
 internal data class HeadPoseState(

@@ -1283,7 +1283,7 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
                 todayEstimatedSeconds = todayEstimatedSeconds,
                 onSelectDate = { selectedDate = it },
             )
-            if (selectedDate == LocalDate.now() && selected != null) {
+            if (selectedDate == LocalDate.now()) {
                 Spacer(Modifier.height(10.dp))
                 HeadPosePanel(available = !showSubmissionChoice && !showCameraConfirm && !showTextSubmission)
             }

@@ -245,6 +245,7 @@ private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
                 }
             }
         }
+        item { HeadPoseSettingsCard() }
         if (!policy.isDeviceOwner) item {
             Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3CE))) {
                 Column(Modifier.padding(18.dp)) {
