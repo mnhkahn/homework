@@ -32,7 +32,7 @@ class CompletionHistoryStore(context: Context) {
     fun noteTasks(tasks: List<HomeworkTask>, date: LocalDate = LocalDate.now()) {
         val day = dayJson(date)
         tasks.forEach { task ->
-            val deadline = date.atTime(task.deadline).atZone(ZoneId.systemDefault()).toEpochSecond()
+            val deadline = task.dueDate.atTime(task.deadline).atZone(ZoneId.systemDefault()).toEpochSecond()
             val entry = day.optJSONObject(task.id) ?: JSONObject()
             entry.put("title", task.title).put("deadline", deadline)
             task.startedAtEpochSeconds?.let { entry.put("started_at", it) }
@@ -97,7 +97,18 @@ class CompletionHistoryStore(context: Context) {
         save(date, day)
     }
 
-    fun clearDay(date: LocalDate) = save(date, JSONObject())
+    fun clearDay(date: LocalDate, preserveEarlyCompletions: Boolean = false) {
+        val kept = JSONObject()
+        if (preserveEarlyCompletions) {
+            val existing = dayJson(date)
+            val nextDay = date.plusDays(1).atStartOfDay(ZoneId.systemDefault()).toEpochSecond()
+            existing.keys().forEach { id ->
+                val entry = existing.getJSONObject(id)
+                if (entry.has("completed_at") && entry.optLong("deadline") >= nextDay) kept.put(id, entry)
+            }
+        }
+        save(date, kept)
+    }
 
     /** A final flower/black mark is an on-device ledger entry, not a view calculation. */
     fun savedMark(date: LocalDate): DayMark? = prefs.getString(markKey(date), null)
