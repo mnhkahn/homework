@@ -29,6 +29,13 @@
         <intent>
             <action android:name="android.provider.MediaStore.RECORD_SOUND" />
         </intent>
+        <!-- Browser detection for study mode: every non-Chrome browser is
+             suspended because only Chrome honors the managed URL allowlist. -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" />
+        </intent>
     </queries>
     <application
         android:allowBackup="true"

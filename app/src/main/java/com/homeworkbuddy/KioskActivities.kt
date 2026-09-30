@@ -221,6 +221,7 @@ private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
     val policy = remember { KioskPolicy(activity) }
     var approved by remember { mutableStateOf(policy.studyPackages) }
     val apps = remember { policy.launchableApps() }
+    val nonLearningBrowsers = remember { policy.nonLearningBrowserPackages() }
     var startHour by remember { mutableStateOf((policy.startMinutes / 60).toString()) }
     var startMinute by remember { mutableStateOf((policy.startMinutes % 60).toString()) }
     var endHour by remember { mutableStateOf((policy.endMinutes / 60).toString()) }
@@ -302,7 +303,7 @@ private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
         }
         item {
             Text("学习时间允许的应用", fontSize = 21.sp, fontWeight = FontWeight.Medium)
-            Text("作业小伙伴和 Chrome 始终允许；学习时间 Chrome 仅可访问 cyeam.com 及其所有子域名。其他未勾选的应用在学习时间无法打开。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("作业小伙伴和 Chrome 始终允许；学习时间 Chrome 仅可访问 cyeam.com、trello.com、pgyer.com 及其所有子域名，其他浏览器一律无法使用。其他未勾选的应用在学习时间无法打开。", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if (!policy.hasUsageAccess()) item {
             Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3CE))) {
@@ -315,12 +316,17 @@ private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
             }
         }
         items(apps, key = { it.packageName }) { app ->
+            val isOtherBrowser = app.packageName in nonLearningBrowsers
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(checked = app.packageName in approved, enabled = app.packageName != KioskPolicy.LEARNING_BROWSER_PACKAGE, onCheckedChange = { checked ->
+                Checkbox(checked = !isOtherBrowser && app.packageName in approved, enabled = app.packageName != KioskPolicy.LEARNING_BROWSER_PACKAGE && !isOtherBrowser, onCheckedChange = { checked ->
                     policy.setStudyAllowed(app.packageName, checked)
                     approved = policy.studyPackages
                 })
-                Column { Text(app.label, fontWeight = FontWeight.Medium); Text(app.packageName, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                Column {
+                    Text(app.label, fontWeight = FontWeight.Medium)
+                    Text(app.packageName, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (isOtherBrowser) Text("浏览器仅支持 Chrome，学习时间不可用", fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
+                }
             }
         }
     }

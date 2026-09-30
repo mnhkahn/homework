@@ -16,7 +16,9 @@
 
 ## 学习模式网站管控
 
-Device Owner 模式下，Chrome 始终加入学习应用白名单。进入学习模式时向 Chrome 下发 `URLBlocklist = ["*"]` 和 `URLAllowlist = ["cyeam.com"]`；Chrome 的域名规则包含主域名及全部子域名（无需使用 `*.cyeam.com`）。页面静态资源不逐个加入导航白名单，跨站导航仍受限制。
+Device Owner 模式下，Chrome 始终加入学习应用白名单。进入学习模式时向 Chrome 下发 `URLBlocklist = ["*"]` 和 `URLAllowlist = ["cyeam.com", "trello.com", "pgyer.com"]`（学习页、Trello 授权页、蒲公英更新下载页）；Chrome 的域名规则包含主域名及全部子域名（无需使用 `*.cyeam.com`）。页面静态资源不逐个加入导航白名单，跨站导航仍受限制。
+
+`URLBlocklist`/`URLAllowlist` 是 Chrome 专有的托管配置，其他浏览器不识别。因此学习模式会通过可浏览 HTTPS 的应用查询识别所有已安装浏览器，把 Chrome 以外的浏览器一律挂起（即使曾被勾选），家长设置中这些浏览器的勾选框也被禁用。
 
 进入学习模式前持久保存原有的两项网址策略，退出、定时结束或临时开放时恢复；其他 Chrome 托管配置保留。应用内 WebView 继续使用现有的 HTTPS Cyeam 域名检查。
 

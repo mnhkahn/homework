@@ -18,6 +18,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.media.AudioManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
@@ -130,9 +131,25 @@ class KioskPolicy(private val context: Context) {
 
     fun setStudyAllowed(packageName: String, allowed: Boolean) {
         if (packageName == LEARNING_BROWSER_PACKAGE) return
+        // A non-Chrome browser ignores the managed URL allowlist, so it must
+        // never enter the study allowlist; study mode suspends it instead.
+        if (allowed && packageName in nonLearningBrowserPackages()) return
         val updated = studyPackages.toMutableSet().apply { if (allowed) add(packageName) else remove(packageName) }
         prefs.edit().putStringSet("study_packages", updated).remove("approved_packages").apply()
         if (isDeviceOwner && mode() == KioskMode.STUDY) applyAllowlist(KioskMode.STUDY)
+    }
+
+    /**
+     * Every installed browser except Chrome, detected through the standard
+     * browsable-HTTPS handler query rather than a hardcoded package list.
+     * Only Chrome honors the managed URLBlocklist/URLAllowlist keys, so study
+     * mode treats these as non-allowed apps no matter what was checked.
+     */
+    fun nonLearningBrowserPackages(): Set<String> {
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://browser.probe.invalid/"))
+            .addCategory(Intent.CATEGORY_BROWSABLE)
+        return context.packageManager.queryIntentActivities(intent, PackageManager.MATCH_ALL)
+            .mapNotNullTo(HashSet()) { it.activityInfo?.packageName } - context.packageName - LEARNING_BROWSER_PACKAGE
     }
 
     fun launchableApps(): List<LaunchableApp> {
@@ -568,10 +585,10 @@ class KioskPolicy(private val context: Context) {
                 // Persist before changing device policy so a restart can still restore it.
                 check(prefs.edit().putString(BROWSER_RESTRICTIONS_BACKUP_KEY, backup.toString()).commit())
             }
-            if (restrictions.getStringArray("URLBlocklist")?.contentEquals(arrayOf("*")) == true &&
-                restrictions.getStringArray("URLAllowlist")?.contentEquals(arrayOf("cyeam.com")) == true) return
-            restrictions.putStringArray("URLBlocklist", arrayOf("*"))
-            restrictions.putStringArray("URLAllowlist", arrayOf("cyeam.com"))
+            if (restrictions.getStringArray("URLBlocklist")?.contentEquals(STUDY_URL_BLOCKLIST) == true &&
+                restrictions.getStringArray("URLAllowlist")?.contentEquals(STUDY_URL_ALLOWLIST) == true) return
+            restrictions.putStringArray("URLBlocklist", STUDY_URL_BLOCKLIST)
+            restrictions.putStringArray("URLAllowlist", STUDY_URL_ALLOWLIST)
         } else {
             val saved = prefs.getString(BROWSER_RESTRICTIONS_BACKUP_KEY, null) ?: return
             val backup = JSONObject(saved)
@@ -596,9 +613,15 @@ class KioskPolicy(private val context: Context) {
         // allowlist, and an already-suspended package may no longer appear in
         // launcher queries on some Android builds.
         unsuspendManagedApps(clearSaved = false)
+        val browsers = nonLearningBrowserPackages()
+        // Entries whitelisted before the browser rule existed must not survive:
+        // only Chrome can receive the managed URL allowlist.
+        if (studyPackages.any { it in browsers }) {
+            prefs.edit().putStringSet("study_packages", studyPackages - browsers - LEARNING_BROWSER_PACKAGE).apply()
+        }
         val alwaysAvailable = setOf(context.packageName) + studyPackages + temporaryPackages +
-            studyInstallSystemPackages() + systemHomePackages()
-        val candidates = launchableApps().mapTo(LinkedHashSet()) { it.packageName } - alwaysAvailable
+            studyInstallSystemPackages() + systemHomePackages() - browsers
+        val candidates = launchableApps().mapTo(LinkedHashSet()) { it.packageName } - alwaysAvailable + browsers
         if (candidates.isEmpty()) {
             prefs.edit().remove(SUSPENDED_PACKAGES_KEY).apply()
             return
@@ -743,6 +766,9 @@ class KioskPolicy(private val context: Context) {
         private const val STUDY_VOLUME_MIN_FRACTION = 0.30
         private const val SUSPENDED_PACKAGES_KEY = "study_suspended_packages"
         const val LEARNING_BROWSER_PACKAGE = "com.android.chrome"
+        private val STUDY_URL_BLOCKLIST = arrayOf("*")
+        /** Domains the app itself opens in Chrome: learning pages, Trello consent, and the Pgyer update page. */
+        private val STUDY_URL_ALLOWLIST = arrayOf("cyeam.com", "trello.com", "pgyer.com")
         private const val BROWSER_RESTRICTIONS_BACKUP_KEY = "study_browser_restrictions_backup"
         private var launchableCache: Pair<Long, Set<String>>? = null
     }
