@@ -37,6 +37,7 @@ object RemoteStreamCoordinator {
     private var stopAction: (() -> Unit)? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var appContext: Context? = null
+    private var cameraLease: AutoCloseable? = null
 
     suspend fun start(context: Context, fps: Int, durationSeconds: Int, resolution: String): JSONObject {
         check(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
@@ -44,32 +45,41 @@ object RemoteStreamCoordinator {
         }
         val allowedDurationSeconds = allowedDurationSeconds(context, durationSeconds)
         val result = CompletableDeferred<JSONObject>()
-        synchronized(this) {
-            check(pending == null && stopAction == null) { "已有学习画面共享正在进行" }
-            pending = result
-            appContext = context.applicationContext
-            // The frame loop is timer-driven, so a dozing locked tablet freezes
-            // after the first frame. Hold the CPU and the camera foreground
-            // service type for the whole session.
-            wakeLock = context.applicationContext.getSystemService(PowerManager::class.java)
-                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "homework:remote_stream")
-                .also { it.acquire((allowedDurationSeconds + 30) * 1_000L) }
+        val lease = HeadPoseCameraAccess.reserve()
+        try {
+            synchronized(this) {
+                check(pending == null && stopAction == null) { "已有学习画面共享正在进行" }
+                pending = result
+                cameraLease = lease
+                appContext = context.applicationContext
+                // The frame loop is timer-driven, so a dozing locked tablet freezes
+                // after the first frame. Hold the CPU and the camera foreground
+                // service type for the whole session.
+                wakeLock = context.applicationContext.getSystemService(PowerManager::class.java)
+                    .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "homework:remote_stream")
+                    .also { it.acquire((allowedDurationSeconds + 30) * 1_000L) }
+            }
+        } catch (error: Throwable) {
+            lease.close()
+            throw error
         }
         XiaoliConnectionService.beginCameraCapture(context.applicationContext)
         CaptureStatusStore(context).begin(CaptureKind.STREAM)
         CameraShutterSound.play()
-        runCatching {
-            InAppRemoteStream(context.applicationContext, fps.coerceIn(1, 3), allowedDurationSeconds, resolution, ::ready, ::fail)
-                .start()
-        }.onFailure { fail(it.message ?: "无法启动学习画面共享") }
+        val stream = InAppRemoteStream(context.applicationContext, fps.coerceIn(1, 3), allowedDurationSeconds, resolution, ::ready, ::fail)
+        runCatching { stream.start() }.onFailure { fail(it.message ?: "无法启动学习画面共享") }
         return try {
             withTimeout(15_000) { result.await() }
+        } catch (error: Throwable) {
+            stream.cancel()
+            throw error
         } finally {
             synchronized(this) { if (pending === result) pending = null }
         }
     }
 
     private fun ready(result: JSONObject, stop: () -> Unit) = synchronized(this) {
+        if (cameraLease == null) { stop(); return@synchronized }
         stopAction = stop
         pending?.complete(result)
     }
@@ -92,7 +102,9 @@ object RemoteStreamCoordinator {
         val context = synchronized(this) {
             wakeLock?.let { runCatching { if (it.isHeld) it.release() } }
             wakeLock = null
-            appContext
+            cameraLease?.close()
+            cameraLease = null
+            appContext.also { appContext = null }
         } ?: return
         XiaoliConnectionService.endCameraCapture(context)
     }
@@ -145,7 +157,9 @@ private class InAppRemoteStream(
     private var sequence = 0L
     private var inFlight = false
     private var started = false
-    private var stopped = false
+    @Volatile private var stopped = false
+
+    fun cancel() = stopStream("共享已取消")
 
     fun start() {
         CaptureStatusStoreHolder.bind(context)
@@ -205,9 +219,11 @@ private class InAppRemoteStream(
         }, handler)
         manager.openCamera(cameraID, object : CameraDevice.StateCallback() {
             override fun onOpened(device: CameraDevice) {
+                if (stopped) { device.close(); return }
                 camera = device
                 device.createCaptureSession(listOf(preview, output.surface), object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(captureSession: CameraCaptureSession) {
+                        if (stopped) { captureSession.close(); return }
                         session = captureSession
                         runCatching {
                             val request = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
@@ -263,11 +279,12 @@ private class InAppRemoteStream(
     }
 
     private fun failAndStop(message: String) {
+        if (stopped) return
         if (!started) onFailure(message)
         stopStream(message)
     }
 
-    private fun stopStream(reason: String) {
+    @Synchronized private fun stopStream(reason: String) {
         if (stopped) return
         stopped = true
         handler?.removeCallbacksAndMessages(null)

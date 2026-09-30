@@ -22,7 +22,10 @@ import java.io.File
 object RemoteVideoCoordinator {
     private var pending: CompletableDeferred<JSONObject>? = null
 
-    suspend fun record(context: android.content.Context, maxSeconds: Int): JSONObject {
+    suspend fun record(context: android.content.Context, maxSeconds: Int): JSONObject =
+        HeadPoseCameraAccess.withRemoteCamera { recordExclusive(context, maxSeconds) }
+
+    private suspend fun recordExclusive(context: android.content.Context, maxSeconds: Int): JSONObject {
         val result = CompletableDeferred<JSONObject>()
         synchronized(this) {
             check(pending == null) { "已有录像请求正在进行" }

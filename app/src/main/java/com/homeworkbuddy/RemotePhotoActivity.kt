@@ -36,7 +36,10 @@ object RemotePhotoCoordinator {
     val isCaptureInProgress: Boolean
         get() = synchronized(this) { pending?.isActive == true }
 
-    suspend fun take(context: Context, resolution: String = "vga"): JSONObject {
+    suspend fun take(context: Context, resolution: String = "vga"): JSONObject =
+        HeadPoseCameraAccess.withRemoteCamera { takeExclusive(context, resolution) }
+
+    private suspend fun takeExclusive(context: Context, resolution: String): JSONObject {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             throw McpException(-32001, "相机权限被拒绝")
         }

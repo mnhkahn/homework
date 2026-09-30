@@ -1283,7 +1283,11 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
                 todayEstimatedSeconds = todayEstimatedSeconds,
                 onSelectDate = { selectedDate = it },
             )
-            Spacer(Modifier.height(20.dp))
+            if (selectedDate == LocalDate.now() && selected != null) {
+                Spacer(Modifier.height(10.dp))
+                HeadPosePanel(available = !showSubmissionChoice && !showCameraConfirm && !showTextSubmission)
+            }
+            Spacer(Modifier.height(14.dp))
             if (selectedDate != LocalDate.now()) {
                 CalendarDayContent(
                     modifier = Modifier.fillMaxSize(),
