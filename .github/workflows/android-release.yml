@@ -231,6 +231,11 @@ jobs:
             echo "FEISHU_WEBHOOK_URL not set, skip"
             exit 0
           fi
+          # A run can fail before git-chglog executes; only attach notes that exist.
+          NOTES=""
+          if [ -s artifacts/release-notes.md ]; then
+            NOTES=$(<artifacts/release-notes.md)
+          fi
           if [ "$STATUS" = "success" ]; then
             ICON="✅"
             RELEASE_URL="https://github.com/${REPO}/releases/tag/${REF_NAME}"
@@ -238,6 +243,9 @@ jobs:
           else
             ICON="❌"
             TEXT=$(printf '%s %s 构建失败 %s\nRun: %s' "$ICON" "$REPO" "$REF_NAME" "$RUN_URL")
+          fi
+          if [ -n "$NOTES" ]; then
+            TEXT=$(printf '%s\n\n更新记录:\n%s' "$TEXT" "$NOTES")
           fi
           PAYLOAD=$(jq -cn --arg t "$TEXT" '{msg_type:"text",content:{text:$t}}')
           curl -sf -X POST "$FEISHU_WEBHOOK_URL" \
