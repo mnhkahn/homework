@@ -1300,14 +1300,16 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
                 )
             } else if (selected == null && tasks.isEmpty()) {
                 EmptyTaskState(Modifier.fillMaxSize())
-            } else if (this@BoxWithConstraints.maxWidth >= 700.dp) Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(22.dp)) {
+            } else if (this@BoxWithConstraints.maxWidth >= 700.dp) Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(22.dp)) {
                 if (selected != null) CurrentTask(Modifier.weight(1.45f).fillMaxHeight(), selected, running, taskElapsedSeconds, pianoPractice, submitting, onStart, onPianoRecord, onFinish)
                 else AllDoneState(Modifier.weight(1.45f).fillMaxHeight())
                 TaskQueue(Modifier.weight(.8f).fillMaxHeight(), waiting, completedTasks, onSelect)
             } else {
-                if (selected != null) CurrentTask(Modifier.fillMaxWidth(), selected, running, taskElapsedSeconds, pianoPractice, submitting, onStart, onPianoRecord, onFinish)
-                else AllDoneState(Modifier.fillMaxWidth())
-                Spacer(Modifier.height(16.dp)); TaskQueue(Modifier.fillMaxWidth(), waiting, completedTasks, onSelect)
+                Column(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (selected != null) CurrentTask(Modifier.fillMaxWidth().weight(1.4f), selected, running, taskElapsedSeconds, pianoPractice, submitting, onStart, onPianoRecord, onFinish)
+                    else AllDoneState(Modifier.fillMaxWidth().weight(1.4f))
+                    TaskQueue(Modifier.fillMaxWidth().weight(1f), waiting, completedTasks, onSelect)
+                }
             }
         }
         if (syncError != null) Surface(
@@ -1775,48 +1777,62 @@ private fun formatStudyDuration(seconds: Long): String {
     }
 }
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable private fun CurrentTask(modifier: Modifier, task: HomeworkTask, running: Boolean, elapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit) {
     val overdue = task.status == TaskStatus.OVERTIME
     val context = androidx.compose.ui.platform.LocalContext.current
-    Column(modifier.clip(RoundedCornerShape(26.dp)).background(if (overdue) OverdueSurface else Sun).padding(28.dp), horizontalAlignment = Alignment.Start) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (task.subject != "作业") AssistChip(onClick = {}, label = { Text(task.subject) })
-            TaskStatusPill(task.status)
-        }
-        Spacer(Modifier.height(14.dp)); Text(task.title, fontSize = 30.sp, fontWeight = FontWeight.Medium)
-        Text(if (overdue) "已超过截止时间，请优先完成" else "截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", color = if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = if (overdue) FontWeight.Medium else FontWeight.Normal)
-        task.startedAtEpochSeconds?.let { Text("开始 ${homeworkTimeLabel(it)}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp) }
-        Spacer(Modifier.weight(1f)); Box(Modifier.size(166.dp).align(Alignment.CenterHorizontally).clip(CircleShape).background(Color.White).padding(10.dp), contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(if (running) "已用时" else if (overdue) "已超期" else "截止", fontSize = 15.sp, color = if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(if (running) elapsedLabel(elapsedSeconds) else task.deadline.format(DateTimeFormatter.ofPattern("HH:mm")), fontSize = 31.sp, fontWeight = FontWeight.Medium)
+    Column(modifier.clip(RoundedCornerShape(26.dp)).background(if (overdue) OverdueSurface else Sun).padding(18.dp), horizontalAlignment = Alignment.Start) {
+        // Only the details scroll; the primary actions always retain their own height.
+        Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.Start) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (task.subject != "作业") AssistChip(onClick = {}, label = { Text(task.subject) })
+                TaskStatusPill(task.status)
             }
-        }
-        Spacer(Modifier.weight(1f))
-        task.link?.let { link ->
-            FilledTonalButton(onClick = {
-                if (task.type == HomeworkTaskType.WORD_MEMORIZATION) {
-                    (context as? MainActivity)?.openWordLearningPage(link)
-                } else {
-                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link)))
+            Spacer(Modifier.height(14.dp)); Text(task.title, fontSize = 30.sp, fontWeight = FontWeight.Medium)
+            Text(if (overdue) "已超过截止时间，请优先完成" else "截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", color = if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = if (overdue) FontWeight.Medium else FontWeight.Normal)
+            task.startedAtEpochSeconds?.let { Text("开始 ${homeworkTimeLabel(it)}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp) }
+            Spacer(Modifier.height(18.dp)); Box(Modifier.size(166.dp).align(Alignment.CenterHorizontally).clip(CircleShape).background(Color.White).padding(10.dp), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(if (running) "已用时" else if (overdue) "已超期" else "截止", fontSize = 15.sp, color = if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(if (running) elapsedLabel(elapsedSeconds) else task.deadline.format(DateTimeFormatter.ofPattern("HH:mm")), fontSize = 31.sp, fontWeight = FontWeight.Medium)
                 }
-            }, modifier = Modifier.align(Alignment.CenterHorizontally), enabled = task.status != TaskStatus.COMPLETED && !submitting) {
-                Text(when (task.type) {
-                    HomeworkTaskType.WORD_MEMORIZATION -> "打开背单词"
-                    HomeworkTaskType.ENGLISH_READING -> "打开英语阅读"
-                    HomeworkTaskType.NORMAL -> "打开作业链接"
-                })
             }
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(18.dp))
+
         }
-        Button(onClick = onStart, modifier = Modifier.align(Alignment.CenterHorizontally), enabled = task.status != TaskStatus.COMPLETED && !submitting && !running) { Text(if (running) "正在做" else "开始做") }
-        if (pianoPractice != null) {
-            Spacer(Modifier.height(10.dp))
-            FilledTonalButton(onClick = onPianoRecord, modifier = Modifier.align(Alignment.CenterHorizontally), enabled = pianoPractice.cooldownSeconds == 0 && task.status != TaskStatus.COMPLETED && !submitting) {
-                Text(if (pianoPractice.cooldownSeconds > 0) "已记 ${pianoPractice.count} 次 · ${pianoPractice.cooldownSeconds} 秒后可再记" else "🎹 练琴记一次（已记 ${pianoPractice.count} 次）")
+        Spacer(Modifier.height(10.dp))
+        androidx.compose.foundation.layout.FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.Start),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Button(onClick = onStart, enabled = task.status != TaskStatus.COMPLETED && !submitting && !running) { Text(if (running) "正在做" else "开始做") }
+            task.link?.let { link ->
+                FilledTonalButton(onClick = {
+                    if (task.type == HomeworkTaskType.WORD_MEMORIZATION) {
+                        (context as? MainActivity)?.openWordLearningPage(link)
+                    } else {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link)))
+                    }
+                }, enabled = task.status != TaskStatus.COMPLETED && !submitting) {
+                    Text(when (task.type) {
+                        HomeworkTaskType.WORD_MEMORIZATION -> "打开背单词"
+                        HomeworkTaskType.ENGLISH_READING -> "打开英语阅读"
+                        HomeworkTaskType.NORMAL -> "打开作业链接"
+                    })
+                }
+            }
+            if (pianoPractice != null) {
+                FilledTonalButton(onClick = onPianoRecord, enabled = pianoPractice.cooldownSeconds == 0 && task.status != TaskStatus.COMPLETED && !submitting) {
+                    Text(if (pianoPractice.cooldownSeconds > 0) "已记 ${pianoPractice.count} 次 · ${pianoPractice.cooldownSeconds} 秒后可再记" else "🎹 练琴记一次（已记 ${pianoPractice.count} 次）")
+                }
+            }
+            FilledTonalButton(onClick = onFinish, enabled = task.status != TaskStatus.COMPLETED && !submitting) {
+                Icon(Icons.Outlined.CameraAlt, null)
+                Spacer(Modifier.width(8.dp))
+                Text("完成并提交")
             }
         }
-        Spacer(Modifier.height(10.dp)); FilledTonalButton(onClick = onFinish, modifier = Modifier.align(Alignment.CenterHorizontally), enabled = task.status != TaskStatus.COMPLETED && !submitting) { Icon(Icons.Outlined.CameraAlt, null); Spacer(Modifier.width(8.dp)); Text("完成并提交") }
     }
 }
 
