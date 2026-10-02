@@ -1474,10 +1474,8 @@ private fun ScheduledTaskList(modifier: Modifier, tasks: List<HomeworkTask>, sub
                         TaskStatusPill(task.status)
                     }
                     Text(homeworkTimingLabel(task).ifBlank { if (completed) "已完成" else "截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}" }, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
-                    if (!completed && task.dueDate.isAfter(LocalDate.now())) {
-                        FilledTonalButton(onClick = { onFinish(task) }, enabled = !submitting) {
-                            Text("提前完成并提交")
-                        }
+                    FilledTonalButton(onClick = { onFinish(task) }, enabled = !submitting) {
+                        Text("完成并提交")
                     }
                 }
             }
@@ -1827,7 +1825,7 @@ private fun formatStudyDuration(seconds: Long): String {
                     Text(if (pianoPractice.cooldownSeconds > 0) "已记 ${pianoPractice.count} 次 · ${pianoPractice.cooldownSeconds} 秒后可再记" else "🎹 练琴记一次（已记 ${pianoPractice.count} 次）")
                 }
             }
-            FilledTonalButton(onClick = onFinish, enabled = task.status != TaskStatus.COMPLETED && !submitting) {
+            FilledTonalButton(onClick = onFinish, enabled = !submitting) {
                 Icon(Icons.Outlined.CameraAlt, null)
                 Spacer(Modifier.width(8.dp))
                 Text("完成并提交")
