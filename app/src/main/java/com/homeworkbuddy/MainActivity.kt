@@ -49,6 +49,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material.icons.outlined.Apps
@@ -583,7 +585,7 @@ private fun HomeworkBuddyApp() {
     LaunchedEffect(selectedDate, dayTasks) {
         val current = dayTasks.firstOrNull { it.id == selectedId }
         if (current == null || (running && current.status == TaskStatus.COMPLETED)) {
-            selectTask(dayTasks.firstOrNull { it.status != TaskStatus.COMPLETED } ?: dayTasks.firstOrNull())
+            selectTask(dayTasks.firstOrNull { it.status != TaskStatus.COMPLETED })
         }
     }
 
@@ -650,7 +652,7 @@ private fun HomeworkBuddyApp() {
             val currentIndex = updated.indexOfFirst { it.id == taskId }
             val next = updated.drop(currentIndex + 1).firstOrNull { it.status != TaskStatus.COMPLETED }
                 ?: updated.take(currentIndex.coerceAtLeast(0)).firstOrNull { it.status != TaskStatus.COMPLETED }
-            selectTask(next ?: updated.firstOrNull { it.id == taskId })
+            selectTask(next)
         }
         // The flower is earned at the instant the final task is submitted.
         // Do not wait for the next day's import (or the next 60-second sync)
@@ -976,7 +978,7 @@ private fun HomeworkBuddyApp() {
             onSelectDate = { date ->
                 selectedDate = date
                 val scheduled = if (date == LocalDate.now()) tasks else weekTasks.filter { it.dueDate == date }
-                selectTask(scheduled.firstOrNull { it.status != TaskStatus.COMPLETED } ?: scheduled.firstOrNull())
+                selectTask(scheduled.firstOrNull { it.status != TaskStatus.COMPLETED })
             },
             remainingSeconds = remainingSeconds,
             running = running,
@@ -1018,7 +1020,7 @@ private fun HomeworkBuddyApp() {
                 activeTask?.takeIf { it.title.contains("钢琴") }?.let { pianoPractice = pianoPracticeStore.record(it.id) }
             },
             onFinish = {
-                submissionTask = activeTask
+                submissionTask = activeTask?.takeIf { it.status != TaskStatus.COMPLETED }
                 showSubmissionChoice = submissionTask != null
             },
             onChoosePhoto = {
@@ -1274,7 +1276,7 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
     val todayElapsedSeconds = (completedEstimatedSeconds + activeElapsedSeconds).coerceAtMost(todayEstimatedSeconds)
     val dayTasks = if (selectedDate == LocalDate.now()) tasks else weekTasks.filter { it.dueDate == selectedDate }
     val waiting = dayTasks.filter { it.status != TaskStatus.COMPLETED && it.id != selected?.id }
-    val completedTasks = dayTasks.filter { it.status == TaskStatus.COMPLETED && it.id != selected?.id }
+    val completedTasks = dayTasks.filter { it.status == TaskStatus.COMPLETED }
     val overdue = tasks.count { it.status == TaskStatus.OVERTIME }
     BoxWithConstraints(
         Modifier
@@ -1472,7 +1474,7 @@ private fun RemoteNoticeCard(notice: RemoteNotice) {
 }
 
 @Composable private fun HistoryTaskList(modifier: Modifier, records: List<CompletionRecord>, context: Context) {
-    var photoUrl by remember { mutableStateOf<String?>(null) }
+    var photoUrls by remember { mutableStateOf<List<String>?>(null) }
     Column(modifier) {
         Text("作业清单 · ${records.size} 项", fontSize = 20.sp, fontWeight = FontWeight.Medium)
         Spacer(Modifier.height(6.dp))
@@ -1495,7 +1497,7 @@ private fun RemoteNoticeCard(notice: RemoteNotice) {
                         Text(timing, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
                     }
                     if (record.photoUrls.isNotEmpty()) {
-                        TextButton(onClick = { photoUrl = record.photoUrls.first() }, contentPadding = PaddingValues(top = 5.dp, bottom = 0.dp)) {
+                        TextButton(onClick = { photoUrls = record.photoUrls }, contentPadding = PaddingValues(top = 5.dp, bottom = 0.dp)) {
                             Icon(Icons.Outlined.CameraAlt, null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("查看图片（${record.photoUrls.size} 张）")
                         }
                     }
@@ -1504,7 +1506,7 @@ private fun RemoteNoticeCard(notice: RemoteNotice) {
             }
         }
     }
-    photoUrl?.let { PhotoViewer(it, HomeworkApi(context)) { photoUrl = null } }
+    photoUrls?.let { PhotoViewer(it, HomeworkApi(context)) { photoUrls = null } }
 }
 
 @Composable
@@ -1530,10 +1532,15 @@ private fun LocalRecordingButton(localUri: String) {
     }
 }
 
-@Composable private fun PhotoViewer(url: String, api: HomeworkApi, onDismiss: () -> Unit) {
-    val state by produceState(PhotoLoadState(), url) { value = PhotoLoadState(api.loadPhoto(url), finished = true) }
-    var scale by remember(url) { mutableFloatStateOf(1f) }
-    var offset by remember(url) { mutableStateOf(Offset.Zero) }
+@OptIn(ExperimentalFoundationApi::class)
+@Composable private fun PhotoViewer(urls: List<String>, api: HomeworkApi, onDismiss: () -> Unit) {
+    if (urls.isEmpty()) return
+    val pagerState = rememberPagerState(pageCount = { urls.size })
+    val scope = rememberCoroutineScope()
+    // Key transforms by page so buttons can switch even while zoomed and the
+    // next image always starts at its original size.
+    var scale by remember(pagerState.currentPage) { mutableFloatStateOf(1f) }
+    var offset by remember(pagerState.currentPage) { mutableStateOf(Offset.Zero) }
     val transformState = rememberTransformableState { zoomChange, panChange, _ ->
         val newScale = (scale * zoomChange).coerceIn(1f, 4f)
         if (newScale == 1f) offset = Offset.Zero
@@ -1543,27 +1550,60 @@ private fun LocalRecordingButton(localUri: String) {
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize().padding(24.dp), shape = RoundedCornerShape(24.dp), color = Color.Black) {
             Column(Modifier.fillMaxSize()) {
-                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), horizontalArrangement = Arrangement.End) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("第 ${pagerState.currentPage + 1} / ${urls.size} 张", modifier = Modifier.weight(1f), color = Color.White)
                     TextButton(onClick = onDismiss, colors = ButtonDefaults.textButtonColors(contentColor = Color.White)) { Text("关闭") }
                 }
-                Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
-                    state.bitmap?.let {
-                        Image(
-                            it.asImageBitmap(),
-                            "作业图片（可双指缩放）",
-                            Modifier.fillMaxSize().transformable(transformState).graphicsLayer {
-                                scaleX = scale
-                                scaleY = scale
-                                translationX = offset.x
-                                translationY = offset.y
-                            },
-                            contentScale = ContentScale.Fit,
-                        )
+                HorizontalPager(
+                    state = pagerState,
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    userScrollEnabled = scale <= 1f,
+                ) { page ->
+                    val url = urls[page]
+                    val state by produceState(PhotoLoadState(), url) {
+                        value = PhotoLoadState()
+                        value = PhotoLoadState(api.loadPhoto(url), finished = true)
                     }
-                    if (!state.finished) CircularProgressIndicator(color = Color.White)
-                    else if (state.bitmap == null) Text("图片加载失败，请稍后重试", color = Color.White)
+                    Box(Modifier.fillMaxSize().clip(androidx.compose.ui.graphics.RectangleShape).padding(horizontal = 16.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
+                        state.bitmap?.let {
+                            Image(
+                                it.asImageBitmap(),
+                                "作业图片，第 ${page + 1} / ${urls.size} 张（可双指缩放）",
+                                Modifier.fillMaxSize()
+                                    .transformable(transformState, canPan = { scale > 1f }, enabled = page == pagerState.currentPage)
+                                    .graphicsLayer {
+                                        scaleX = if (page == pagerState.currentPage) scale else 1f
+                                        scaleY = scaleX
+                                        translationX = if (page == pagerState.currentPage) offset.x else 0f
+                                        translationY = if (page == pagerState.currentPage) offset.y else 0f
+                                    },
+                                contentScale = ContentScale.Fit,
+                            )
+                        }
+                        if (!state.finished) CircularProgressIndicator(color = Color.White)
+                        else if (state.bitmap == null) Text("图片加载失败，请稍后重试", color = Color.White)
+                    }
                 }
-                Text("双指可放大缩小，放大后可拖动查看", modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 12.dp), color = Color.White, fontSize = 13.sp)
+                if (urls.size > 1) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                        TextButton(
+                            onClick = { scope.launch { pagerState.scrollToPage(pagerState.currentPage - 1) } },
+                            enabled = pagerState.currentPage > 0 && !pagerState.isScrollInProgress,
+                            colors = ButtonDefaults.textButtonColors(contentColor = Color.White, disabledContentColor = Color.Gray),
+                        ) { Text("上一张") }
+                        TextButton(
+                            onClick = { scope.launch { pagerState.scrollToPage(pagerState.currentPage + 1) } },
+                            enabled = pagerState.currentPage < urls.lastIndex && !pagerState.isScrollInProgress,
+                            colors = ButtonDefaults.textButtonColors(contentColor = Color.White, disabledContentColor = Color.Gray),
+                        ) { Text("下一张") }
+                    }
+                }
+                Text(
+                    if (urls.size > 1) "左右滑动切换，双指缩放；放大后可拖动或用按钮切换" else "双指可放大缩小，放大后可拖动查看",
+                    modifier = Modifier.align(Alignment.CenterHorizontally).padding(horizontal = 12.dp, vertical = 12.dp),
+                    color = Color.White,
+                    fontSize = 13.sp,
+                )
             }
         }
     }
@@ -1735,8 +1775,47 @@ private fun formatStudyDuration(seconds: Long): String {
     }
 }
 
+@Composable private fun CompletedTask(modifier: Modifier, task: HomeworkTask) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val record = remember(task) { CompletionHistoryStore(context).day(task.dueDate).firstOrNull { it.taskId == task.id } }
+    val completedAt = task.completedAtEpochSeconds ?: record?.completedAtEpochSeconds
+    val startedAt = task.startedAtEpochSeconds ?: record?.startedAtEpochSeconds
+    val duration = record?.durationSeconds ?: if (completedAt != null && startedAt != null) {
+        (completedAt - startedAt).coerceAtLeast(0).toInt()
+    } else null
+    val photos = task.photoUrls.ifEmpty { record?.photoUrls.orEmpty() }
+    val audio = task.localAudioUri ?: record?.localAudioUri
+    var showPhotos by remember(task.id) { mutableStateOf(false) }
+    Column(
+        modifier.clip(RoundedCornerShape(26.dp)).background(Leaf).padding(18.dp).verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (task.subject != "作业") Text(task.subject, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            TaskStatusPill(TaskStatus.COMPLETED)
+        }
+        Text(task.title, fontSize = 30.sp, fontWeight = FontWeight.Medium)
+        startedAt?.let { Text("开始 ${homeworkTimeLabel(it)}") }
+        completedAt?.let { Text("完成 ${homeworkTimeLabel(it)}", color = Color(0xFF24733A)) }
+        duration?.let { Text("实际用时 ${elapsedLabel(it)}") }
+        if (photos.isNotEmpty()) {
+            FilledTonalButton(onClick = { showPhotos = true }) {
+                Icon(Icons.Outlined.CameraAlt, null)
+                Spacer(Modifier.width(8.dp))
+                Text("查看照片（${photos.size} 张）")
+            }
+        }
+        audio?.let { LocalRecordingButton(it) }
+    }
+    if (showPhotos) PhotoViewer(photos, HomeworkApi(context)) { showPhotos = false }
+}
+
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable private fun CurrentTask(modifier: Modifier, task: HomeworkTask, running: Boolean, elapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit) {
+    if (task.status == TaskStatus.COMPLETED) {
+        CompletedTask(modifier, task)
+        return
+    }
     val overdue = task.status == TaskStatus.OVERTIME
     val context = androidx.compose.ui.platform.LocalContext.current
     Column(modifier.clip(RoundedCornerShape(26.dp)).background(if (overdue) OverdueSurface else Sun).padding(18.dp), horizontalAlignment = Alignment.Start) {
@@ -1797,7 +1876,7 @@ private fun formatStudyDuration(seconds: Long): String {
 @Composable private fun TaskQueue(modifier: Modifier, tasks: List<HomeworkTask>, completedTasks: List<HomeworkTask>, onSelect: (HomeworkTask) -> Unit) {
     val allTasks = tasks + completedTasks
     val context = androidx.compose.ui.platform.LocalContext.current
-    var photoUrl by remember { mutableStateOf<String?>(null) }
+    var photoUrls by remember { mutableStateOf<List<String>?>(null) }
     Column(modifier) {
         Text("作业清单 · ${allTasks.size} 项", fontSize = 20.sp, fontWeight = FontWeight.Medium)
         Spacer(Modifier.height(6.dp))
@@ -1817,7 +1896,7 @@ private fun formatStudyDuration(seconds: Long): String {
                         Text(homeworkTimingLabel(task).ifBlank { if (completed) "已完成" else "截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}" }, color = if (completed) Color(0xFF24733A) else if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
                     }
                     if (completed && task.photoUrls.isNotEmpty()) {
-                        TextButton(onClick = { photoUrl = task.photoUrls.first() }, contentPadding = PaddingValues(top = 4.dp, bottom = 0.dp)) {
+                        TextButton(onClick = { photoUrls = task.photoUrls }, contentPadding = PaddingValues(top = 4.dp, bottom = 0.dp)) {
                             Icon(Icons.Outlined.CameraAlt, null, modifier = Modifier.size(17.dp))
                             Spacer(Modifier.width(5.dp))
                             Text("查看照片（${task.photoUrls.size} 张）")
@@ -1836,7 +1915,7 @@ private fun formatStudyDuration(seconds: Long): String {
             }
         }
     }
-    photoUrl?.let { PhotoViewer(it, HomeworkApi(context)) { photoUrl = null } }
+    photoUrls?.let { PhotoViewer(it, HomeworkApi(context)) { photoUrls = null } }
 }
 
 @Composable private fun TaskStatusPill(status: TaskStatus) {
