@@ -28,19 +28,19 @@ internal fun HeadPoseSettingsCard() {
     var message by remember { mutableStateOf<String?>(null) }
     Card(shape = RoundedCornerShape(20.dp)) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("头部姿势提醒", fontSize = 21.sp)
-            Text("默认参考：俯仰 −19°、转角 −8°、距离 1.00×。持续超限后显示提醒；恢复正常后自动解除。", fontSize = 14.sp)
+            Text("低头提醒", fontSize = 21.sp)
+            Text("目前只提醒头过低：默认俯仰角低于 −29° 持续 3 秒后提醒。抬头、左右看和距离变化只显示数值，不提醒，也不判断专注程度。", fontSize = 14.sp)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                PoseRange("俯仰角（°）", pitchMin, { pitchMin = it }, pitchMax, { pitchMax = it })
-                PoseRange("左右转角（°）", yawMin, { yawMin = it }, yawMax, { yawMax = it })
-                PoseRange("相对距离（×）", distanceMin, { distanceMin = it }, distanceMax, { distanceMax = it })
+                PoseRange("俯仰参考（仅下限提醒）", pitchMin, { pitchMin = it }, pitchMax, { pitchMax = it })
+                PoseRange("转角参考（不提醒）", yawMin, { yawMin = it }, yawMax, { yawMax = it })
+                PoseRange("距离参考（不提醒）", distanceMin, { distanceMin = it }, distanceMax, { distanceMax = it })
             }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedTextField(trigger, { trigger = it }, label = { Text("持续超限秒数") }, singleLine = true, modifier = Modifier.width(160.dp))
                 OutlinedTextField(recovery, { recovery = it }, label = { Text("恢复正常秒数") }, singleLine = true, modifier = Modifier.width(160.dp))
-                Row { Checkbox(sound, { sound = it }); Text("循环提示音（跟随媒体音量）", Modifier.padding(top = 12.dp)) }
+                Row { Checkbox(sound, { sound = it }); Text("语音提醒（跟随媒体音量）", Modifier.padding(top = 12.dp)) }
             }
-            Text("角度范围 −90～90°；距离 0.2～5×；超限 1～60 秒、恢复 1～30 秒。下限必须小于上限。超限后循环播放柔和旋律，恢复正常并解除提醒后停止；检测暂停时也会停止。", fontSize = 12.sp)
+            Text("角度范围 −90～90°；距离 0.2～5×；超限 1～60 秒、恢复 1～30 秒。下限必须小于上限。低头超限后播报“头太低了，请抬高一点”，每句结束后间隔 8 秒；恢复正常解除提醒或检测暂停后停止。", fontSize = 12.sp)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Button(onClick = {
                     val values = listOf(pitchMin, pitchMax, yawMin, yawMax, distanceMin, distanceMax).map { it.trim().toFloatOrNull() }

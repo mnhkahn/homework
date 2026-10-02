@@ -24,33 +24,33 @@ class HeadPoseAlertsTest {
     }
     @Test fun continuousThreeSecondsTriggersAndTwoNormalSecondsClears() {
         val engine = HeadPoseAlertEngine(HeadPoseLimits())
-        repeat(6) { assertTrue(engine.update(reading(it * 500L, 0f), 1f).isEmpty()) }
-        assertEquals(setOf(PoseWarning.PITCH_HIGH), engine.update(reading(3000, 0f), 1f))
-        repeat(4) { assertTrue(engine.update(reading(3500 + it * 500L), 1f).contains(PoseWarning.PITCH_HIGH)) }
+        repeat(6) { assertTrue(engine.update(reading(it * 500L, -40f), 1f).isEmpty()) }
+        assertEquals(setOf(PoseWarning.PITCH_LOW), engine.update(reading(3000, -40f), 1f))
+        repeat(4) { assertTrue(engine.update(reading(3500 + it * 500L), 1f).contains(PoseWarning.PITCH_LOW)) }
         assertTrue(engine.update(reading(5500), 1f).isEmpty())
     }
     @Test fun briefReturnToNormalResetsTriggerTimer() {
         val engine = HeadPoseAlertEngine(HeadPoseLimits())
-        repeat(5) { engine.update(reading(it * 500L, 0f), 1f) }
+        repeat(5) { engine.update(reading(it * 500L, -40f), 1f) }
         engine.update(reading(2500), 1f)
-        repeat(6) { assertTrue(engine.update(reading(3000 + it * 500L, 0f), 1f).isEmpty()) }
-        assertEquals(setOf(PoseWarning.PITCH_HIGH), engine.update(reading(6000, 0f), 1f))
+        repeat(6) { assertTrue(engine.update(reading(3000 + it * 500L, -40f), 1f).isEmpty()) }
+        assertEquals(setOf(PoseWarning.PITCH_LOW), engine.update(reading(6000, -40f), 1f))
     }
     @Test fun staleDuplicateFramesCannotAccumulateTime() {
         val engine = HeadPoseAlertEngine(HeadPoseLimits())
-        repeat(20) { assertTrue(engine.update(reading(1000, 0f), 1f).isEmpty()) }
-        assertTrue(engine.update(reading(8000, 0f), 1f).isEmpty())
+        repeat(20) { assertTrue(engine.update(reading(1000, -40f), 1f).isEmpty()) }
+        assertTrue(engine.update(reading(8000, -40f), 1f).isEmpty())
     }
     @Test fun missingFaceClearsWarningsAndRequiresNewFullDuration() {
         val engine = HeadPoseAlertEngine(HeadPoseLimits())
-        repeat(7) { engine.update(reading(it * 500L, 0f), .7f) }
+        repeat(7) { engine.update(reading(it * 500L, -40f), .7f) }
         assertTrue(engine.update(null, null).isEmpty())
-        assertTrue(engine.update(reading(3500, 0f), .7f).isEmpty())
+        assertTrue(engine.update(reading(3500, -40f), .7f).isEmpty())
     }
-    @Test fun unknownDistanceClearsOnlyDistanceWarnings() {
+    @Test fun unknownDistanceDoesNotDisableLowHeadWarning() {
         val engine = HeadPoseAlertEngine(HeadPoseLimits())
-        repeat(7) { engine.update(reading(it * 500L, 0f), .7f) }
-        assertEquals(setOf(PoseWarning.PITCH_HIGH), engine.update(reading(3500, 0f), null))
+        repeat(7) { engine.update(reading(it * 500L, -40f), .7f) }
+        assertEquals(setOf(PoseWarning.PITCH_LOW), engine.update(reading(3500, -40f), null))
     }
     @Test fun differentFaultsDoNotShareTriggerTime() {
         val engine = HeadPoseAlertEngine(HeadPoseLimits())
@@ -61,13 +61,22 @@ class HeadPoseAlertsTest {
         }
     }
     @Test fun customDurationsAndLimitsApply() {
-        val engine = HeadPoseAlertEngine(HeadPoseLimits(pitchMax = 10f, triggerSeconds = 1, recoverySeconds = 1))
+        val engine = HeadPoseAlertEngine(HeadPoseLimits(pitchMin = -10f, triggerSeconds = 1, recoverySeconds = 1))
         repeat(6) { assertTrue(engine.update(reading(it * 500L, 0f), 1f).isEmpty()) }
-        engine.update(reading(3000, 20f), 1f)
-        engine.update(reading(3500, 20f), 1f)
-        assertTrue(engine.update(reading(4000, 20f), 1f).contains(PoseWarning.PITCH_HIGH))
-        engine.update(reading(4500), 1f)
-        engine.update(reading(5000), 1f)
-        assertTrue(engine.update(reading(5500), 1f).isEmpty())
+        engine.update(reading(3000, -20f), 1f)
+        engine.update(reading(3500, -20f), 1f)
+        assertTrue(engine.update(reading(4000, -20f), 1f).contains(PoseWarning.PITCH_LOW))
+        engine.update(reading(4500, 0f), 1f)
+        engine.update(reading(5000, 0f), 1f)
+        assertTrue(engine.update(reading(5500, 0f), 1f).isEmpty())
     }
+    @Test fun lookingUpTurningAndDistanceChangesNeverTriggerAttentionWarnings() {
+        for (yaw in listOf(-60f, 60f)) {
+            for (distance in listOf(.5f, 2f)) {
+                val engine = HeadPoseAlertEngine(HeadPoseLimits())
+                repeat(30) { assertTrue(engine.update(reading(it * 500L, 25f, yaw), distance).isEmpty()) }
+            }
+        }
+    }
+
 }

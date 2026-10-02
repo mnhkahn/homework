@@ -120,9 +120,9 @@ internal fun HeadPosePanel(available: Boolean) {
         warnings = engine.update(reading, distance)
     }
     val visibleWarnings = if (reading != null) warnings else emptySet()
-    val soundActive = limits.sound && visibleWarnings.isNotEmpty()
-    DisposableEffect(soundActive) {
-        val sound = if (soundActive) HeadPoseReminderSound(context.applicationContext) else null
+    val voicePrompts = if (limits.sound) headPoseVoicePrompts(visibleWarnings) else emptyList()
+    DisposableEffect(voicePrompts) {
+        val sound = if (voicePrompts.isNotEmpty()) HeadPoseReminderSound(context.applicationContext, voicePrompts) else null
         onDispose { sound?.close() }
     }
     val pitchWarning = visibleWarnings.any { it == PoseWarning.PITCH_HIGH || it == PoseWarning.PITCH_LOW }

@@ -30,13 +30,10 @@ internal class HeadPoseAlertEngine(private val limits: HeadPoseLimits) {
         val at = reading.atMillis
         if (lastAt?.let { at < it || at - it > 1_500 } == true) reset()
         lastAt = at
+        // Looking up/aside and changing distance do not establish inattention.
+        // Keep those measurements visible, but only a low head triggers an alert.
         val conditions = mapOf(
-            PoseWarning.PITCH_HIGH to reading.pitch.takeIf { it.isFinite() }?.let { it > limits.pitchMax },
             PoseWarning.PITCH_LOW to reading.pitch.takeIf { it.isFinite() }?.let { it < limits.pitchMin },
-            PoseWarning.YAW_LOW to reading.yaw.takeIf { it.isFinite() }?.let { it < limits.yawMin },
-            PoseWarning.YAW_HIGH to reading.yaw.takeIf { it.isFinite() }?.let { it > limits.yawMax },
-            PoseWarning.TOO_CLOSE to distance?.takeIf { it.isFinite() }?.let { it < limits.distanceMin },
-            PoseWarning.TOO_FAR to distance?.takeIf { it.isFinite() }?.let { it > limits.distanceMax },
         )
         conditions.forEach { (reason, outside) ->
             val timer = timers.getValue(reason)
