@@ -442,6 +442,7 @@ private fun HomeworkBuddyApp() {
     // with an otherwise empty board.
     var tasks by remember { mutableStateOf(taskCache.todayTasks()) }
     var weekTasks by remember { mutableStateOf(taskCache.weekTasks()) }
+    var selectedDate by remember { mutableStateOf(LocalDate.now()) }
     var selectedId by remember { mutableStateOf("") }
     var remainingSeconds by remember { mutableIntStateOf(0) }
     var running by remember { mutableStateOf(tasks.any { it.status == TaskStatus.RUNNING }) }
@@ -567,8 +568,27 @@ private fun HomeworkBuddyApp() {
         }
     }
 
-    LaunchedEffect(tasks, selectedId, remainingSeconds, running, taskElapsedSeconds) {
-        HomeworkStatusStore(context).save(tasks, selectedId, remainingSeconds, running, taskElapsedSeconds)
+    val dayTasks = if (selectedDate == LocalDate.now()) tasks else weekTasks.filter { it.dueDate == selectedDate }
+
+    fun selectTask(task: HomeworkTask?) {
+        selectedId = task?.id.orEmpty()
+        remainingSeconds = (task?.estimatedMinutes ?: 0) * 60
+        running = task?.status == TaskStatus.RUNNING
+        taskStartedAtMillis = task?.startedAtEpochSeconds?.times(1_000) ?: 0L
+        taskElapsedSeconds = if (running && taskStartedAtMillis > 0) {
+            ((System.currentTimeMillis() - taskStartedAtMillis) / 1_000L).toInt().coerceAtLeast(0)
+        } else 0
+    }
+
+    LaunchedEffect(selectedDate, dayTasks) {
+        val current = dayTasks.firstOrNull { it.id == selectedId }
+        if (current == null || (running && current.status == TaskStatus.COMPLETED)) {
+            selectTask(dayTasks.firstOrNull { it.status != TaskStatus.COMPLETED } ?: dayTasks.firstOrNull())
+        }
+    }
+
+    LaunchedEffect(dayTasks, selectedId, remainingSeconds, running, taskElapsedSeconds) {
+        HomeworkStatusStore(context).save(dayTasks, selectedId, remainingSeconds, running, taskElapsedSeconds)
     }
 
     LaunchedEffect(running, recordingAudio) {
@@ -621,26 +641,17 @@ private fun HomeworkBuddyApp() {
             weekTasks = weekTasks.map { if (it.id == taskId) it.copy(status = TaskStatus.COMPLETED, completedAtEpochSeconds = System.currentTimeMillis() / 1_000, photoPath = photoPath ?: it.photoPath) else it }
             taskCache.saveWeek(weekTasks)
         }
-        if (tasks.none { it.id == taskId }) {
-            historyRevision++
-            return
+        tasks = tasks.map { task ->
+            if (task.id == taskId) task.copy(status = TaskStatus.COMPLETED, completedAtEpochSeconds = System.currentTimeMillis() / 1_000, photoPath = photoPath ?: task.photoPath) else task
         }
-        val currentIndex = tasks.indexOfFirst { it.id == taskId }
-        val completedAt = System.currentTimeMillis() / 1_000
-        val updated = tasks.map { task ->
-            if (task.id == taskId) task.copy(status = TaskStatus.COMPLETED, completedAtEpochSeconds = completedAt, photoPath = photoPath ?: task.photoPath) else task
+        taskCache.saveToday(tasks)
+        if (selectedId == taskId) {
+            val updated = if (selectedDate == LocalDate.now()) tasks else weekTasks.filter { it.dueDate == selectedDate }
+            val currentIndex = updated.indexOfFirst { it.id == taskId }
+            val next = updated.drop(currentIndex + 1).firstOrNull { it.status != TaskStatus.COMPLETED }
+                ?: updated.take(currentIndex.coerceAtLeast(0)).firstOrNull { it.status != TaskStatus.COMPLETED }
+            selectTask(next ?: updated.firstOrNull { it.id == taskId })
         }
-        tasks = updated
-        taskCache.saveToday(updated)
-        val next = if (currentIndex >= 0) {
-            updated.drop(currentIndex + 1).firstOrNull { it.status != TaskStatus.COMPLETED }
-                ?: updated.take(currentIndex).firstOrNull { it.status != TaskStatus.COMPLETED }
-        } else updated.firstOrNull { it.status != TaskStatus.COMPLETED }
-        selectedId = next?.id.orEmpty()
-        remainingSeconds = next?.estimatedMinutes?.times(60) ?: 0
-        running = false
-        taskStartedAtMillis = 0L
-        taskElapsedSeconds = 0
         // The flower is earned at the instant the final task is submitted.
         // Do not wait for the next day's import (or the next 60-second sync)
         // to make the calendar recalculate today's completed records.
@@ -684,13 +695,13 @@ private fun HomeworkBuddyApp() {
         recordedAudioUri = null
     }
 
-    fun celebrateRetriedEarlySubmission(taskId: String) {
-        val task = weekTasks.firstOrNull { it.id == taskId && it.dueDate.isAfter(LocalDate.now()) && it.status != TaskStatus.COMPLETED } ?: return
+    fun celebrateRetriedSubmission(taskId: String) {
+        val task = (tasks + weekTasks).firstOrNull { it.id == taskId && it.status != TaskStatus.COMPLETED } ?: return
         val history = CompletionHistoryStore(context)
         history.noteTasks(listOf(task))
         history.recordCompletion(task.id, System.currentTimeMillis() / 1_000, task.dueDate.atTime(task.deadline).atZone(ZoneId.systemDefault()).toEpochSecond())
         advanceAfterCompletion(task.id)
-        celebration = CelebrationEvent(task.title, allTasksComplete = false, completedEarly = true)
+        celebration = CelebrationEvent(task.title, allTasksComplete = false, completedEarly = task.dueDate.isAfter(LocalDate.now()))
     }
 
     fun retryPendingSubmissions() {
@@ -706,13 +717,13 @@ private fun HomeworkBuddyApp() {
                         Log.i("HomeworkSubmit", "retry_local_recording task=${pending.taskId}")
                         runCatching { api.completeWithoutAttachment(pending.taskId) }.onSuccess {
                             pendingStore.remove(pending.taskId)
-                            celebrateRetriedEarlySubmission(pending.taskId)
+                            celebrateRetriedSubmission(pending.taskId)
                             uploadedAnything = true
                         }
                     } else if (pending.textContent != null) {
                         runCatching { api.submitText(pending.taskId, pending.textContent) }.onSuccess {
                             pendingStore.remove(pending.taskId)
-                            celebrateRetriedEarlySubmission(pending.taskId)
+                            celebrateRetriedSubmission(pending.taskId)
                             uploadedAnything = true
                         }
                     } else if (pending.photoPaths.isEmpty()) {
@@ -729,7 +740,7 @@ private fun HomeworkBuddyApp() {
                             )
                         }.onSuccess {
                             pendingStore.remove(pending.taskId)
-                            celebrateRetriedEarlySubmission(pending.taskId)
+                            celebrateRetriedSubmission(pending.taskId)
                             uploadedAnything = true
                         }
                     }
@@ -758,7 +769,7 @@ private fun HomeworkBuddyApp() {
             // Keep only the system recorder's local URI. It is never uploaded
             // or downloaded from Trello when the child views the recording.
             recordedAudioTaskId = submissionTask?.id ?: selectedId.takeIf { it.isNotBlank() }
-            recordedAudioElapsedSeconds = if (submissionTask?.dueDate?.isAfter(LocalDate.now()) == true) 0 else taskElapsedSeconds
+            recordedAudioElapsedSeconds = taskElapsedSeconds
             recordedAudioUri = result.data?.data?.toString()
         }
         KioskPolicy(context).revokeSystemRecorderAccess()
@@ -810,7 +821,11 @@ private fun HomeworkBuddyApp() {
         if (!connected || !foreground) return@LaunchedEffect
         runCatching { api.weekScheduledTasks() }.onSuccess { scheduledCards ->
             val completed = weekTasks.filter { it.status == TaskStatus.COMPLETED }
-            weekTasks = (completed + scheduledCards).distinctBy { it.id }
+            val scheduled = scheduledCards.map { fresh ->
+                val old = weekTasks.firstOrNull { it.id == fresh.id }
+                if (old?.status == TaskStatus.RUNNING) fresh.copy(status = TaskStatus.RUNNING, startedAtEpochSeconds = old.startedAtEpochSeconds) else fresh
+            }
+            weekTasks = (completed + scheduled).distinctBy { it.id }
             taskCache.saveWeek(weekTasks)
         }.onFailure { error ->
             if (error !is kotlinx.coroutines.CancellationException) {
@@ -882,13 +897,6 @@ private fun HomeworkBuddyApp() {
                 // their own ledger and are not affected by this cleanup.
                 completionHistory.clearDay(today, preserveEarlyCompletions = true)
                 completionHistory.noteTasks(merged, today)
-                val selected = merged.firstOrNull { it.id == selectedId && it.status != TaskStatus.COMPLETED }
-                    ?: merged.firstOrNull { it.status != TaskStatus.COMPLETED }
-                if (selected == null) {
-                            selectedId = ""; remainingSeconds = 0; running = false; taskStartedAtMillis = 0L; taskElapsedSeconds = 0
-                        } else if (selected.id != selectedId) {
-                            selectedId = selected.id; remainingSeconds = selected.estimatedMinutes * 60; running = false; taskStartedAtMillis = 0L; taskElapsedSeconds = 0
-                }
                 connectionError = null
                 HomeworkReminderScheduler.rescheduleFromTasks(context, merged)
             }.onFailure { error ->
@@ -947,7 +955,7 @@ private fun HomeworkBuddyApp() {
                 }
             },
         )
-        val activeTask = tasks.firstOrNull { it.id == selectedId }
+        val activeTask = dayTasks.firstOrNull { it.id == selectedId }
         val selected = submissionTask ?: activeTask
         val selectedIsPiano = activeTask?.title?.contains("钢琴") == true
         var pianoPractice by remember(activeTask?.id) {
@@ -963,7 +971,13 @@ private fun HomeworkBuddyApp() {
         HomeworkHome(
             slogan = slogan,
             tasks = tasks,
-            selected = tasks.firstOrNull { it.id == selectedId },
+            selected = activeTask,
+            selectedDate = selectedDate,
+            onSelectDate = { date ->
+                selectedDate = date
+                val scheduled = if (date == LocalDate.now()) tasks else weekTasks.filter { it.dueDate == date }
+                selectTask(scheduled.firstOrNull { it.status != TaskStatus.COMPLETED } ?: scheduled.firstOrNull())
+            },
             remainingSeconds = remainingSeconds,
             running = running,
             taskElapsedSeconds = taskElapsedSeconds,
@@ -989,7 +1003,7 @@ private fun HomeworkBuddyApp() {
             },
             systemNonAllowedApps = systemNonAllowedApps,
             onBlockedApps = { systemNonAllowedApps = kioskPolicy.todayNonAllowedAppUsage(); showBlockedApps = true },
-            onSelect = { task -> selectedId = task.id; remainingSeconds = task.estimatedMinutes * 60; running = task.status == TaskStatus.RUNNING; taskStartedAtMillis = task.startedAtEpochSeconds?.times(1_000) ?: 0L; taskElapsedSeconds = taskStartedAtMillis.takeIf { it > 0 }?.let { ((System.currentTimeMillis() - it) / 1_000L).toInt().coerceAtLeast(0) } ?: 0 },
+            onSelect = { task -> selectTask(task) },
             onStart = {
                 val startedAt = System.currentTimeMillis()
                 taskStartedAtMillis = startedAt
@@ -997,17 +1011,15 @@ private fun HomeworkBuddyApp() {
                 running = true
                 tasks = tasks.map { if (it.id == selectedId) it.copy(status = TaskStatus.RUNNING, startedAtEpochSeconds = startedAt / 1_000) else it }
                 taskCache.saveToday(tasks)
+                weekTasks = weekTasks.map { if (it.id == selectedId) it.copy(status = TaskStatus.RUNNING, startedAtEpochSeconds = startedAt / 1_000) else it }
+                taskCache.saveWeek(weekTasks)
             },
             onPianoRecord = {
                 activeTask?.takeIf { it.title.contains("钢琴") }?.let { pianoPractice = pianoPracticeStore.record(it.id) }
             },
             onFinish = {
-                submissionTask = tasks.firstOrNull { it.id == selectedId }
+                submissionTask = activeTask
                 showSubmissionChoice = submissionTask != null
-            },
-            onFinishScheduled = { task ->
-                submissionTask = task
-                showSubmissionChoice = true
             },
             onChoosePhoto = {
                 selected?.let { current ->
@@ -1063,6 +1075,7 @@ private fun HomeworkBuddyApp() {
             onSubmit = {
                 val photos = pendingPhotos
                 val current = selected
+                val elapsedSeconds = taskElapsedSeconds
                 if (photos.isEmpty() || !connected || current == null) {
                     connectionError = "请先关联 Trello 后再提交作业。"
                 } else if (submittingTaskId == null) {
@@ -1072,7 +1085,7 @@ private fun HomeworkBuddyApp() {
                         runCatching { api.submit(current.id, photos, current.status == TaskStatus.OVERTIME, submissionId) }
                             .onSuccess {
                                 CompletionHistoryStore(context).noteTasks(listOf(current))
-                                CompletionHistoryStore(context).recordCompletion(current.id, System.currentTimeMillis() / 1_000, current.dueDate.atTime(current.deadline).atZone(ZoneId.systemDefault()).toEpochSecond(), current.startedAtEpochSeconds, if (current.dueDate.isAfter(LocalDate.now())) 0 else taskElapsedSeconds)
+                                CompletionHistoryStore(context).recordCompletion(current.id, System.currentTimeMillis() / 1_000, current.dueDate.atTime(current.deadline).atZone(ZoneId.systemDefault()).toEpochSecond(), current.startedAtEpochSeconds, elapsedSeconds)
                                 advanceAfterCompletion(current.id, photos.first().toString())
                                 celebration = CelebrationEvent(current.title, current.dueDate == LocalDate.now() && tasks.isNotEmpty() && tasks.all { it.status == TaskStatus.COMPLETED }, current.dueDate.isAfter(LocalDate.now()))
                                 refreshRequest++
@@ -1094,6 +1107,7 @@ private fun HomeworkBuddyApp() {
             onSubmissionTextChange = { submissionText = it },
             onSubmitText = {
                 val current = selected
+                val elapsedSeconds = taskElapsedSeconds
                 val text = submissionText.trim()
                 if (!connected || current == null) {
                     connectionError = "请先关联 Trello 后再提交作业。"
@@ -1105,7 +1119,7 @@ private fun HomeworkBuddyApp() {
                         runCatching { api.submitText(current.id, text) }
                             .onSuccess {
                                 CompletionHistoryStore(context).noteTasks(listOf(current))
-                                CompletionHistoryStore(context).recordCompletion(current.id, System.currentTimeMillis() / 1_000, current.dueDate.atTime(current.deadline).atZone(ZoneId.systemDefault()).toEpochSecond(), current.startedAtEpochSeconds, if (current.dueDate.isAfter(LocalDate.now())) 0 else taskElapsedSeconds)
+                                CompletionHistoryStore(context).recordCompletion(current.id, System.currentTimeMillis() / 1_000, current.dueDate.atTime(current.deadline).atZone(ZoneId.systemDefault()).toEpochSecond(), current.startedAtEpochSeconds, elapsedSeconds)
                                 advanceAfterCompletion(current.id)
                                 celebration = CelebrationEvent(current.title, current.dueDate == LocalDate.now() && tasks.isNotEmpty() && tasks.all { it.status == TaskStatus.COMPLETED }, current.dueDate.isAfter(LocalDate.now()))
                                 refreshRequest++
@@ -1249,19 +1263,19 @@ private fun CelebrationDialog(taskTitle: String, allTasksComplete: Boolean, comp
 }
 
 @Composable
-private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, remainingSeconds: Int, running: Boolean, taskElapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, xiaoliConnection: XiaoliConnectionSnapshot, kioskMode: KioskMode, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onFinishScheduled: (HomeworkTask) -> Unit, onChoosePhoto: () -> Unit, onChooseAudio: () -> Unit, onChooseText: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photoCount: Int, audioAttached: Boolean, showSubmissionChoice: Boolean, showTextSubmission: Boolean, submissionText: String, onSubmissionTextChange: (String) -> Unit, onSubmitText: () -> Unit, onAddPhoto: () -> Unit, onDismissSubmissionChoice: () -> Unit, onRetake: () -> Unit, onDismissTextSubmission: () -> Unit) {
+private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, selectedDate: LocalDate, onSelectDate: (LocalDate) -> Unit, remainingSeconds: Int, running: Boolean, taskElapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, xiaoliConnection: XiaoliConnectionSnapshot, kioskMode: KioskMode, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onChoosePhoto: () -> Unit, onChooseAudio: () -> Unit, onChooseText: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photoCount: Int, audioAttached: Boolean, showSubmissionChoice: Boolean, showTextSubmission: Boolean, submissionText: String, onSubmissionTextChange: (String) -> Unit, onSubmitText: () -> Unit, onAddPhoto: () -> Unit, onDismissSubmissionChoice: () -> Unit, onRetake: () -> Unit, onDismissTextSubmission: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val complete = tasks.count { it.status == TaskStatus.COMPLETED }
     val todayEstimatedSeconds = tasks.sumOf { it.estimatedMinutes.coerceAtLeast(0) * 60 }
     val completedEstimatedSeconds = tasks.filter { it.status == TaskStatus.COMPLETED }
         .sumOf { it.estimatedMinutes.coerceAtLeast(0) * 60 }
     val activeEstimatedSeconds = selected?.estimatedMinutes?.coerceAtLeast(0)?.times(60) ?: 0
-    val activeElapsedSeconds = if (running && selected?.status != TaskStatus.COMPLETED) taskElapsedSeconds else 0
+    val activeElapsedSeconds = if (running && selected?.dueDate == LocalDate.now() && selected.status != TaskStatus.COMPLETED) taskElapsedSeconds else 0
     val todayElapsedSeconds = (completedEstimatedSeconds + activeElapsedSeconds).coerceAtMost(todayEstimatedSeconds)
-    val waiting = tasks.filter { it.status != TaskStatus.COMPLETED && it.id != selected?.id }
-    val completedTasks = tasks.filter { it.status == TaskStatus.COMPLETED }
+    val dayTasks = if (selectedDate == LocalDate.now()) tasks else weekTasks.filter { it.dueDate == selectedDate }
+    val waiting = dayTasks.filter { it.status != TaskStatus.COMPLETED && it.id != selected?.id }
+    val completedTasks = dayTasks.filter { it.status == TaskStatus.COMPLETED }
     val overdue = tasks.count { it.status == TaskStatus.OVERTIME }
-    var selectedDate by remember { mutableStateOf(LocalDate.now()) }
     BoxWithConstraints(
         Modifier
             .fillMaxSize()
@@ -1281,24 +1295,19 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
                 selectedDate = selectedDate,
                 todayElapsedSeconds = todayElapsedSeconds,
                 todayEstimatedSeconds = todayEstimatedSeconds,
-                onSelectDate = { selectedDate = it },
+                onSelectDate = onSelectDate,
             )
-            if (selectedDate == LocalDate.now()) {
-                Spacer(Modifier.height(10.dp))
-                HeadPosePanel(available = !showSubmissionChoice && !showCameraConfirm && !showTextSubmission)
-            }
+            Spacer(Modifier.height(10.dp))
+            HeadPosePanel(available = !showSubmissionChoice && !showCameraConfirm && !showTextSubmission)
             Spacer(Modifier.height(14.dp))
-            if (selectedDate != LocalDate.now()) {
-                CalendarDayContent(
+            if (dayTasks.isEmpty() && selectedDate != LocalDate.now()) {
+                HistoryDayContent(
                     modifier = Modifier.fillMaxSize(),
                     date = selectedDate,
-                    tasks = weekTasks.filter { it.dueDate == selectedDate },
                     records = CompletionHistoryStore(context).day(selectedDate),
                     mark = FlowerCalendar(context).markFor(selectedDate),
-                    submitting = submitting,
-                    onFinish = onFinishScheduled,
                 )
-            } else if (selected == null && tasks.isEmpty()) {
+            } else if (dayTasks.isEmpty()) {
                 EmptyTaskState(Modifier.fillMaxSize())
             } else if (this@BoxWithConstraints.maxWidth >= 700.dp) Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(22.dp)) {
                 if (selected != null) CurrentTask(Modifier.weight(1.45f).fillMaxHeight(), selected, running, taskElapsedSeconds, pianoPractice, submitting, onStart, onPianoRecord, onFinish)
@@ -1431,55 +1440,6 @@ private fun RemoteNoticeCard(notice: RemoteNotice) {
         val stroke = 3.dp.toPx()
         drawArc(track, -90f, 360f, false, style = Stroke(stroke))
         drawArc(color, -90f, progress * 360f, false, style = Stroke(stroke))
-    }
-}
-
-@Composable
-private fun CalendarDayContent(modifier: Modifier, date: LocalDate, tasks: List<HomeworkTask>, records: List<CompletionRecord>, mark: DayMark, submitting: Boolean, onFinish: (HomeworkTask) -> Unit) {
-    if (tasks.isEmpty()) {
-        HistoryDayContent(modifier, date, records, mark)
-        return
-    }
-    val doneCount = tasks.count { it.status == TaskStatus.COMPLETED }
-    BoxWithConstraints(modifier) {
-        if (maxWidth >= 700.dp) Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(22.dp)) {
-            Column(Modifier.weight(1.45f).fillMaxHeight().clip(RoundedCornerShape(26.dp)).background(Sky).padding(28.dp)) {
-                Text(date.format(DateTimeFormatter.ofPattern("M月d日")) + " 的作业", fontSize = 30.sp, fontWeight = FontWeight.Medium)
-                Spacer(Modifier.height(10.dp))
-                Text(if (doneCount == 0) "已从 Trello 同步 ${tasks.size} 项安排" else "已完成 $doneCount / ${tasks.size} 项", fontSize = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.weight(1f))
-                Text("📚", fontSize = 72.sp, modifier = Modifier.align(Alignment.CenterHorizontally))
-                Spacer(Modifier.weight(1f))
-            }
-            ScheduledTaskList(Modifier.weight(.8f).fillMaxHeight(), tasks, submitting, onFinish)
-        } else Column(Modifier.fillMaxSize()) {
-            Text(date.format(DateTimeFormatter.ofPattern("M月d日")) + " 的作业 · ${tasks.size} 项", fontSize = 20.sp, fontWeight = FontWeight.Medium)
-            Spacer(Modifier.height(12.dp))
-            ScheduledTaskList(Modifier.weight(1f), tasks, submitting, onFinish)
-        }
-    }
-}
-
-@Composable
-private fun ScheduledTaskList(modifier: Modifier, tasks: List<HomeworkTask>, submitting: Boolean, onFinish: (HomeworkTask) -> Unit) {
-    Column(modifier) {
-        Text("作业清单 · ${tasks.size} 项", fontSize = 20.sp, fontWeight = FontWeight.Medium)
-        Spacer(Modifier.height(6.dp))
-        LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            items(tasks, key = { it.id }) { task ->
-                val completed = task.status == TaskStatus.COMPLETED
-                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(if (completed) Leaf else TodoSurface).padding(horizontal = 12.dp, vertical = 10.dp)) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Text(task.title, modifier = Modifier.weight(1f), fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        TaskStatusPill(task.status)
-                    }
-                    Text(homeworkTimingLabel(task).ifBlank { if (completed) "已完成" else "截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}" }, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
-                    FilledTonalButton(onClick = { onFinish(task) }, enabled = !submitting) {
-                        Text("完成并提交")
-                    }
-                }
-            }
-        }
     }
 }
 
