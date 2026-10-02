@@ -1,5 +1,6 @@
 package com.homeworkbuddy
 
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -7,6 +8,8 @@ import android.util.Log
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
@@ -14,17 +17,25 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Card
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.text.HtmlCompat
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -56,20 +67,25 @@ object AppUpdater {
         .build()
 
     /** Returns the newer Pgyer build, or null when the installed build is current. */
-    suspend fun checkForUpdate(): UpdateInfo? = withContext(Dispatchers.IO) {
+    suspend fun checkForUpdate(throwOnFailure: Boolean = false): UpdateInfo? = withContext(Dispatchers.IO) {
         runCatching {
             val request = Request.Builder()
                 .url(PGYER_DOWNLOAD_PAGE)
                 .header("User-Agent", "HomeworkBuddy-Android/${BuildConfig.VERSION_NAME}")
                 .build()
             client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return@use null
-                val page = response.body?.string() ?: return@use null
-                val latest = versionPattern.find(page)?.groupValues?.getOrNull(1) ?: return@use null
+                check(response.isSuccessful) { "Update server returned HTTP ${response.code}" }
+                val page = checkNotNull(response.body?.string()) { "Empty update response" }
+                val latest = checkNotNull(versionPattern.find(page)?.groupValues?.getOrNull(1)) { "Version missing from update page" }
                 if (latest.isBlank() || !isNewer(latest, BuildConfig.VERSION_NAME)) return@use null
                 UpdateInfo(latest, PGYER_DOWNLOAD_PAGE, releaseNotes(page))
             }
-        }.onFailure { Log.w(TAG, "update check failed", it) }.getOrNull()
+        }.getOrElse { error ->
+            if (error is CancellationException) throw error
+            Log.w(TAG, "update check failed", error)
+            if (throwOnFailure) throw error
+            null
+        }
     }
 
     /** Opens Pgyer's current public page, which creates its own install URL. */
@@ -97,6 +113,61 @@ object AppUpdater {
             if (newPart != currentPart) return newPart > currentPart
         }
         return false
+    }
+}
+
+@Composable
+fun AppUpdateSettingsCard(activity: Activity) {
+    val scope = rememberCoroutineScope()
+    var checking by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var updateInfo by remember { mutableStateOf<AppUpdater.UpdateInfo?>(null) }
+    var updateError by remember { mutableStateOf<String?>(null) }
+
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp)) {
+            Text("版本更新", fontSize = 21.sp)
+            Text("当前版本 ${BuildConfig.VERSION_NAME}")
+            Button(
+                enabled = !checking,
+                onClick = {
+                    checking = true
+                    message = null
+                    updateError = null
+                    scope.launch {
+                        try {
+                            updateInfo = AppUpdater.checkForUpdate(throwOnFailure = true)
+                            message = if (updateInfo == null) "已是最新版本" else "发现新版本 ${updateInfo?.versionName}"
+                        } catch (error: CancellationException) {
+                            throw error
+                        } catch (error: Exception) {
+                            message = "检查更新失败，请检查网络后重试。"
+                        } finally {
+                            checking = false
+                        }
+                    }
+                },
+            ) { Text(if (checking) "正在检查…" else "检查更新") }
+            message?.let { Text(it) }
+        }
+    }
+    updateInfo?.let { info ->
+        UpdateDialog(
+            info = info,
+            progress = null,
+            error = updateError,
+            onUpdate = {
+                runCatching {
+                    val policy = KioskPolicy(activity)
+                    if (policy.isDeviceOwner && policy.mode() == KioskMode.STUDY) {
+                        policy.pause(15, activity)
+                    }
+                    AppUpdater.openDownloadPage(activity, info)
+                }.onSuccess { updateInfo = null }
+                    .onFailure { updateError = "无法打开蒲公英下载页，请稍后再试。" }
+            },
+            onDismiss = { updateInfo = null },
+        )
     }
 }
 

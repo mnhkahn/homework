@@ -1274,7 +1274,7 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
     val todayElapsedSeconds = (completedEstimatedSeconds + activeElapsedSeconds).coerceAtMost(todayEstimatedSeconds)
     val dayTasks = if (selectedDate == LocalDate.now()) tasks else weekTasks.filter { it.dueDate == selectedDate }
     val waiting = dayTasks.filter { it.status != TaskStatus.COMPLETED && it.id != selected?.id }
-    val completedTasks = dayTasks.filter { it.status == TaskStatus.COMPLETED }
+    val completedTasks = dayTasks.filter { it.status == TaskStatus.COMPLETED && it.id != selected?.id }
     val overdue = tasks.count { it.status == TaskStatus.OVERTIME }
     BoxWithConstraints(
         Modifier
