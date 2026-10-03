@@ -1282,7 +1282,7 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
         Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
-            .navigationBarsPadding()
+            .systemBarsPadding()
             .padding(24.dp),
     ) {
         Column(Modifier.fillMaxSize()) {
@@ -1805,6 +1805,7 @@ private fun formatStudyDuration(seconds: Long): String {
                 Text("查看照片（${photos.size} 张）")
             }
         }
+        PdfAttachmentButtons(task)
         audio?.let { LocalRecordingButton(it) }
     }
     if (showPhotos) PhotoViewer(photos, HomeworkApi(context)) { showPhotos = false }
@@ -1819,23 +1820,30 @@ private fun formatStudyDuration(seconds: Long): String {
     val overdue = task.status == TaskStatus.OVERTIME
     val context = androidx.compose.ui.platform.LocalContext.current
     Column(modifier.clip(RoundedCornerShape(26.dp)).background(if (overdue) OverdueSurface else Sun).padding(18.dp), horizontalAlignment = Alignment.Start) {
-        // Only the details scroll; the primary actions always retain their own height.
-        Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.Start) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                if (task.subject != "作业") AssistChip(onClick = {}, label = { Text(task.subject) })
-                TaskStatusPill(task.status)
-            }
-            Spacer(Modifier.height(14.dp)); Text(task.title, fontSize = 30.sp, fontWeight = FontWeight.Medium)
-            Text(if (overdue) "已超过截止时间，请优先完成" else "截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", color = if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = if (overdue) FontWeight.Medium else FontWeight.Normal)
-            task.startedAtEpochSeconds?.let { Text("开始 ${homeworkTimeLabel(it)}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp) }
-            Spacer(Modifier.height(18.dp)); Box(Modifier.size(166.dp).align(Alignment.CenterHorizontally).clip(CircleShape).background(Color.White).padding(10.dp), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(if (running) "已用时" else if (overdue) "已超期" else "截止", fontSize = 15.sp, color = if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(if (running) elapsedLabel(elapsedSeconds) else task.deadline.format(DateTimeFormatter.ofPattern("HH:mm")), fontSize = 31.sp, fontWeight = FontWeight.Medium)
+        // Keep the existing home shell and actions; arithmetic owns only the detail area.
+        if (task.type == HomeworkTaskType.ARITHMETIC && (running || task.startedAtEpochSeconds != null)) {
+            ArithmeticTaskContent(Modifier.fillMaxWidth().weight(1f), task, elapsedSeconds, overdue)
+        } else {
+            // Only the details scroll; the primary actions always retain their own height.
+            Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.Start) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (task.subject != "作业") AssistChip(onClick = {}, label = { Text(task.subject) })
+                    TaskStatusPill(task.status)
+                }
+                Spacer(Modifier.height(14.dp)); Text(task.title, fontSize = 30.sp, fontWeight = FontWeight.Medium)
+                Text(if (overdue) "已超过截止时间，请优先完成" else "截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", color = if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = if (overdue) FontWeight.Medium else FontWeight.Normal)
+                task.startedAtEpochSeconds?.let { Text("开始 ${homeworkTimeLabel(it)}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp) }
+                Spacer(Modifier.height(18.dp)); Box(Modifier.size(166.dp).align(Alignment.CenterHorizontally).clip(CircleShape).background(Color.White).padding(10.dp), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(if (running) "已用时" else if (overdue) "已超期" else "截止", fontSize = 15.sp, color = if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(if (running) elapsedLabel(elapsedSeconds) else task.deadline.format(DateTimeFormatter.ofPattern("HH:mm")), fontSize = 31.sp, fontWeight = FontWeight.Medium)
+                    }
+                }
+                Spacer(Modifier.height(18.dp))
+                if (task.type == HomeworkTaskType.ARITHMETIC) {
+                    Text("口算 · ${arithmeticQuestions(task.task).size} 题，开始后在这里展示题目", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-            Spacer(Modifier.height(18.dp))
-
         }
         Spacer(Modifier.height(10.dp))
         androidx.compose.foundation.layout.FlowRow(
@@ -1856,9 +1864,12 @@ private fun formatStudyDuration(seconds: Long): String {
                         HomeworkTaskType.WORD_MEMORIZATION -> "打开背单词"
                         HomeworkTaskType.ENGLISH_READING -> "打开英语阅读"
                         HomeworkTaskType.NORMAL -> "打开作业链接"
+                        HomeworkTaskType.PDF_ATTACHMENT -> "预览 PDF"
+                        HomeworkTaskType.ARITHMETIC -> "打开作业链接"
                     })
                 }
             }
+            PdfAttachmentButtons(task)
             if (pianoPractice != null) {
                 FilledTonalButton(onClick = onPianoRecord, enabled = pianoPractice.cooldownSeconds == 0 && task.status != TaskStatus.COMPLETED && !submitting) {
                     Text(if (pianoPractice.cooldownSeconds > 0) "已记 ${pianoPractice.count} 次 · ${pianoPractice.cooldownSeconds} 秒后可再记" else "🎹 练琴记一次（已记 ${pianoPractice.count} 次）")

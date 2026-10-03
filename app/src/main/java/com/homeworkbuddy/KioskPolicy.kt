@@ -554,7 +554,8 @@ class KioskPolicy(private val context: Context) {
             val lockTaskPackages = setOf(context.packageName) + studyPackages + temporaryPackages + studyInstallSystemPackages()
             runCatching { dpm.setLockTaskPackages(admin, lockTaskPackages.toTypedArray()) }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                runCatching { dpm.setLockTaskFeatures(admin, DevicePolicyManager.LOCK_TASK_FEATURE_NONE) }
+                // Keep the tablet's own clock and battery indicators visible in study mode.
+                runCatching { dpm.setLockTaskFeatures(admin, DevicePolicyManager.LOCK_TASK_FEATURE_SYSTEM_INFO) }
             }
         } else {
             unsuspendManagedApps()

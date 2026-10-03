@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.webkit.MimeTypeMap
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -168,6 +169,57 @@ class HomeworkApi(private val context: Context) {
         }.getOrNull()
     }
 
+    /** Downloads private Trello PDFs without exposing the device token to a viewer. */
+    suspend fun downloadPdf(url: String, destination: java.io.File) = withContext(Dispatchers.IO) {
+        val source = Uri.parse(url)
+        val parts = source.pathSegments
+        val cardIndex = parts.indexOf("cards")
+        val attachmentIndex = parts.indexOf("attachments")
+        val downloadIndex = parts.indexOf("download")
+        require(source.scheme == "https" && source.host in setOf("trello.com", "api.trello.com") &&
+            cardIndex >= 0 && attachmentIndex == cardIndex + 2 && downloadIndex == attachmentIndex + 2 &&
+            parts.size > downloadIndex + 1) { "请将 PDF 文件直接上传为 Trello 附件" }
+        val downloadUrl = "$API_ROOT/cards/${segment(parts[cardIndex + 1])}/attachments/${segment(parts[attachmentIndex + 1])}/download/${Uri.encode(parts.drop(downloadIndex + 1).joinToString("/"))}"
+        var connection = URL(downloadUrl).openConnection() as HttpURLConnection
+        try {
+            connection.instanceFollowRedirects = false
+            connection.connectTimeout = 15_000
+            connection.readTimeout = 30_000
+            connection.setRequestProperty("Authorization", "OAuth oauth_consumer_key=\"${oauthHeaderValue(BuildConfig.TRELLO_API_KEY)}\", oauth_token=\"${oauthHeaderValue(requireToken())}\"")
+            var redirects = 0
+            while (connection.responseCode in listOf(301, 302, 303, 307, 308)) {
+                check(redirects++ < 5) { "PDF 下载重定向过多" }
+                val next = URL(connection.url, connection.getHeaderField("Location") ?: error("PDF 下载地址缺失"))
+                require(next.protocol == "https") { "PDF 下载地址必须使用 HTTPS" }
+                connection.disconnect()
+                // Signed storage redirects must never receive Trello credentials.
+                connection = (next.openConnection() as HttpURLConnection).apply {
+                    instanceFollowRedirects = false
+                    connectTimeout = 15_000
+                    readTimeout = 30_000
+                }
+            }
+            if (connection.responseCode == 401) throw AuthorizationExpiredException("Trello 授权已过期，请家长重新授权")
+            check(connection.responseCode in 200..299) { "PDF 下载失败（${connection.responseCode}）" }
+            connection.inputStream.use { input ->
+                destination.outputStream().use { output ->
+                    val buffer = ByteArray(8192)
+                    var total = 0L
+                    while (true) {
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        total += count
+                        check(total <= 50L * 1024 * 1024) { "PDF 超过 50 MB，请压缩后重新上传" }
+                        output.write(buffer, 0, count)
+                    }
+                }
+            }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
     private suspend fun cards(listId: String, status: TaskStatus, dueOn: LocalDate? = null): List<HomeworkTask> {
         require(listId.isNotBlank()) { "请由家长选择作业看板" }
         val value = requestArray("GET", "/lists/${segment(listId)}/cards?fields=id,name,desc,due,labels,dateLastActivity&attachments=true&attachment_fields=url,name,mimeType")
@@ -196,7 +248,7 @@ class HomeworkApi(private val context: Context) {
             HomeworkTask(
                 item.getString("id"), subject, item.getString("name"), homeworkMinutes(item.optString("desc")),
                 deadline.toLocalTime(), taskStatus,
-                photoUrls = attachments.filterNot(HomeworkAttachment::isAudio).map(HomeworkAttachment::url),
+                photoUrls = attachments.filterNot { it.isAudio || it.isPdf }.map(HomeworkAttachment::url),
                 attachments = attachments,
                 dueDate = deadline.toLocalDate(), completedAtEpochSeconds = activityAt,
                 type = details.type, task = details.task, link = details.link,

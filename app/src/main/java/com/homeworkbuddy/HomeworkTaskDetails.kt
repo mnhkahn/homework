@@ -14,7 +14,7 @@ data class HomeworkTaskDetails(
     companion object {
         private const val TRANSLATE_HOST = "www.cyeam.com"
         private const val TRANSLATE_PATH = "/ai/translate"
-        private val typeLine = Regex("(?im)^\\s*(?:type|类型|作业类型)\\s*[:：]\\s*(normal|word_memorization|english_reading|普通作业|背单词|阅读英语)\\s*$")
+        private val typeLine = Regex("(?im)^\\s*(?:type|类型|作业类型)\\s*[:：]\\s*(normal|word_memorization|english_reading|pdf_attachment|arithmetic|口算|普通作业|背单词|阅读英语|附件PDF)\\s*$")
         private val taskLine = Regex("(?im)^\\s*(?:task|作业内容)\\s*[:：]\\s*(.+?)\\s*$")
         private val wordLine = Regex("(?im)^\\s*背单词\\s*[:：]\\s*(.+?)\\s*$")
         private val translationLinkLine = Regex("(?im)^\\s*翻译链接\\s*[:：]\\s*(https?://\\S+)\\s*$")
@@ -26,9 +26,17 @@ data class HomeworkTaskDetails(
          * the JSON payload used by the parent app or readable `类型:` lines.
          */
         fun fromDescription(description: String): HomeworkTaskDetails {
-            val json = description.trim().takeIf(String::isNotBlank)?.let { runCatching(::JSONObject).getOrNull() }
+            val json = description.trim().takeIf(String::isNotBlank)?.let { value -> runCatching { JSONObject(value) }.getOrNull() }
             val explicit = json?.optString("type")?.toTaskType()
                 ?: typeLine.find(description)?.groupValues?.getOrNull(1)?.toTaskType()
+            if (explicit == HomeworkTaskType.ARITHMETIC) {
+                // Arithmetic is multiline; the legacy taskLine only captures one line.
+                val content = if (json != null) json.optString("task")
+                    else description.withoutMetadata()
+                        .replace(Regex("(?im)^[\\t ]*(?:task|作业内容)[\\t ]*[:：][\\t ]*"), "")
+                        .trim()
+                return HomeworkTaskDetails(HomeworkTaskType.ARITHMETIC, content)
+            }
             val rawTask = json?.optString("task")?.ifBlank { null }
                 ?: wordLine.find(description)?.groupValues?.getOrNull(1)?.trim()
                 ?: taskLine.find(description)?.groupValues?.getOrNull(1)?.trim()
@@ -47,6 +55,8 @@ data class HomeworkTaskDetails(
                         ?: rawTask?.takeIf(::isEnglishReadingLink)
                     HomeworkTaskDetails(HomeworkTaskType.ENGLISH_READING, rawTask, readingLink)
                 }
+                HomeworkTaskType.PDF_ATTACHMENT -> HomeworkTaskDetails(HomeworkTaskType.PDF_ATTACHMENT, rawTask)
+                HomeworkTaskType.ARITHMETIC -> HomeworkTaskDetails(HomeworkTaskType.ARITHMETIC, rawTask)
                 HomeworkTaskType.NORMAL -> HomeworkTaskDetails(HomeworkTaskType.NORMAL, rawTask)
                 null -> infer(rawTask)
             }
@@ -89,10 +99,12 @@ data class HomeworkTaskDetails(
         }.getOrDefault(false)
 
         private fun String.toTaskType(): HomeworkTaskType? = when (lowercase()) {
+            "arithmetic", "口算" -> HomeworkTaskType.ARITHMETIC
             "normal" -> HomeworkTaskType.NORMAL
             "普通作业" -> HomeworkTaskType.NORMAL
             "word_memorization" -> HomeworkTaskType.WORD_MEMORIZATION
             "背单词" -> HomeworkTaskType.WORD_MEMORIZATION
+            "pdf_attachment", "附件pdf" -> HomeworkTaskType.PDF_ATTACHMENT
             "english_reading" -> HomeworkTaskType.ENGLISH_READING
             "阅读英语" -> HomeworkTaskType.ENGLISH_READING
             else -> null
