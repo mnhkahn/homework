@@ -89,19 +89,21 @@ class HomeworkApi(private val context: Context) {
             .sortedBy { it.deadline }
     }
 
-    /** Current Mon–Sun, including completed cards so the calendar can show history. */
-    suspend fun weekTasks(): List<HomeworkTask> {
+    /** Requested Mon–Sun, including completion dates for the reward history. */
+    suspend fun weekTasks(date: LocalDate = LocalDate.now(HOMEWORK_ZONE)): List<HomeworkTask> {
         val todo = cards(prefs.getString(TODO_LIST, "") ?: "", TaskStatus.TODO)
         val done = cards(prefs.getString(DONE_LIST, "") ?: "", TaskStatus.COMPLETED)
-        val monday = LocalDate.now(HOMEWORK_ZONE).with(DayOfWeek.MONDAY)
+        val monday = calendarWeekStart(date)
         val sunday = monday.plusDays(6)
-        return (todo + done.filter { task -> task.completedAtEpochSeconds?.let(::dateAt) in monday..sunday })
+        return (todo.filter { it.dueDate in monday..sunday } + done.filter { task ->
+            task.dueDate in monday..sunday || task.completedAtEpochSeconds?.let(::dateAt) in monday..sunday
+        })
             .sortedWith(compareBy<HomeworkTask> { it.dueDate }.thenBy { it.deadline })
     }
 
     /** Fast calendar source for scheduled work; it must not wait for historical actions. */
-    suspend fun weekScheduledTasks(): List<HomeworkTask> {
-        val monday = LocalDate.now(HOMEWORK_ZONE).with(DayOfWeek.MONDAY)
+    suspend fun weekScheduledTasks(date: LocalDate = LocalDate.now(HOMEWORK_ZONE)): List<HomeworkTask> {
+        val monday = calendarWeekStart(date)
         val sunday = monday.plusDays(6)
         return cards(prefs.getString(TODO_LIST, "") ?: "", TaskStatus.TODO)
             .filter { it.dueDate in monday..sunday }

@@ -1,15 +1,13 @@
 package com.homeworkbuddy
 
 import android.content.Context
-import java.time.DayOfWeek
 import java.time.LocalDate
 
 enum class DayMark { FLOWER, BLACK, PENDING, NONE }
 
 /**
- * Judges each day: finishing every task before its own deadline earns a 🌸,
- * any late or unfinished task turns a past day 🖤. Today stays PENDING until
- * everything is done on time; a day without tasks is NONE (no penalty).
+ * Finishing every task earns a 🌸 immediately, including late submissions.
+ * Named unfinished tasks turn a past day 🖤. A day without tasks is NONE.
  */
 class FlowerCalendar(context: Context) {
     private val store = CompletionHistoryStore(context)
@@ -26,19 +24,27 @@ class FlowerCalendar(context: Context) {
             }
             return saved
         }
-        if (records.isEmpty()) return DayMark.NONE
-        val allOnTime = records.all { record -> record.completedAtEpochSeconds?.let { it <= record.deadlineEpochSeconds } == true }
-        return when {
-            allOnTime -> DayMark.FLOWER.also { store.saveFinalMark(date, it) }
-            date.isBefore(LocalDate.now()) && namedMissing.isNotEmpty() -> DayMark.BLACK.also { store.saveFinalMark(date, it) }
-            date.isBefore(LocalDate.now()) -> DayMark.FLOWER.also { store.saveFinalMark(date, it) }
-            else -> DayMark.PENDING
+        return calculateDayMark(records, date, LocalDate.now()).also { mark ->
+            if (mark == DayMark.FLOWER || mark == DayMark.BLACK) store.saveFinalMark(date, mark)
         }
     }
 
     /** Monday through Sunday of the current week. */
-    fun currentWeek(): List<Pair<LocalDate, DayMark>> {
-        val monday = LocalDate.now().with(DayOfWeek.MONDAY)
+    fun currentWeek(): List<Pair<LocalDate, DayMark>> = weekOf(LocalDate.now())
+
+    fun weekOf(date: LocalDate): List<Pair<LocalDate, DayMark>> {
+        val monday = calendarWeekStart(date)
         return (0L..6L).map { offset -> monday.plusDays(offset).let { it to markFor(it) } }
     }
+}
+
+internal fun allHomeworkCompleted(records: List<CompletionRecord>): Boolean =
+    records.isNotEmpty() && records.all { it.completedAtEpochSeconds != null }
+
+internal fun calculateDayMark(records: List<CompletionRecord>, date: LocalDate, today: LocalDate): DayMark = when {
+    records.isEmpty() -> DayMark.NONE
+    allHomeworkCompleted(records) -> DayMark.FLOWER
+    date.isBefore(today) && records.any { it.completedAtEpochSeconds == null && it.title.isNotBlank() } -> DayMark.BLACK
+    date.isBefore(today) -> DayMark.FLOWER
+    else -> DayMark.PENDING
 }

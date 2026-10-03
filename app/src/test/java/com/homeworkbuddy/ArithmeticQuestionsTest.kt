@@ -12,6 +12,12 @@ class ArithmeticQuestionsTest {
         assertNull(details.link)
     }
 
+    @Test fun cliMetadataBeforeTaskSectionIsNotAQuestion() {
+        val details = HomeworkTaskDetails.fromDescription("预计用时: 5\n当日第 2 项\n\n作业类型：口算\n作业内容：\n26 + 17 = ___\n54 − 28 = ___")
+        assertEquals(HomeworkTaskType.ARITHMETIC, details.type)
+        assertEquals(listOf("26 + 17 = ___", "54 − 28 = ___"), arithmeticQuestions(details.task))
+    }
+
     @Test fun inlineFirstQuestionAndChineseTypeKeepFollowingLines() {
         val details = HomeworkTaskDetails.fromDescription("类型：口算\n作业内容：26 + 17 =\n54 - 28 =\n预计用时：5")
         assertEquals(listOf("26 + 17 =", "54 - 28 ="), arithmeticQuestions(details.task))

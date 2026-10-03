@@ -31,10 +31,11 @@ data class HomeworkTaskDetails(
                 ?: typeLine.find(description)?.groupValues?.getOrNull(1)?.toTaskType()
             if (explicit == HomeworkTaskType.ARITHMETIC) {
                 // Arithmetic is multiline; the legacy taskLine only captures one line.
-                val content = if (json != null) json.optString("task")
-                    else description.withoutMetadata()
-                        .replace(Regex("(?im)^[\\t ]*(?:task|作业内容)[\\t ]*[:：][\\t ]*"), "")
-                        .trim()
+                val content = if (json != null) json.optString("task") else {
+                    val body = description.withoutMetadata()
+                    val marker = Regex("(?im)^[\\t ]*(?:task|作业内容)[\\t ]*[:：][\\t ]*").find(body)
+                    (if (marker != null) body.substring(marker.range.last + 1) else body).trim()
+                }
                 return HomeworkTaskDetails(HomeworkTaskType.ARITHMETIC, content)
             }
             val rawTask = json?.optString("task")?.ifBlank { null }

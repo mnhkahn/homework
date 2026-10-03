@@ -39,6 +39,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.*
@@ -445,6 +447,8 @@ private fun HomeworkBuddyApp() {
     var tasks by remember { mutableStateOf(taskCache.todayTasks()) }
     var weekTasks by remember { mutableStateOf(taskCache.weekTasks()) }
     var selectedDate by remember { mutableStateOf(LocalDate.now()) }
+    val visibleWeekStart = calendarWeekStart(selectedDate)
+    var calendarLoading by remember { mutableStateOf(false) }
     var selectedId by remember { mutableStateOf("") }
     var remainingSeconds by remember { mutableIntStateOf(0) }
     var running by remember { mutableStateOf(tasks.any { it.status == TaskStatus.RUNNING }) }
@@ -609,7 +613,7 @@ private fun HomeworkBuddyApp() {
 
     var weekMarks by remember { mutableStateOf(FlowerCalendar(context).currentWeek()) }
     var historyRevision by remember { mutableIntStateOf(0) }
-    var historicalWeekLoaded by remember { mutableStateOf(false) }
+    var historicalWeekLoadedFor by remember { mutableStateOf<LocalDate?>(null) }
 
     LaunchedEffect(Unit) {
         CompletionHistoryStore(context).removeLegacyConfirmedMarks()
@@ -618,8 +622,8 @@ private fun HomeworkBuddyApp() {
 
     // The completion history is written by the submit/refresh paths before
     // tasks changes, so recomputing here always sees the latest records.
-    LaunchedEffect(tasks, historyRevision) {
-        weekMarks = FlowerCalendar(context).currentWeek()
+    LaunchedEffect(tasks, historyRevision, visibleWeekStart) {
+        weekMarks = FlowerCalendar(context).weekOf(visibleWeekStart)
     }
 
     // An expired Trello token (HTTP 401) fails every request. Guide the parent
@@ -750,7 +754,7 @@ private fun HomeworkBuddyApp() {
             } finally {
                 retryingPendingSubmissions = false
             }
-            if (uploadedAnything) { historicalWeekLoaded = false; refreshRequest++ }
+            if (uploadedAnything) { historicalWeekLoadedFor = null; refreshRequest++ }
         }
     }
 
@@ -819,9 +823,10 @@ private fun HomeworkBuddyApp() {
 
     // The calendar's future/current schedules come from the compact 待完成
     // query. Do not make them wait for the much slower completed-card audit.
-    LaunchedEffect(connected, foreground, refreshRequest) {
+    LaunchedEffect(connected, foreground, refreshRequest, visibleWeekStart) {
         if (!connected || !foreground) return@LaunchedEffect
-        runCatching { api.weekScheduledTasks() }.onSuccess { scheduledCards ->
+        calendarLoading = true
+        runCatching { api.weekScheduledTasks(visibleWeekStart) }.onSuccess { scheduledCards ->
             val completed = weekTasks.filter { it.status == TaskStatus.COMPLETED }
             val scheduled = scheduledCards.map { fresh ->
                 val old = weekTasks.firstOrNull { it.id == fresh.id }
@@ -834,19 +839,20 @@ private fun HomeworkBuddyApp() {
                 reportSyncError(error, "拉取本周作业安排失败")
             }
         }
+        calendarLoading = false
     }
 
     // Historical import is independent from the live queue.  A temporary
     // failure while reading today's 待完成 list must never prevent 8/6 and
     // other completed days from being recovered from Trello.
-    LaunchedEffect(connected, foreground, refreshRequest) {
-        if (!connected || !foreground || historicalWeekLoaded) return@LaunchedEffect
-        runCatching { api.weekTasks() }.onSuccess { weeklyCards ->
+    LaunchedEffect(connected, foreground, refreshRequest, visibleWeekStart) {
+        if (!connected || !foreground || historicalWeekLoadedFor == visibleWeekStart) return@LaunchedEffect
+        runCatching { api.weekTasks(visibleWeekStart) }.onSuccess { weeklyCards ->
             weekTasks = (weeklyCards.filter { it.status == TaskStatus.COMPLETED } + weekTasks).distinctBy { it.id }
             taskCache.saveWeek(weekTasks)
             val history = CompletionHistoryStore(context)
             val completedCards = weeklyCards.filter { it.status == TaskStatus.COMPLETED && it.completedAtEpochSeconds != null }
-            val weekStart = LocalDate.now().with(java.time.DayOfWeek.MONDAY)
+            val weekStart = visibleWeekStart
             val weekDays = (0L..6L).map(weekStart::plusDays)
             val ids = completedCards.mapTo(mutableSetOf()) { it.id }
             weekDays.forEach { history.removeTasks(it, ids) }
@@ -856,11 +862,11 @@ private fun HomeworkBuddyApp() {
             }.forEach { (date, dailyCards) ->
                 history.noteTasks(dailyCards, date)
                 val records = history.day(date)
-                if (records.isNotEmpty() && records.all { it.completedAtEpochSeconds != null && it.completedAtEpochSeconds <= it.deadlineEpochSeconds }) {
+                if (allHomeworkCompleted(records)) {
                     history.correctFinalMark(date, DayMark.FLOWER)
                 }
             }
-            historicalWeekLoaded = true
+            historicalWeekLoadedFor = visibleWeekStart
             historyRevision++
         }.onFailure { error ->
             // Leaving composition (sleeping, rotating, or opening another
@@ -899,6 +905,7 @@ private fun HomeworkBuddyApp() {
                 // their own ledger and are not affected by this cleanup.
                 completionHistory.clearDay(today, preserveEarlyCompletions = true)
                 completionHistory.noteTasks(merged, today)
+                historyRevision++
                 connectionError = null
                 HomeworkReminderScheduler.rescheduleFromTasks(context, merged)
             }.onFailure { error ->
@@ -988,6 +995,7 @@ private fun HomeworkBuddyApp() {
             refreshing = refreshing,
             weekMarks = weekMarks,
             weekTasks = weekTasks,
+            calendarLoading = calendarLoading,
             captureStatus = captureStatus,
             studyActivity = studyActivity,
             xiaoliConnection = xiaoliConnection,
@@ -1265,7 +1273,7 @@ private fun CelebrationDialog(taskTitle: String, allTasksComplete: Boolean, comp
 }
 
 @Composable
-private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, selectedDate: LocalDate, onSelectDate: (LocalDate) -> Unit, remainingSeconds: Int, running: Boolean, taskElapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, xiaoliConnection: XiaoliConnectionSnapshot, kioskMode: KioskMode, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onChoosePhoto: () -> Unit, onChooseAudio: () -> Unit, onChooseText: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photoCount: Int, audioAttached: Boolean, showSubmissionChoice: Boolean, showTextSubmission: Boolean, submissionText: String, onSubmissionTextChange: (String) -> Unit, onSubmitText: () -> Unit, onAddPhoto: () -> Unit, onDismissSubmissionChoice: () -> Unit, onRetake: () -> Unit, onDismissTextSubmission: () -> Unit) {
+private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, selectedDate: LocalDate, onSelectDate: (LocalDate) -> Unit, remainingSeconds: Int, running: Boolean, taskElapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, calendarLoading: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, xiaoliConnection: XiaoliConnectionSnapshot, kioskMode: KioskMode, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onChoosePhoto: () -> Unit, onChooseAudio: () -> Unit, onChooseText: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photoCount: Int, audioAttached: Boolean, showSubmissionChoice: Boolean, showTextSubmission: Boolean, submissionText: String, onSubmissionTextChange: (String) -> Unit, onSubmitText: () -> Unit, onAddPhoto: () -> Unit, onDismissSubmissionChoice: () -> Unit, onRetake: () -> Unit, onDismissTextSubmission: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val complete = tasks.count { it.status == TaskStatus.COMPLETED }
     val todayEstimatedSeconds = tasks.sumOf { it.estimatedMinutes.coerceAtLeast(0) * 60 }
@@ -1302,7 +1310,13 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
             Spacer(Modifier.height(10.dp))
             HeadPosePanel(available = !showSubmissionChoice && !showCameraConfirm && !showTextSubmission)
             Spacer(Modifier.height(14.dp))
-            if (dayTasks.isEmpty() && selectedDate != LocalDate.now()) {
+            if (calendarLoading && selectedDate != LocalDate.now()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+            } else if (dayTasks.isEmpty() && selectedDate.isAfter(LocalDate.now())) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("${selectedDate.format(DateTimeFormatter.ofPattern("M月d日"))} 暂无作业安排", fontSize = 24.sp)
+                }
+            } else if (dayTasks.isEmpty() && selectedDate != LocalDate.now()) {
                 HistoryDayContent(
                     modifier = Modifier.fillMaxSize(),
                     date = selectedDate,
@@ -1406,7 +1420,24 @@ private fun RemoteNoticeCard(notice: RemoteNotice) {
 @Composable private fun WeekCalendar(week: List<Pair<LocalDate, DayMark>>, selectedDate: LocalDate, todayElapsedSeconds: Int, todayEstimatedSeconds: Int, onSelectDate: (LocalDate) -> Unit) {
     val today = LocalDate.now()
     val dayNames = listOf("一", "二", "三", "四", "五", "六", "日")
-    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Sky).padding(horizontal = 8.dp, vertical = 8.dp)) {
+    val currentOnSelectDate by rememberUpdatedState(onSelectDate)
+    Column {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+        Text("${calendarWeekStart(selectedDate).format(DateTimeFormatter.ofPattern("yyyy年M月d日"))} — ${calendarWeekStart(selectedDate).plusDays(6).format(DateTimeFormatter.ofPattern("M月d日"))}", fontSize = 13.sp)
+        TextButton(onClick = { onSelectDate(today) }, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) { Text("回到今天") }
+    }
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Sky)
+        .pointerInput(selectedDate) {
+            var distance = 0f
+            detectHorizontalDragGestures(
+                onDragStart = { distance = 0f },
+                onDragCancel = { distance = 0f },
+                onDragEnd = {
+                    calendarSwipeDate(selectedDate, distance, 48.dp.toPx())?.let(currentOnSelectDate)
+                },
+                onHorizontalDrag = { change, amount -> change.consume(); distance += amount },
+            )
+        }.padding(horizontal = 8.dp, vertical = 8.dp)) {
         week.forEach { (date, mark) ->
             val isToday = date == today
             val isSelected = date == selectedDate
@@ -1434,6 +1465,7 @@ private fun RemoteNoticeCard(notice: RemoteNotice) {
             }
         }
     }
+}
 }
 
 @Composable private fun CalendarProgressRing(elapsedSeconds: Int, estimatedSeconds: Int, color: Color, track: Color) {
