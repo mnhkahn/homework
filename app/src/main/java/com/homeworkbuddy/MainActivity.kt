@@ -96,12 +96,12 @@ import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
-private val Sky = Color(0xFFEAF4FF)
-private val Sun = Color(0xFFFFF3CE)
-private val Leaf = Color(0xFFE6F7E9)
+private val Sky @Composable get() = LocalHomeColors.current.sky
+private val Sun @Composable get() = LocalHomeColors.current.sun
+private val Leaf @Composable get() = LocalHomeColors.current.leaf
 private val Ink = Color(0xFF263238)
-private val Primary = Color(0xFF3769D9)
-private val TodoSurface = Color(0xFFEAF4FF)
+private val Primary @Composable get() = LocalHomeColors.current.primary
+private val TodoSurface @Composable get() = LocalHomeColors.current.sky
 private val OverdueSurface = Color(0xFFFFE8E6)
 private val OverdueInk = Color(0xFFB3261E)
 private const val MAX_HOMEWORK_PHOTOS = 4
@@ -921,7 +921,7 @@ private fun HomeworkBuddyApp() {
         }
     }
 
-    MaterialTheme(colorScheme = lightColorScheme(primary = Primary, background = Color(0xFFFFFBFF), onBackground = Ink)) {
+    HomeTheme {
         if (showNameDialog) NameDialog(
             onSaved = { name -> context.getSharedPreferences("profile", Context.MODE_PRIVATE).edit().putString("child_name", name).apply(); childName = name; showNameDialog = false; if (!connected) showConnectionDialog = true }
         )
@@ -1664,10 +1664,10 @@ private fun LocalRecordingButton(localUri: String) {
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable private fun Header(slogan: String, refreshing: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, xiaoliConnection: XiaoliConnectionSnapshot, kioskMode: KioskMode, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f).combinedClickable(onClick = {}, onLongClick = onParent)) {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.fillMaxWidth().combinedClickable(onClick = {}, onLongClick = onParent)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("今天的作业", fontSize = 30.sp, fontWeight = FontWeight.Medium)
                 Spacer(Modifier.width(8.dp))
@@ -1675,7 +1675,11 @@ private fun LocalRecordingButton(localUri: String) {
             }
             Text(slogan, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
             val isStudyMode = kioskMode == KioskMode.STUDY
             Surface(
                 shape = RoundedCornerShape(18.dp),
@@ -1865,7 +1869,7 @@ private fun formatStudyDuration(seconds: Long): String {
                 Spacer(Modifier.height(14.dp)); Text(task.title, fontSize = 30.sp, fontWeight = FontWeight.Medium)
                 Text(if (overdue) "已超过截止时间，请优先完成" else "截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", color = if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = if (overdue) FontWeight.Medium else FontWeight.Normal)
                 task.startedAtEpochSeconds?.let { Text("开始 ${homeworkTimeLabel(it)}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp) }
-                Spacer(Modifier.height(18.dp)); Box(Modifier.size(166.dp).align(Alignment.CenterHorizontally).clip(CircleShape).background(Color.White).padding(10.dp), contentAlignment = Alignment.Center) {
+                Spacer(Modifier.height(18.dp)); Box(Modifier.size(166.dp).align(Alignment.CenterHorizontally).clip(CircleShape).background(LocalHomeColors.current.timer).padding(10.dp), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(if (running) "已用时" else if (overdue) "已超期" else "截止", fontSize = 15.sp, color = if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant)
                         Text(if (running) elapsedLabel(elapsedSeconds) else task.deadline.format(DateTimeFormatter.ofPattern("HH:mm")), fontSize = 31.sp, fontWeight = FontWeight.Medium)
