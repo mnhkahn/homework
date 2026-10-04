@@ -37,6 +37,7 @@ import java.util.concurrent.TimeUnit
 internal fun HeadPosePanel(available: Boolean) {
     val context = LocalContext.current
     val store = remember { HeadPoseSettings(context) }
+    val historyStore = remember(context) { HeadPoseHistoryStore(context) }
     var limits by remember { mutableStateOf(store.load()) }
     var calibrationRevision by remember { mutableIntStateOf(0) }
     DisposableEffect(store) {
@@ -115,9 +116,23 @@ internal fun HeadPosePanel(available: Boolean) {
     val savedBaseline = remember(reading?.calibrationKey, calibrationRevision) { reading?.let { store.baseline(it.calibrationKey) } }
     val distance = HeadPoseMetrics.distanceRatio(savedBaseline, reading?.eyeSpan)
     val engine = remember(limits) { HeadPoseAlertEngine(limits) }
+    val historyTracker = remember(limits) { HeadPoseHistoryTracker(limits) }
     var warnings by remember { mutableStateOf(emptySet<PoseWarning>()) }
     LaunchedEffect(reading, distance, engine) {
         warnings = engine.update(reading, distance)
+        val record = historyTracker.update(reading, warnings, System.currentTimeMillis())
+        if (reading != null) {
+            val date = java.time.LocalDate.now()
+            // Keep an episode crossing midnight on its original day, while each
+            // day's overall minimum uses only that day's samples.
+            val recordDate = record?.let {
+                java.time.Instant.ofEpochMilli(it.remindedAtMillis).atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+            }
+            historyStore.observe(date, reading.pitch, record.takeIf { recordDate == date })
+            if (record != null && recordDate != null && recordDate != date) {
+                historyStore.observe(recordDate, null, record)
+            }
+        }
     }
     val visibleWarnings = if (reading != null) warnings else emptySet()
     val voicePrompts = if (limits.sound) headPoseVoicePrompts(visibleWarnings) else emptyList()
@@ -130,7 +145,7 @@ internal fun HeadPosePanel(available: Boolean) {
     val distanceWarning = visibleWarnings.any { it == PoseWarning.TOO_CLOSE || it == PoseWarning.TOO_FAR }
     val warningColor = Color(0xFFB3261E)
     val message = if (state.reading != null && reading == null) "等待相机画面" else state.message
-    Surface(color = if (visibleWarnings.isEmpty()) Color(0xFFF1F6FC) else Color(0xFFFFE8E6), shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+    Surface(color = if (visibleWarnings.isEmpty()) LocalHomeColors.current.sky else Color(0xFFFFE8E6), shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
         Column {
         FlowRow(Modifier.padding(horizontal = 18.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(30.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Column(Modifier.widthIn(min = 140.dp)) {

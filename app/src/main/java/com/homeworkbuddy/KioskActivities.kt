@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -32,6 +33,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -219,9 +221,7 @@ private fun ParentGate(activity: KioskSettingsActivity) {
 @Composable
 private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
     val policy = remember { KioskPolicy(activity) }
-    var approved by remember { mutableStateOf(policy.studyPackages) }
-    val apps = remember { policy.launchableApps() }
-    val nonLearningBrowsers = remember { policy.nonLearningBrowserPackages() }
+    var showAppSelection by remember { mutableStateOf(false) }
     var startHour by remember { mutableStateOf((policy.startMinutes / 60).toString()) }
     var startMinute by remember { mutableStateOf((policy.startMinutes % 60).toString()) }
     var endHour by remember { mutableStateOf((policy.endMinutes / 60).toString()) }
@@ -246,6 +246,7 @@ private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
             }
         }
         item { AppUpdateSettingsCard(activity) }
+        item { HeadPoseHistoryCard() }
         item { HeadPoseSettingsCard() }
         if (!policy.isDeviceOwner) item {
             Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3CE))) {
@@ -304,8 +305,17 @@ private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
             }
         }
         item {
-            Text("学习时间允许的应用", fontSize = 21.sp, fontWeight = FontWeight.Medium)
-            Text("作业小伙伴和 Chrome 始终允许；学习时间 Chrome 仅可访问 cyeam.com、trello.com、pgyer.com 及其所有子域名，其他浏览器一律无法使用。其他未勾选的应用在学习时间无法打开。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Card(shape = RoundedCornerShape(20.dp)) {
+                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("学习时间允许的应用", fontSize = 21.sp, fontWeight = FontWeight.Medium)
+                    Text("点击选择学习时间可以打开的应用。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    OutlinedButton(onClick = { showAppSelection = true }) {
+                        Icon(Icons.Outlined.Apps, null)
+                        Spacer(Modifier.size(7.dp))
+                        Text("选择应用")
+                    }
+                }
+            }
         }
         if (!policy.hasUsageAccess()) item {
             Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3CE))) {
@@ -317,21 +327,41 @@ private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
                 }
             }
         }
-        items(apps, key = { it.packageName }) { app ->
-            val isOtherBrowser = app.packageName in nonLearningBrowsers
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(checked = !isOtherBrowser && app.packageName in approved, enabled = app.packageName != KioskPolicy.LEARNING_BROWSER_PACKAGE && !isOtherBrowser, onCheckedChange = { checked ->
-                    policy.setStudyAllowed(app.packageName, checked)
-                    approved = policy.studyPackages
-                })
-                Column {
-                    Text(app.label, fontWeight = FontWeight.Medium)
-                    Text(app.packageName, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    if (isOtherBrowser) Text("浏览器仅支持 Chrome，学习时间不可用", fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
+    }
+    if (showAppSelection) StudyAppSelectionDialog(policy) { showAppSelection = false }
+}
+
+@Composable
+private fun StudyAppSelectionDialog(policy: KioskPolicy, onDismiss: () -> Unit) {
+    val apps = remember(policy) { policy.launchableApps() }
+    val nonLearningBrowsers = remember(policy) { policy.nonLearningBrowserPackages() }
+    var approved by remember(policy) { mutableStateOf(policy.studyPackages) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("选择学习时间允许的应用") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("勾选后立即生效。作业小伙伴和 Chrome 始终允许；Chrome 仅可访问 cyeam.com、trello.com、pgyer.com 及其所有子域名，其他浏览器在学习时间不可用。", style = MaterialTheme.typography.bodySmall)
+                LazyColumn(Modifier.fillMaxWidth().heightIn(max = 420.dp)) {
+                    items(apps, key = { it.packageName }) { app ->
+                        val isOtherBrowser = app.packageName in nonLearningBrowsers
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = !isOtherBrowser && app.packageName in approved, enabled = app.packageName != KioskPolicy.LEARNING_BROWSER_PACKAGE && !isOtherBrowser, onCheckedChange = { checked ->
+                                policy.setStudyAllowed(app.packageName, checked)
+                                approved = policy.studyPackages
+                            })
+                            Column {
+                                Text(app.label, fontWeight = FontWeight.Medium)
+                                Text(app.packageName, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                if (isOtherBrowser) Text("浏览器仅支持 Chrome，学习时间不可用", fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
                 }
             }
-        }
-    }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("完成") } },
+    )
 }
 
 @Composable
