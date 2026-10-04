@@ -1300,15 +1300,24 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
                 RemoteNoticeCard(remoteNotice)
             }
             Spacer(Modifier.height(14.dp))
-            WeekCalendar(
-                weekMarks,
-                selectedDate = selectedDate,
-                todayElapsedSeconds = todayElapsedSeconds,
-                todayEstimatedSeconds = todayEstimatedSeconds,
-                onSelectDate = onSelectDate,
-            )
-            Spacer(Modifier.height(10.dp))
-            HeadPosePanel(available = !showSubmissionChoice && !showCameraConfirm && !showTextSubmission)
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.Bottom,
+            ) {
+                WeekCalendar(
+                    weekMarks,
+                    selectedDate = selectedDate,
+                    todayElapsedSeconds = todayElapsedSeconds,
+                    todayEstimatedSeconds = todayEstimatedSeconds,
+                    onSelectDate = onSelectDate,
+                    modifier = Modifier.weight(1f),
+                )
+                HeadPosePanel(
+                    available = !showSubmissionChoice && !showCameraConfirm && !showTextSubmission,
+                    modifier = Modifier.width(172.dp),
+                )
+            }
             Spacer(Modifier.height(14.dp))
             if (calendarLoading && selectedDate != LocalDate.now()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
@@ -1417,11 +1426,11 @@ private fun RemoteNoticeCard(notice: RemoteNotice) {
     }
 }
 
-@Composable private fun WeekCalendar(week: List<Pair<LocalDate, DayMark>>, selectedDate: LocalDate, todayElapsedSeconds: Int, todayEstimatedSeconds: Int, onSelectDate: (LocalDate) -> Unit) {
+@Composable private fun WeekCalendar(week: List<Pair<LocalDate, DayMark>>, selectedDate: LocalDate, todayElapsedSeconds: Int, todayEstimatedSeconds: Int, onSelectDate: (LocalDate) -> Unit, modifier: Modifier = Modifier) {
     val today = LocalDate.now()
     val dayNames = listOf("一", "二", "三", "四", "五", "六", "日")
     val currentOnSelectDate by rememberUpdatedState(onSelectDate)
-    Column {
+    Column(modifier) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
         Text("${calendarWeekStart(selectedDate).format(DateTimeFormatter.ofPattern("yyyy年M月d日"))} — ${calendarWeekStart(selectedDate).plusDays(6).format(DateTimeFormatter.ofPattern("M月d日"))}", fontSize = 13.sp)
         TextButton(onClick = { onSelectDate(today) }, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) { Text("回到今天") }
@@ -1664,10 +1673,10 @@ private fun LocalRecordingButton(localUri: String) {
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalFoundationApi::class)
 @Composable private fun Header(slogan: String, refreshing: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, xiaoliConnection: XiaoliConnectionSnapshot, kioskMode: KioskMode, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit) {
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Column(Modifier.fillMaxWidth().combinedClickable(onClick = {}, onLongClick = onParent)) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f).combinedClickable(onClick = {}, onLongClick = onParent)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("今天的作业", fontSize = 30.sp, fontWeight = FontWeight.Medium)
                 Spacer(Modifier.width(8.dp))
@@ -1675,11 +1684,7 @@ private fun LocalRecordingButton(localUri: String) {
             }
             Text(slogan, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
-        FlowRow(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             val isStudyMode = kioskMode == KioskMode.STUDY
             Surface(
                 shape = RoundedCornerShape(18.dp),
