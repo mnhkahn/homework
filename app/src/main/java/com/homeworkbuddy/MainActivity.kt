@@ -500,14 +500,6 @@ private fun HomeworkBuddyApp() {
         runCatching { SloganApi.fetch() }.getOrNull()?.let { slogan = it }
     }
 
-    var updateInfo by remember { mutableStateOf<AppUpdater.UpdateInfo?>(null) }
-    var updateProgress by remember { mutableStateOf<Float?>(null) }
-    var updateError by remember { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(Unit) {
-        updateInfo = AppUpdater.checkForUpdate()
-    }
-
     DisposableEffect(remoteNoticeStore) {
         val listener = remoteNoticeStore.addChangeListener { remoteNotice = remoteNoticeStore.current() }
         onDispose { remoteNoticeStore.removeChangeListener(listener) }
@@ -1167,28 +1159,7 @@ private fun HomeworkBuddyApp() {
             onDismissTextSubmission = { if (submittingTaskId == null) { showTextSubmission = false; submissionText = ""; submissionTask = null } },
         )
         celebration?.let { event -> CelebrationDialog(event.taskTitle, event.allTasksComplete, event.completedEarly) { celebration = null } }
-        updateInfo?.let { info ->
-            UpdateDialog(
-                info = info,
-                progress = updateProgress,
-                error = updateError,
-                onUpdate = {
-                    if (updateProgress != null) return@UpdateDialog
-                    updateError = null
-                    // Pgyer creates a short-lived download URL from its public
-                    // page. Browser and installer are outside Lock Task, so
-                    // grant the same temporary escape used by consent flows.
-                    (activity as? MainActivity)?.allowManagedActivityLaunch()
-                    if (kioskPolicy.isDeviceOwner && kioskPolicy.mode() == KioskMode.STUDY) {
-                        kioskPolicy.pause(15, activity)
-                    }
-                    runCatching { AppUpdater.openDownloadPage(context, info) }
-                        .onSuccess { updateInfo = null }
-                        .onFailure { updateError = "无法打开蒲公英下载页，请稍后再试。" }
-                },
-                onDismiss = { updateInfo = null },
-            )
-        }
+        AppUpdatePanel()
         if (showBlockedApps) BlockedAppsDialog(systemNonAllowedApps) { showBlockedApps = false }
     }
 }

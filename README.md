@@ -97,7 +97,7 @@ JSON 描述也支持 `{"type":"arithmetic","task":"26 + 17 = ___\n54 − 28 = __
 
 ## 发布与自动升级
 
-推送 `v*` 或 `x.y.z` 形式的 tag 会触发 `.github/workflows/android-release.yml`：CI 用 GitHub Secrets 里的 keystore 签名 release APK（版本号取自 tag，`versionCode` 取 workflow run number），同时发布到蒲公英和 GitHub Release。发布时会用 `git-chglog` 按版本号生成变更说明，并同时写入 GitHub Release 与蒲公英更新说明。App 会直接读取蒲公英公开下载页的版本与更新说明；发现更新后打开该页，由蒲公英生成短时下载链接并完成安装，因此 APK 内不保存蒲公英 API Key。
+推送 `v*` 或 `x.y.z` 形式的 tag 会触发 `.github/workflows/android-release.yml`：CI 用 GitHub Secrets 里的 keystore 签名 release APK（版本号取自 tag，`versionCode` 取 workflow run number），同时发布到蒲公英和 GitHub Release。发布时会用 `git-chglog` 按版本号生成变更说明，并同时写入 GitHub Release 与蒲公英更新说明。App 启动时调用 `https://www.cyeam.com/api/apps/homework/update`，按 APK `versionCode` 检查更新；使用 DownloadManager 在非计费网络后台下载，重启后恢复任务。安装前校验大小、包名、versionCode 和签名，前台调起系统安装界面（首次需允许安装未知应用，最后仍需系统确认）。设置页保留手动检查、失败重试和安装入口；学习锁定模式下临时暂停 15 分钟以打开系统界面。蒲公英 API Key 仅保存在服务端，后端 `conf/app_updates.json` 的 homework 配置需部署后生效。
 
 首次配置需要：
 
