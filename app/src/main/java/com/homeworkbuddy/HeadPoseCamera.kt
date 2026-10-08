@@ -47,7 +47,7 @@ internal class HeadPoseCamera(
             if (stopping) return
             if (SystemClock.elapsedRealtime() - lastFrameAt > 2_000) {
                 filtered = null
-                onState(HeadPoseState("等待相机画面"))
+                publishState(HeadPoseState("等待相机画面"))
             }
             handler.postDelayed(this, 1_000)
         }
@@ -144,7 +144,7 @@ internal class HeadPoseCamera(
                 val faces = Tasks.await(checkNotNull(detector).process(InputImage.fromMediaImage(image, rotation)))
                 if (faces.size != 1) {
                     filtered = null
-                    onState(HeadPoseState(if (faces.isEmpty()) "未检测到人脸" else "检测到多人，请保持单人在画面内"))
+                    publishState(HeadPoseState(if (faces.isEmpty()) "未检测到人脸" else "检测到多人，请保持单人在画面内"))
                     return
                 }
                 val face = faces.single()
@@ -163,9 +163,14 @@ internal class HeadPoseCamera(
                     calibrationKey,
                 )
                 filtered = reading
-                onState(HeadPoseState("本地检测中", reading))
+                publishState(HeadPoseState("本地检测中", reading))
             } catch (error: Exception) { fail(error) }
         }
+    }
+
+    private fun publishState(state: HeadPoseState) {
+        HeadPoseCameraAccess.photoReadings.update(state.reading)
+        onState(state)
     }
 
     fun stop(): CompletableFuture<Unit> {
@@ -175,13 +180,14 @@ internal class HeadPoseCamera(
 
     private fun fail(error: Exception) {
         Log.w("HeadPose", "Detection unavailable", error)
-        onState(HeadPoseState(error.message ?: "检测失败，请关闭后重试"))
+        publishState(HeadPoseState(error.message ?: "检测失败，请关闭后重试"))
         closeOnWorker()
     }
 
     private fun closeOnWorker() {
         if (stopping) return
         stopping = true
+        HeadPoseCameraAccess.photoReadings.update(null)
         handler.removeCallbacks(staleCheck)
         runCatching { session?.close() }
         session = null

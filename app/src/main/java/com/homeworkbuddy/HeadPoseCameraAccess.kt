@@ -9,6 +9,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /** Remote capture has priority; wait for CameraDevice.onClosed before opening its camera. */
 internal object HeadPoseCameraAccess {
+    val photoReadings = HeadPosePhotoReadings()
     private var monitor: HeadPoseCamera? = null
     private var reservations = 0
     private val busyState = MutableStateFlow(false)

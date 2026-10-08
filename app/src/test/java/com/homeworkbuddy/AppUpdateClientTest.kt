@@ -21,6 +21,11 @@ class AppUpdateClientTest {
     }
     private fun parse(json: JSONObject) = AppUpdateClient.parse(json.toString(), endpoint, 14, "com.homeworkbuddy")
 
+    @Test fun identifiesMissingBackendConfig() {
+        assertTrue(AppUpdateClient.errorMessage(404, """{"error":"app_not_found"}""").contains("尚未配置"))
+        assertFalse(AppUpdateClient.errorMessage(404, "<html>Not Found</html>").contains("尚未配置"))
+        assertTrue(AppUpdateClient.errorMessage(502, """{"error":"update_provider_unavailable"}""").contains("暂不可用"))
+    }
     @Test fun noUpdateNeedsNoDownloadMetadata() {
         assertNull(parse(JSONObject().put("hasUpdate", false)))
     }

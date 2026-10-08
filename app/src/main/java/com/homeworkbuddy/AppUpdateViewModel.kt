@@ -46,6 +46,7 @@ class AppUpdateViewModel private constructor(application: Application) : Android
         if (running) return
         running = true
         viewModelScope.launch {
+            var operation = "检查更新"
             try {
                 var id = prefs.getLong("id", -1)
                 if (id >= 0 && prefs.getLong("versionCode", 0) <= BuildConfig.VERSION_CODE) { clearDownload(); id = -1 }
@@ -54,6 +55,7 @@ class AppUpdateViewModel private constructor(application: Application) : Android
                     mutable.value = UpdateState(UpdateStage.CHECKING)
                     val update = AppUpdateClient.check()
                     if (update == null) { mutable.value = UpdateState(message = "已是最新版本"); return@launch }
+                    operation = "下载更新"
                     withContext(Dispatchers.IO) {
                         val directory = checkNotNull(apk.parentFile)
                         check(directory.isDirectory || directory.mkdirs()) { "无法创建更新下载目录" }
@@ -71,6 +73,7 @@ class AppUpdateViewModel private constructor(application: Application) : Android
                         .putString("versionName", update.versionName).putString("notes", update.notes)
                         .putLong("size", update.sizeBytes).apply()
                 }
+                operation = "下载更新"
                 val current = UpdateState(UpdateStage.DOWNLOADING, prefs.getString("versionName", "")!!, prefs.getString("notes", "")!!, id = id)
                 while (true) {
                     val snapshot = withContext(Dispatchers.IO) {
@@ -83,6 +86,7 @@ class AppUpdateViewModel private constructor(application: Application) : Android
                     }
                     when (snapshot.first) {
                         DownloadManager.STATUS_SUCCESSFUL -> {
+                            operation = "安装包校验"
                             withContext(Dispatchers.IO) { verifyApk() }
                             mutable.value = current.copy(stage = UpdateStage.READY, progress = 1f, message = "下载完成，可以安装")
                             break
@@ -95,8 +99,14 @@ class AppUpdateViewModel private constructor(application: Application) : Android
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
-            } catch (_: Exception) {
-                mutable.value = mutable.value.copy(stage = UpdateStage.FAILED, message = "更新检查、下载或安装包校验失败，请重试")
+            } catch (error: Exception) {
+                val message = when (error) {
+                    is AppUpdateCheckException -> error.message!!
+                    is java.net.SocketTimeoutException -> "$operation 超时，请检查网络后重试"
+                    is java.net.UnknownHostException -> "$operation 失败，无法连接服务器，请检查网络后重试"
+                    else -> "$operation 失败，请重试"
+                }
+                mutable.value = mutable.value.copy(stage = UpdateStage.FAILED, message = message)
             } finally { running = false }
         }
     }

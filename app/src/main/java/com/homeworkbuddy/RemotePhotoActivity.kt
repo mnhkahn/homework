@@ -36,10 +36,14 @@ object RemotePhotoCoordinator {
     val isCaptureInProgress: Boolean
         get() = synchronized(this) { pending?.isActive == true }
 
-    suspend fun take(context: Context, resolution: String = "vga"): JSONObject =
-        HeadPoseCameraAccess.withRemoteCamera { takeExclusive(context, resolution) }
+    suspend fun take(context: Context, resolution: String = "vga"): JSONObject {
+        val pose = HeadPoseCameraAccess.photoReadings.snapshot(
+            android.os.SystemClock.elapsedRealtime(), HeadPoseSettings(context)::baseline,
+        )
+        return HeadPoseCameraAccess.withRemoteCamera { takeExclusive(context, resolution, pose) }
+    }
 
-    private suspend fun takeExclusive(context: Context, resolution: String): JSONObject {
+    private suspend fun takeExclusive(context: Context, resolution: String, pose: HeadPosePhotoSnapshot): JSONObject {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             throw McpException(-32001, "相机权限被拒绝")
         }
@@ -67,7 +71,7 @@ object RemotePhotoCoordinator {
             }
             CaptureStatusStore(appContext).begin(CaptureKind.PHOTO)
             runCatching {
-                InAppPhotoCapture(appContext, resolution, ::complete, ::fail).also {
+                InAppPhotoCapture(appContext, resolution, pose, ::complete, ::fail).also {
                     synchronized(this) { capture = it }
                     it.start()
                 }
@@ -122,6 +126,7 @@ object RemotePhotoCoordinator {
 private class InAppPhotoCapture(
     private val context: Context,
     private val resolution: String,
+    private val pose: HeadPosePhotoSnapshot,
     private val onSuccess: (JSONObject) -> Unit,
     private val onFailure: (String) -> Unit,
 ) {
@@ -269,7 +274,7 @@ private class InAppPhotoCapture(
         }
         val scale = (maxOf(bitmap.width, bitmap.height) / maxDimension.toFloat()).coerceAtLeast(1f)
         val resized = if (scale == 1f) bitmap else Bitmap.createScaledBitmap(bitmap, (bitmap.width / scale).toInt(), (bitmap.height / scale).toInt(), true)
-        val watermarked = CaptureWatermark.draw(resized)
+        val watermarked = CaptureWatermark.draw(resized, extraLines = pose.watermarkLines())
         return run {
             var quality = 80
             var encoded: ByteArray
