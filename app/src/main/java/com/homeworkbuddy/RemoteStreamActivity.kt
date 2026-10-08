@@ -129,9 +129,9 @@ object RemoteStreamCoordinator {
         return (if (requestedSeconds > 0) requestedSeconds else default).coerceIn(1, max)
     }
 
-    private const val DEFAULT_BATTERY_STREAM_SECONDS = 30
-    private const val MAX_BATTERY_STREAM_SECONDS = 60
-    private const val MAX_CHARGING_STREAM_SECONDS = 3 * 60
+    private const val DEFAULT_BATTERY_STREAM_SECONDS = 5 * 60
+    private const val MAX_BATTERY_STREAM_SECONDS = 5 * 60
+    private const val MAX_CHARGING_STREAM_SECONDS = 15 * 60
 }
 
 /** Keeps the status cleanup callable from the coordinator's background error path. */

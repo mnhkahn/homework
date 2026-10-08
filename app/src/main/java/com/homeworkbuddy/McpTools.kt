@@ -77,7 +77,7 @@ object McpTools {
         },
         ToolRegistration("self.camera.start_stream", "开始共享学习画面（平板会提示正在共享）", JSONObject().put("type", "object").put("properties", JSONObject()
             .put("fps", JSONObject().put("type", "integer").put("minimum", 1).put("maximum", 3).put("description", "每秒帧数，范围 1-3"))
-            .put("duration_sec", JSONObject().put("type", "integer").put("description", "最长共享秒数；未插电上限 60 秒，插电时上限 180 秒"))
+            .put("duration_sec", JSONObject().put("type", "integer").put("description", "最长共享秒数；省略或传 0 使用默认时长。未充电默认及上限 300 秒（5 分钟），充电或已充满时默认及上限 900 秒（15 分钟）；可随时手动停止"))
             .put("resolution", JSONObject().put("type", "string").put("enum", JSONArray().put("qqvga").put("qvga").put("vga").put("svga")))
         )) { context, arguments ->
             runBlocking {

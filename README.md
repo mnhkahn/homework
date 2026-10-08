@@ -133,7 +133,7 @@ JSON 描述也支持 `{"type":"arithmetic","task":"26 + 17 = ___\n54 − 28 = __
 - `self.audio_speaker.stop`（停止当前音频播放）
 - `self.camera.take_photo`（应用内单次拍照；会显示“正在拍照”提示并播放提示音，不打开系统相机）
 - `self.camera.record_video`（前台调起系统相机录制小视频，默认最长 15 秒、上限 30 秒）
-- `self.camera.start_stream` / `self.camera.stop_stream`（应用内共享学习画面；平板提示并播放提示音，1–3 fps、最长 60 秒）
+- `self.camera.start_stream` / `self.camera.stop_stream`（应用内共享学习画面；平板提示并播放提示音，1–3 fps；未充电默认及最长 5 分钟，充电或已充满时默认及最长 15 分钟，可随时手动停止；时长按启动时的充电状态确定）
 - `self.kiosk.pause_15_minutes`（复用既有的临时开放 15 分钟逻辑）
 
 这里的 MCP 是手写 JSON-RPC over WebSocket（小智风格 envelope），未使用官方 MCP SDK——因为服务端不是标准 MCP transport，官方 SDK 无内置 WebSocket transport。
