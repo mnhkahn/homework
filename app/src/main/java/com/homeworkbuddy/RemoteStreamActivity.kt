@@ -45,6 +45,9 @@ object RemoteStreamCoordinator {
         }
         val allowedDurationSeconds = allowedDurationSeconds(context, durationSeconds)
         val result = CompletableDeferred<JSONObject>()
+        val pose = HeadPoseCameraAccess.photoReadings.snapshot(
+            android.os.SystemClock.elapsedRealtime(), HeadPoseSettings(context)::baseline,
+        )
         val lease = HeadPoseCameraAccess.reserve()
         try {
             synchronized(this) {
@@ -66,7 +69,7 @@ object RemoteStreamCoordinator {
         XiaoliConnectionService.beginCameraCapture(context.applicationContext)
         CaptureStatusStore(context).begin(CaptureKind.STREAM)
         CameraShutterSound.play()
-        val stream = InAppRemoteStream(context.applicationContext, fps.coerceIn(1, 3), allowedDurationSeconds, resolution, ::ready, ::fail)
+        val stream = InAppRemoteStream(context.applicationContext, fps.coerceIn(1, 3), allowedDurationSeconds, resolution, pose, ::ready, ::fail)
         runCatching { stream.start() }.onFailure { fail(it.message ?: "无法启动学习画面共享") }
         return try {
             withTimeout(15_000) { result.await() }
@@ -143,6 +146,7 @@ private class InAppRemoteStream(
     private val fps: Int,
     private val durationSeconds: Int,
     private val resolution: String,
+    private val pose: HeadPosePhotoSnapshot,
     private val onReady: (JSONObject, () -> Unit) -> Unit,
     private val onFailure: (String) -> Unit,
 ) {
@@ -269,7 +273,7 @@ private class InAppRemoteStream(
 
     private fun watermarkFrame(bytes: ByteArray): ByteArray {
         val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: error("无法读取视频帧")
-        val watermarked = CaptureWatermark.draw(bitmap)
+        val watermarked = CaptureWatermark.draw(bitmap, extraLines = pose.compactWatermarkLines("共享前坐姿"), compact = true)
         return ByteArrayOutputStream().use { output ->
             watermarked.compress(Bitmap.CompressFormat.JPEG, 80, output)
             if (watermarked !== bitmap) watermarked.recycle()

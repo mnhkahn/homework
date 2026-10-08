@@ -4,6 +4,11 @@ import java.util.Locale
 
 /** A copy of the last valid observation, taken before photography pauses the monitor. */
 internal data class HeadPosePhotoSnapshot(val pitch: Float?, val yaw: Float?, val distance: Float?) {
+    fun compactWatermarkLines(label: String): List<String> = listOf(
+        "$label · 相对距离 ${distance?.let { String.format(Locale.CHINA, "%.2f×", it) } ?: "—"}",
+        "仰角 ${pitch?.let { String.format(Locale.CHINA, "%+.0f°", it) } ?: "—"}  左右转角 ${yaw?.let { String.format(Locale.CHINA, "%+.0f°", it) } ?: "—"}",
+    )
+
     fun watermarkLines(): List<String> = listOf(
         "拍照前坐姿",
         "仰角 ${pitch?.let { String.format(Locale.CHINA, "%+.0f°", it) } ?: "—"}",

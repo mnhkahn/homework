@@ -14,10 +14,11 @@ object CaptureWatermark {
         SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA)
     }
 
-    fun draw(source: Bitmap, capturedAt: Long = System.currentTimeMillis(), extraLines: List<String> = emptyList()): Bitmap {
+    fun draw(source: Bitmap, capturedAt: Long = System.currentTimeMillis(), extraLines: List<String> = emptyList(), compact: Boolean = false): Bitmap {
         val bitmap = if (source.isMutable) source else source.copy(Bitmap.Config.ARGB_8888, true)
-        val lines = listOf(formatter.get().format(Date(capturedAt))) + extraLines
-        var scale = (bitmap.width / 1280f).coerceIn(0.55f, 1.5f)
+        val lines = listOf(checkNotNull(formatter.get()).format(Date(capturedAt))) + extraLines
+        var scale = if (compact) videoWatermarkScale(bitmap.width, bitmap.height)
+            else (bitmap.width / 1280f).coerceIn(0.55f, 1.5f)
         val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             textSize = 28f * scale
             typeface = android.graphics.Typeface.create(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.BOLD)

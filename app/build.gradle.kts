@@ -60,6 +60,8 @@ dependencies {
     implementation(libs.androidx.biometric)
     implementation(libs.okhttp)
     implementation(libs.zxing.embedded)
+    implementation("androidx.media3:media3-transformer:1.7.1")
+    implementation("androidx.media3:media3-effect:1.7.1")
     // Bundled face model: available offline from the first launch.
     implementation("com.google.mlkit:face-detection:16.1.7")
     testImplementation("junit:junit:4.13.2")

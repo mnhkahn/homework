@@ -91,6 +91,7 @@
             android:screenOrientation="unspecified" />
         <activity
             android:name=".RemoteVideoActivity"
+            android:configChanges="orientation|screenSize"
             android:exported="false"
             android:screenOrientation="unspecified" />
         <activity
