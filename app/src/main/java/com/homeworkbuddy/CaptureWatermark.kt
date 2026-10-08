@@ -21,7 +21,10 @@ object CaptureWatermark {
             else (bitmap.width / 1280f).coerceIn(0.55f, 1.5f)
         val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             textSize = 28f * scale
-            typeface = android.graphics.Typeface.create(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.BOLD)
+            typeface = android.graphics.Typeface.create(
+                if (compact) android.graphics.Typeface.SANS_SERIF else android.graphics.Typeface.MONOSPACE,
+                android.graphics.Typeface.BOLD,
+            )
         }
         // Fit the entire block even in the 160px photo size.
         val desiredWidth = lines.maxOf(textPaint::measureText) + 52f * scale
@@ -36,14 +39,18 @@ object CaptureWatermark {
         val top = margin
         val right = bitmap.width - margin
         val bottom = top + height + textPaint.fontSpacing * (lines.size - 1) + padding * 2
-        val brightness = averageBrightness(bitmap, left.toInt(), top.toInt(), right.toInt(), bottom.toInt())
+        val brightness = if (compact) 0 else averageBrightness(bitmap, left.toInt(), top.toInt(), right.toInt(), bottom.toInt())
         val textColor = if (brightness < 140) Color.WHITE else Color.rgb(20, 20, 20)
         val outlineColor = if (brightness < 140) Color.argb(190, 0, 0, 0) else Color.argb(190, 255, 255, 255)
         val baseline = top + padding - textPaint.fontMetrics.top
         Canvas(bitmap).apply {
+            if (compact) {
+                drawRoundRect(left, top, right, bottom, 4f * scale, 4f * scale,
+                    Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(185, 0, 0, 0) })
+            }
             lines.forEachIndexed { index, text ->
                 val lineBaseline = baseline + index * textPaint.fontSpacing
-                drawText(text, left + padding, lineBaseline, textPaint.apply {
+                if (!compact) drawText(text, left + padding, lineBaseline, textPaint.apply {
                     color = outlineColor
                     style = Paint.Style.STROKE
                     strokeWidth = 3.5f * scale

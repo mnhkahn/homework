@@ -273,12 +273,23 @@ private class InAppRemoteStream(
 
     private fun watermarkFrame(bytes: ByteArray): ByteArray {
         val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: error("无法读取视频帧")
-        val watermarked = CaptureWatermark.draw(bitmap, extraLines = pose.compactWatermarkLines("共享前坐姿"), compact = true)
-        return ByteArrayOutputStream().use { output ->
-            watermarked.compress(Bitmap.CompressFormat.JPEG, 80, output)
-            if (watermarked !== bitmap) watermarked.recycle()
+        var canvasBitmap = bitmap
+        var watermarked: Bitmap? = null
+        try {
+            val (width, height) = readableStreamFrameSize(bitmap.width, bitmap.height)
+            if (width != bitmap.width || height != bitmap.height) {
+                canvasBitmap = Bitmap.createScaledBitmap(bitmap, width, height, true)
+            }
+            val frame = CaptureWatermark.draw(canvasBitmap, extraLines = pose.compactWatermarkLines("共享前坐姿"), compact = true)
+            watermarked = frame
+            return ByteArrayOutputStream().use { output ->
+                check(frame.compress(Bitmap.CompressFormat.JPEG, 90, output)) { "视频帧编码失败" }
+                output.toByteArray()
+            }
+        } finally {
+            if (watermarked !== canvasBitmap) watermarked?.recycle()
+            if (canvasBitmap !== bitmap) canvasBitmap.recycle()
             bitmap.recycle()
-            output.toByteArray()
         }
     }
 

@@ -4,6 +4,17 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class VideoWatermarkLayoutTest {
+    @Test fun lowResolutionCaptureGetsReadableTextWithoutChangingAspectRatio() {
+        assertEquals(640 to 480, readableStreamFrameSize(160, 120))
+        assertEquals(640 to 480, readableStreamFrameSize(320, 240))
+        assertEquals(640 to 480, readableStreamFrameSize(640, 480))
+        assertEquals(800 to 600, readableStreamFrameSize(800, 600))
+        assertEquals(1280 to 720, readableStreamFrameSize(1280, 720))
+        val (width, height) = readableStreamFrameSize(120, 160)
+        assertEquals(120f / 160, width.toFloat() / height, .001f)
+        org.junit.Assert.assertTrue(28f * videoWatermarkScale(width, height) >= 15f)
+    }
+
     @Test fun relativeFontSizeAndMarginsStayConstantAcrossResolutions() {
         for ((width, height) in listOf(160 to 120, 320 to 240, 640 to 480, 800 to 600, 1280 to 960, 2560 to 1920)) {
             val scale = videoWatermarkScale(width, height)
