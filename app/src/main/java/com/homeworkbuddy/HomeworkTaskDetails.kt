@@ -19,7 +19,8 @@ data class HomeworkTaskDetails(
         private val wordLine = Regex("(?im)^\\s*背单词\\s*[:：]\\s*(.+?)\\s*$")
         private val translationLinkLine = Regex("(?im)^\\s*翻译链接\\s*[:：]\\s*(https?://\\S+)\\s*$")
         private val durationLine = Regex("(?im)^\\s*预计用时\\s*[:：].*$")
-        private val vocabulary = Regex("^[A-Za-z]+(?:['’-][A-Za-z]+)?(?:[\\s,，]+[A-Za-z]+(?:['’-][A-Za-z]+)?)*$")
+        private val vocabulary = Regex("^[A-Za-z]+(?:['’-][A-Za-z]+)*(?: +[A-Za-z]+(?:['’-][A-Za-z]+)*)*$")
+        private val vocabularyAnnotation = Regex("\\(([^()]*)\\)|（([^（）]*)）")
 
         /**
          * Explicit type always wins. For Trello descriptions we accept either
@@ -78,8 +79,22 @@ data class HomeworkTaskDetails(
             .trim()
 
         private fun words(value: String?): String? {
-            val candidate = value?.trim()?.replace(Regex("[，,\\s]+"), ",")?.trim(',').orEmpty()
-            return candidate.takeIf { it.isNotBlank() && vocabulary.matches(it.replace(',', ' ')) }
+            // Cards may include English continuations and Chinese glosses, e.g.
+            // post(office), cell(phone)(手机). Keep English continuations in one phrase.
+            val expanded = value?.let { text ->
+                vocabularyAnnotation.replace(text) { match ->
+                    val annotation = match.groupValues.drop(1).firstOrNull(String::isNotEmpty).orEmpty().trim()
+                    when {
+                        vocabulary.matches(annotation) -> " $annotation "
+                        annotation.matches(Regex("[\\p{IsHan}\\s、，。；：]+")) -> ""
+                        else -> match.value
+                    }
+                }
+            }
+            val entries = expanded.orEmpty().split(',', '，')
+                .map { it.trim().replace(Regex("\\s+"), " ") }
+                .filter(String::isNotEmpty)
+            return entries.takeIf { it.isNotEmpty() && it.all(vocabulary::matches) }?.joinToString(",")
         }
 
         private fun String.wordLink(): String = "https://$TRANSLATE_HOST$TRANSLATE_PATH?words=" +
