@@ -84,6 +84,7 @@ import androidx.core.content.FileProvider
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.ViewModelProvider
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
@@ -202,6 +203,14 @@ private object CelebrationSound {
 }
 
 class MainActivity : ComponentActivity() {
+    private val recordingScreenLock by lazy {
+        ViewModelProvider(this)[RecordingScreenLock::class.java]
+    }
+
+    fun keepScreenOnForRecording() = recordingScreenLock.acquire()
+
+    fun finishRecordingScreenProtection() = recordingScreenLock.release()
+
     private val screenTimeoutHandler = Handler(Looper.getMainLooper())
     private var allowNextUserLeaveHint = false
     private var homeworkInProgress = false
@@ -256,7 +265,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Keep the display awake during an assignment or an external recorder session. */
+    /** Keep this Activity's display awake during an assignment. */
     fun setHomeworkInProgress(inProgress: Boolean) {
         homeworkInProgress = inProgress
         if (inProgress) extendStudyScreenTimeout() else clearStudyScreenTimeout()
@@ -366,6 +375,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        // Also handles returning via Home/back without a successful recording result.
+        finishRecordingScreenProtection()
         KioskPolicy(this).apply {
             revokeSystemAudioPlaybackAccess()
             markManagedActivityForeground()
@@ -472,7 +483,6 @@ private fun HomeworkBuddyApp() {
     var capturePhoto by remember { mutableStateOf<Uri?>(null) }
     var pendingPhotos by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var pendingAudio by remember { mutableStateOf<Uri?>(null) }
-    var recordingAudio by remember { mutableStateOf(false) }
     var recordedAudioTaskId by remember { mutableStateOf<String?>(null) }
     var recordedAudioElapsedSeconds by remember { mutableIntStateOf(0) }
     var recordedAudioUri by remember { mutableStateOf<String?>(null) }
@@ -589,10 +599,8 @@ private fun HomeworkBuddyApp() {
         HomeworkStatusStore(context).save(dayTasks, selectedId, remainingSeconds, running, taskElapsedSeconds)
     }
 
-    LaunchedEffect(running, recordingAudio) {
-        // Recording uses the system recorder, which may otherwise let the
-        // display sleep when the tablet is not charging.
-        (activity as? MainActivity)?.setHomeworkInProgress(running || recordingAudio)
+    LaunchedEffect(running) {
+        (activity as? MainActivity)?.setHomeworkInProgress(running)
     }
 
     LaunchedEffect(running, taskStartedAtMillis, selectedId) {
@@ -762,7 +770,7 @@ private fun HomeworkBuddyApp() {
         KioskPolicy(context).revokeCameraCaptureAccess()
     }
     val recordAudio = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        recordingAudio = false
+        (activity as? MainActivity)?.finishRecordingScreenProtection()
         if (result.resultCode == Activity.RESULT_OK) {
             // Keep only the system recorder's local URI. It is never uploaded
             // or downloaded from Trello when the child views the recording.
@@ -1056,10 +1064,11 @@ private fun HomeworkBuddyApp() {
                     KioskPolicy(context).allowSystemRecorderForCapture()
                     (activity as? MainActivity)?.allowManagedActivityLaunch()
                     runCatching {
-                        recordingAudio = true
+                        // Acquire synchronously before the external Activity takes over.
+                        (activity as? MainActivity)?.keepScreenOnForRecording()
                         recordAudio.launch(Intent(MediaStore.Audio.Media.RECORD_SOUND_ACTION))
                     }.onFailure {
-                        recordingAudio = false
+                        (activity as? MainActivity)?.finishRecordingScreenProtection()
                         KioskPolicy(context).revokeSystemRecorderAccess()
                         connectionError = "无法打开系统录音机，请检查系统录音应用是否可用。"
                     }
