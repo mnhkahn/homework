@@ -282,11 +282,27 @@ class HomeworkApi(private val context: Context) {
     private fun dateAt(epochSeconds: Long) = java.time.Instant.ofEpochSecond(epochSeconds).atZone(HOMEWORK_ZONE).toLocalDate()
 
     private fun attachmentMetadata(uri: Uri, submissionId: String, index: Int): Pair<String, String> {
-        val mimeType = context.contentResolver.getType(uri) ?: "application/octet-stream"
-        val extension = MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType)
-            ?: if (mimeType.startsWith("audio/")) "m4a" else "jpg"
-        val prefix = if (mimeType.startsWith("audio/")) "homework-audio" else "homework"
+        val suppliedMimeType = context.contentResolver.getType(uri)
+        val pathExtension = uri.lastPathSegment?.substringAfterLast('.', "")?.lowercase().orEmpty()
+        val audioExtension = pathExtension.takeIf { it in AUDIO_EXTENSIONS }
+        val isAudio = suppliedMimeType?.startsWith("audio/", true) == true || audioExtension != null
+        val mimeType = suppliedMimeType?.takeIf { it != "application/octet-stream" }
+            ?: audioExtension?.let(::audioMimeType)
+            ?: if (isAudio) "audio/mp4" else "image/jpeg"
+        val extension = if (isAudio) audioExtension ?: MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType) ?: "m4a"
+            else MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType) ?: "jpg"
+        val prefix = if (isAudio) "homework-audio" else "homework"
         return "$prefix-$submissionId-${index + 1}.$extension" to mimeType
+    }
+
+    private fun audioMimeType(extension: String): String = when (extension) {
+        "mp3" -> "audio/mpeg"
+        "wav" -> "audio/wav"
+        "3gp", "3gpp" -> "audio/3gpp"
+        "amr" -> "audio/amr"
+        "aac" -> "audio/aac"
+        "ogg", "opus" -> "audio/ogg"
+        else -> "audio/mp4"
     }
 
     private fun attachFile(taskId: String, attachment: Uri, name: String, mimeType: String) {
@@ -367,6 +383,7 @@ class HomeworkApi(private val context: Context) {
         private const val TODO_LIST_NAME = "待完成"
         private const val DONE_LIST_NAME = "已完成"
         private const val MAX_PHOTOS = 4
+        private val AUDIO_EXTENSIONS = setOf("m4a", "mp4", "mp3", "wav", "3gp", "3gpp", "amr", "aac", "ogg", "opus")
         private val HOMEWORK_ZONE: ZoneId = ZoneId.of("Asia/Shanghai")
 
         /** Called by MainActivity for the app-link redirect after Trello consent. */

@@ -88,6 +88,7 @@ import androidx.lifecycle.ViewModelProvider
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
+import java.io.FileOutputStream
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.Instant
@@ -106,6 +107,21 @@ private val TodoSurface @Composable get() = LocalHomeColors.current.sky
 private val OverdueSurface = Color(0xFFFFE8E6)
 private val OverdueInk = Color(0xFFB3261E)
 private const val MAX_HOMEWORK_PHOTOS = 4
+
+private fun copyHomeworkRecording(context: Context, source: Uri): Uri {
+    val extension = source.lastPathSegment?.substringAfterLast('.', "")
+        ?.lowercase()?.takeIf { it.matches(Regex("[a-z0-9]{2,5}")) } ?: "m4a"
+    val directory = File(context.filesDir, "pending-audio").apply { mkdirs() }
+    val destination = File(directory, "recording-${System.currentTimeMillis()}.$extension")
+    val input = context.contentResolver.openInputStream(source) ?: error("无法读取系统录音")
+    input.use { stream -> FileOutputStream(destination).use { output -> stream.copyTo(output) } }
+    return Uri.fromFile(destination)
+}
+
+private fun deletePendingHomeworkRecording(context: Context, uri: Uri?) {
+    val file = uri?.path?.let(::File) ?: return
+    if (file.parentFile == File(context.filesDir, "pending-audio")) file.delete()
+}
 
 private fun elapsedLabel(seconds: Int): String {
     val minutes = seconds.coerceAtLeast(0) / 60
@@ -483,7 +499,6 @@ private fun HomeworkBuddyApp() {
     var capturePhoto by remember { mutableStateOf<Uri?>(null) }
     var pendingPhotos by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var pendingAudio by remember { mutableStateOf<Uri?>(null) }
-    var recordedAudioTaskId by remember { mutableStateOf<String?>(null) }
     var recordedAudioElapsedSeconds by remember { mutableIntStateOf(0) }
     var recordedAudioUri by remember { mutableStateOf<String?>(null) }
     var submissionTask by remember { mutableStateOf<HomeworkTask?>(null) }
@@ -664,43 +679,6 @@ private fun HomeworkBuddyApp() {
         historyRevision++
     }
 
-    LaunchedEffect(recordedAudioTaskId) {
-        val taskId = recordedAudioTaskId ?: return@LaunchedEffect
-        val current = submissionTask?.takeIf { it.id == taskId } ?: tasks.firstOrNull { it.id == taskId }
-        if (current == null) {
-            recordedAudioTaskId = null
-            return@LaunchedEffect
-        }
-        submittingTaskId = taskId
-        val submissionId = java.util.UUID.randomUUID().toString()
-        runCatching { api.completeWithoutAttachment(taskId) }
-            .onSuccess {
-                CompletionHistoryStore(context).noteTasks(listOf(current))
-                CompletionHistoryStore(context).recordCompletion(
-                    taskId,
-                    System.currentTimeMillis() / 1_000,
-                    current.dueDate.atTime(current.deadline).atZone(ZoneId.systemDefault()).toEpochSecond(),
-                    current.startedAtEpochSeconds,
-                    recordedAudioElapsedSeconds,
-                    recordedAudioUri,
-                )
-                advanceAfterCompletion(taskId, recordedAudioUri)
-                celebration = CelebrationEvent(current.title, current.dueDate == LocalDate.now() && tasks.isNotEmpty() && tasks.all { it.status == TaskStatus.COMPLETED }, current.dueDate.isAfter(LocalDate.now()))
-                refreshRequest++
-            }
-            .onFailure { error ->
-                // The audio remains only in the system recorder.  Queueing this
-                // record retries the Trello completion state, never the file.
-                pendingStore.add(PendingSubmission(taskId, emptyList(), current.status == TaskStatus.OVERTIME, submissionId, completionOnly = true))
-                if (error is AuthorizationExpiredException) reportSyncError(error, "")
-                else connectionError = "录音已保存在系统录音机；作业完成状态将在联网后同步。"
-            }
-        submittingTaskId = null
-        submissionTask = null
-        recordedAudioTaskId = null
-        recordedAudioUri = null
-    }
-
     fun celebrateRetriedSubmission(taskId: String) {
         val task = (tasks + weekTasks).firstOrNull { it.id == taskId && it.status != TaskStatus.COMPLETED } ?: return
         val history = CompletionHistoryStore(context)
@@ -746,6 +724,8 @@ private fun HomeworkBuddyApp() {
                             )
                         }.onSuccess {
                             pendingStore.remove(pending.taskId)
+                            pending.photoPaths.mapNotNull { runCatching { Uri.parse(it) }.getOrNull() }
+                                .forEach { deletePendingHomeworkRecording(context, it) }
                             celebrateRetriedSubmission(pending.taskId)
                             uploadedAnything = true
                         }
@@ -772,11 +752,22 @@ private fun HomeworkBuddyApp() {
     val recordAudio = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         (activity as? MainActivity)?.finishRecordingScreenProtection()
         if (result.resultCode == Activity.RESULT_OK) {
-            // Keep only the system recorder's local URI. It is never uploaded
-            // or downloaded from Trello when the child views the recording.
-            recordedAudioTaskId = submissionTask?.id ?: selectedId.takeIf { it.isNotBlank() }
-            recordedAudioElapsedSeconds = taskElapsedSeconds
-            recordedAudioUri = result.data?.data?.toString()
+            val source = result.data?.data
+            if (source == null) {
+                connectionError = "录音机没有返回录音文件，请重新录制。"
+            } else {
+                // The recorder's grant can be temporary. Keep an app-owned copy
+                // for Trello uploads and offline retries, while retaining the
+                // recorder URI separately for local playback/history.
+                runCatching { copyHomeworkRecording(context, source) }
+                    .onSuccess { uploadCopy ->
+                        pendingAudio = uploadCopy
+                        recordedAudioUri = source.toString()
+                        recordedAudioElapsedSeconds = taskElapsedSeconds
+                        showCameraConfirm = true
+                    }
+                    .onFailure { error -> connectionError = "无法保存录音：${error.message ?: "请重试"}" }
+            }
         }
         KioskPolicy(context).revokeSystemRecorderAccess()
     }
@@ -1038,6 +1029,7 @@ private fun HomeworkBuddyApp() {
                     pendingStore.remove(current.id)
                     pendingPhotos = emptyList()
                     pendingAudio = null
+                    recordedAudioUri = null
                     val file = File(context.cacheDir, "photos/${current.id}-${System.currentTimeMillis()}.jpg").also { it.parentFile?.mkdirs() }
                     capturePhoto = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
                     if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
@@ -1060,6 +1052,7 @@ private fun HomeworkBuddyApp() {
                     Log.i("HomeworkSubmit", "audio_mode task=${current.id}")
                     pendingStore.remove(current.id)
                     pendingPhotos = emptyList()
+                    recordedAudioUri = null
                     pendingAudio = null
                     KioskPolicy(context).allowSystemRecorderForCapture()
                     (activity as? MainActivity)?.allowManagedActivityLaunch()
@@ -1084,27 +1077,27 @@ private fun HomeworkBuddyApp() {
                 }
             },
             onSubmit = {
-                val photos = pendingPhotos
+                val attachments = pendingPhotos + listOfNotNull(pendingAudio)
                 val current = selected
                 val elapsedSeconds = taskElapsedSeconds
-                if (photos.isEmpty() || !connected || current == null) {
+                if (attachments.isEmpty() || !connected || current == null) {
                     connectionError = "请先关联 Trello 后再提交作业。"
                 } else if (submittingTaskId == null) {
                     submittingTaskId = current.id
                     val submissionId = java.util.UUID.randomUUID().toString()
                     scope.launch {
-                        runCatching { api.submit(current.id, photos, current.status == TaskStatus.OVERTIME, submissionId) }
+                        runCatching { api.submit(current.id, attachments, current.status == TaskStatus.OVERTIME, submissionId) }
                             .onSuccess {
                                 CompletionHistoryStore(context).noteTasks(listOf(current))
-                                CompletionHistoryStore(context).recordCompletion(current.id, System.currentTimeMillis() / 1_000, current.dueDate.atTime(current.deadline).atZone(ZoneId.systemDefault()).toEpochSecond(), current.startedAtEpochSeconds, elapsedSeconds)
-                                advanceAfterCompletion(current.id, photos.first().toString())
+                                CompletionHistoryStore(context).recordCompletion(current.id, System.currentTimeMillis() / 1_000, current.dueDate.atTime(current.deadline).atZone(ZoneId.systemDefault()).toEpochSecond(), current.startedAtEpochSeconds, if (recordedAudioUri != null) recordedAudioElapsedSeconds else elapsedSeconds, recordedAudioUri)
+                                advanceAfterCompletion(current.id, recordedAudioUri ?: attachments.first().toString())
                                 celebration = CelebrationEvent(current.title, current.dueDate == LocalDate.now() && tasks.isNotEmpty() && tasks.all { it.status == TaskStatus.COMPLETED }, current.dueDate.isAfter(LocalDate.now()))
                                 refreshRequest++
-                                showCameraConfirm = false; pendingPhotos = emptyList(); pendingAudio = null
+                                showCameraConfirm = false; pendingPhotos = emptyList(); deletePendingHomeworkRecording(context, pendingAudio); pendingAudio = null; recordedAudioUri = null
                             }
                             .onFailure { error ->
-                                pendingStore.add(PendingSubmission(current.id, photos.map(Uri::toString), current.status == TaskStatus.OVERTIME, submissionId))
-                                showCameraConfirm = false; pendingPhotos = emptyList(); pendingAudio = null
+                                pendingStore.add(PendingSubmission(current.id, attachments.map(Uri::toString), current.status == TaskStatus.OVERTIME, submissionId))
+                                showCameraConfirm = false; pendingPhotos = emptyList(); pendingAudio = null; recordedAudioUri = null
                                 if (error is AuthorizationExpiredException) reportSyncError(error, "")
                                 else connectionError = "作业附件和完成状态尚未同步到 Trello，任务仍是待完成；联网后会自动重试。"
                             }
@@ -1164,7 +1157,7 @@ private fun HomeworkBuddyApp() {
                 }
             },
             onDismissSubmissionChoice = { showSubmissionChoice = false; submissionTask = null },
-            onRetake = { submissionTask = null; showCameraConfirm = false; capturePhoto = null; pendingPhotos = emptyList(); pendingAudio = null },
+            onRetake = { submissionTask = null; showCameraConfirm = false; capturePhoto = null; pendingPhotos = emptyList(); deletePendingHomeworkRecording(context, pendingAudio); pendingAudio = null; recordedAudioUri = null },
             onDismissTextSubmission = { if (submittingTaskId == null) { showTextSubmission = false; submissionText = ""; submissionTask = null } },
         )
         celebration?.let { event -> CelebrationDialog(event.taskTitle, event.allTasksComplete, event.completedEarly) { celebration = null } }
@@ -1342,7 +1335,7 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
         title = { Text("怎么提交作业？") },
         text = {
             Column {
-                Text("可以拍作业照片、录一段音频，或直接提交文字内容。录音只保留在系统录音机里，不会上传。")
+                Text("可以拍作业照片、录一段音频，或直接提交文字内容。录音确认后会作为附件上传到 Trello。")
                 TextButton(onClick = onChooseText) { Text("✏️ 提交文字") }
             }
         },
