@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
@@ -15,10 +16,12 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -115,6 +118,16 @@ private fun GameScreen(initialUrl: String, finish: () -> Unit) {
                     modifier = Modifier.padding(start = 14.dp),
                     fontSize = 24.sp,
                 )
+                Spacer(Modifier.weight(1f))
+                FilledTonalIconButton(onClick = {
+                    webView?.apply {
+                        // Clear HTTP resources, preserving cookies and saved learning text.
+                        clearCache(true)
+                        reload()
+                    }
+                }) {
+                    Icon(Icons.Outlined.Refresh, "刷新网页")
+                }
             }
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
@@ -122,6 +135,11 @@ private fun GameScreen(initialUrl: String, finish: () -> Unit) {
                     WebView(context).apply {
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
+                        if (Uri.parse(initialUrl).path == "/ai/translate") {
+                            // The textbook script has a stable URL and a seven-day
+                            // HTTP lifetime. Always fetch current learning content.
+                            settings.cacheMode = WebSettings.LOAD_NO_CACHE
+                        }
                         settings.javaScriptCanOpenWindowsAutomatically = false
                         settings.setSupportMultipleWindows(false)
                         webViewClient = object : WebViewClient() {
