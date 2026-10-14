@@ -14,6 +14,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- Foreground-app detection for the study-time block screen. Granted by the
@@ -103,6 +104,14 @@
             android:name=".XiaoliConnectionService"
             android:exported="false"
             android:foregroundServiceType="remoteMessaging|camera" />
+        <service
+            android:name=".MediaVolumeService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Maintain an audible minimum media volume on a parent-managed tablet in both study and normal modes" />
+        </service>
         <service
             android:name=".StudySessionService"
             android:exported="false"

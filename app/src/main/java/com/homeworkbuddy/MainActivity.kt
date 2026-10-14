@@ -198,7 +198,7 @@ private object CelebrationSound {
             startSample += samplesForNote
         }
         val track = AudioTrack.Builder()
-            // Study mode locks and maintains STREAM_MUSIC.  Use the matching media
+            // Both modes maintain a minimum STREAM_MUSIC volume. Use matching media
             // usage instead of the system-sonification stream, which some devices
             // independently silence even when the configured study volume is audible.
             .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())

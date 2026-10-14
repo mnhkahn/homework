@@ -443,7 +443,7 @@ private fun ChildLauncher(activity: ChildLauncherActivity) {
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Text("学习音量 ${policy.studyVolumePercent(volume)}%", fontWeight = FontWeight.Medium)
+                Text("媒体音量 ${policy.studyVolumePercent(volume)}%", fontWeight = FontWeight.Medium)
                 OutlinedButton(
                     enabled = volume > minimumVolume,
                     onClick = { volume = policy.setStudyVolume(volume - 1) },

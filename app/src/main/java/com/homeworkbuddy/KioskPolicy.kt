@@ -84,25 +84,22 @@ class KioskPolicy(private val context: Context) {
     private val mediaVolume: Int
         get() = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
 
-    /** Sets the saved level and applies it immediately when study mode is active. */
+    /** Sets the shared level and applies it immediately in either mode. */
     fun setStudyVolume(volume: Int): Int {
         val safeVolume = volume.coerceIn(minimumStudyVolume, maximumStudyVolume)
         prefs.edit().putInt("study_media_volume", safeVolume).apply()
-        if (mode() == KioskMode.STUDY) {
-            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, safeVolume, 0)
-        }
+        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, safeVolume, 0)
         return safeVolume
     }
 
     /**
-     * Allows normal volume changes during study time, while restoring only levels
-     * below the audible minimum.  This also remembers a hardware-key adjustment
-     * for the next study session.
+     * Allows volume changes in either mode, while restoring levels below the
+     * audible minimum. Also remembers hardware-key adjustments for the shared UI.
      */
-    fun enforceStudyVolume() {
-        if (mode() != KioskMode.STUDY) return
-        val safeVolume = mediaVolume.coerceIn(minimumStudyVolume, maximumStudyVolume)
-        if (mediaVolume != safeVolume) {
+    fun enforceMediaVolume() {
+        val actualVolume = mediaVolume
+        val safeVolume = actualVolume.coerceIn(minimumStudyVolume, maximumStudyVolume)
+        if (actualVolume != safeVolume) {
             audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, safeVolume, 0)
         }
         if (currentStudyVolume != safeVolume) {
@@ -296,6 +293,8 @@ class KioskPolicy(private val context: Context) {
 
     fun applyForCurrentTime(activity: Activity? = null, navigate: Boolean = false) {
         if (!isDeviceOwner) return
+        enforceMediaVolume()
+        MediaVolumeService.start(context)
         enableStayAwakeWhilePluggedIn()
         val current = mode()
         if (current != KioskMode.STUDY) {
@@ -564,7 +563,7 @@ class KioskPolicy(private val context: Context) {
             runCatching { dpm.clearUserRestriction(admin, UserManager.DISALLOW_CREATE_WINDOWS) }
             runCatching { dpm.clearUserRestriction(admin, UserManager.DISALLOW_ADJUST_VOLUME) }
             runCatching { dpm.setStatusBarDisabled(admin, false) }
-            enforceStudyVolume()
+            enforceMediaVolume()
         } else {
             runCatching { dpm.clearUserRestriction(admin, UserManager.DISALLOW_CREATE_WINDOWS) }
             runCatching { dpm.clearUserRestriction(admin, UserManager.DISALLOW_ADJUST_VOLUME) }

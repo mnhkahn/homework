@@ -36,8 +36,6 @@ class StudySessionService : Service() {
                 stopSelf()
                 return
             }
-            // Keep the media volume above the audible study-time minimum.
-            policy.enforceStudyVolume()
             val importance = getSystemService(ActivityManager::class.java)
                 .runningAppProcesses
                 ?.firstOrNull { it.pid == Process.myPid() }
