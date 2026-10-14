@@ -46,6 +46,24 @@ Device Owner 模式下，Chrome 始终加入学习应用白名单。进入学习
 
 设备验收：在 `chrome://policy` 确认两项策略状态和值，测试主域名、子域名、站外跳转及登录/音频流程；再测试临时开放、恢复学习、定时结束和学习期间重启。Chrome 策略实际生效需要在目标设备验证。
 
+## Firebase
+
+Android 应用 `com.homeworkbuddy` 已配置 Firebase 项目 `homework-70b75`，配置文件位于 `app/google-services.json`。Gradle 使用 Firebase BoM 管理 Analytics 和 Crashlytics 的 SDK 版本。
+
+BoM 固定为 `34.0.0`，以兼容项目的 Kotlin `2.0.21`；升级 Firebase 时应同时检查 Kotlin 元数据兼容性。
+
+- Analytics 自动采集启动、会话等基础事件，尚未添加作业内容或完成记录等业务事件。
+- Crashlytics 自动收集崩溃；Gradle 插件为构建生成所需配置，启用代码混淆后支持上传映射文件。
+
+设备验证需要联网。Analytics 可用以下命令开启 DebugView，验证完后关闭：
+
+```bash
+adb shell setprop debug.firebase.analytics.app com.homeworkbuddy
+adb shell setprop debug.firebase.analytics.app .none.
+```
+
+Crashlytics 需要通过受控测试崩溃、重启应用后确认控制台收到报告。当前未增加会主动崩溃的入口。若控制台仍提示应用数据流创建失败，请在项目的 Google Analytics 集成中完成数据流设置；仅编译成功不能确认云端采集成功。
+
 ## Trello 同步
 
 任务模型和 `HomeworkTaskSource` 已作为独立接口放在 `app/src/main/java/com/homeworkbuddy/HomeworkTask.kt`。当前页面使用 `PreviewTaskSource` 的演示任务，以便在尚未配置服务端时完整验证界面和交互。
