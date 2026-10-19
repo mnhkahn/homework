@@ -151,10 +151,14 @@ JSON 描述也支持 `{"type":"arithmetic","task":"26 + 17 = ___\n54 − 28 = __
 - `self.notify.send`
 - `self.audio_speaker.play_ogg_url`（流式播放服务端提供的 Ogg/Opus 音频）
 - `self.audio_speaker.stop`（停止当前音频播放）
-- `self.camera.take_photo`（应用内单次拍照；会显示“正在拍照”提示并播放提示音，不打开系统相机）
+- `self.camera.take_photo`（先截取当前全屏，再在应用内单次拍照，将两张图一起交给小李视觉模型检查；拍照会显示提示并播放提示音，不打开系统相机）
 - `self.camera.record_video`（前台调起系统相机录制小视频，默认最长 15 秒、上限 30 秒）
 - `self.camera.start_stream` / `self.camera.stop_stream`（应用内共享学习画面；平板提示并播放提示音，1–3 fps；未充电默认及最长 5 分钟，充电或已充满时默认及最长 15 分钟，可随时手动停止；时长按启动时的充电状态确定）
 - `self.kiosk.pause_15_minutes`（复用既有的临时开放 15 分钟逻辑）
+
+屏幕截图需要 Android 11 及以上。在“家长设置 → 小李连接 → 配置屏幕截图权限”进入系统无障碍设置，手动开启“作业小伙伴屏幕截图”。服务只在收到 `self.camera.take_photo` 请求时截图，不读取无障碍节点或监听页面事件。截图保留当时桌面、微信等前台画面，不切换应用；长边最多 1600 像素，JPEG 单张不超过 2 MB。熄屏、未授权、超时或系统拒绝时继续提交相机照片，并在 MCP 返回中明确说明截图失败。系统安全保护的内容可能无法截取或被遮黑。
+
+双图上传继续使用 `/mcp/vision/explain`：`image` 为 `photo.jpg`，可选 `screenshot` 为 `screenshot.jpg`，文本字段为 `question` 和可选的 `screenshot_error`。需要同步更新小李服务端的多图接收和视觉模型请求；`self.camera.snapshot` 保持原有单张上传协议。
 
 这里的 MCP 是手写 JSON-RPC over WebSocket（小智风格 envelope），未使用官方 MCP SDK——因为服务端不是标准 MCP transport，官方 SDK 无内置 WebSocket transport。
 

@@ -1,0 +1,4 @@
+<resources>
+    <string name="screen_capture_service_label">作业小伙伴屏幕截图</string>
+    <string name="screen_capture_service_description">家长远程请求拍照检查时，同时截取平板当前显示的画面（包括桌面和其他应用），上传给小李分析。只在收到请求时截图。</string>
+</resources>

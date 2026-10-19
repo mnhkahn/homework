@@ -10,7 +10,7 @@ import java.util.UUID
 
 /** Sends a paired tablet's photo to the server-side vision model for MCP calls. */
 object VisionExplainUploader {
-    fun explain(context: Context, photo: JSONObject, question: String): String {
+    fun explain(context: Context, photo: JSONObject, question: String, screenshot: JSONObject? = null, screenshotError: String? = null): String {
         val config = XiaoliDeviceStore.config(context)
             ?: throw McpException(-32010, "设备尚未配对")
         val jpeg = photo.optString("image_base64").takeIf { it.isNotBlank() }
@@ -19,7 +19,9 @@ object VisionExplainUploader {
         if (jpeg.size > 2 * 1024 * 1024) throw McpException(-32005, "拍照失败：图片压缩后仍超过 2 MB")
 
         val boundary = "----HomeworkBuddy${UUID.randomUUID()}"
-        val body = multipartBody(boundary, jpeg, question)
+        val screenshotJpeg = screenshot?.getString("image_base64")?.let { Base64.decode(it, Base64.NO_WRAP) }
+        if (screenshotJpeg != null && screenshotJpeg.size > 2 * 1024 * 1024) throw McpException(-32005, "截图超过 2 MB")
+        val body = multipartBody(boundary, jpeg, question, screenshotJpeg, screenshotError)
         val endpoint = explainEndpoint(config.websocketUrl)
         val connection = try {
             (URI(endpoint).toURL().openConnection() as HttpURLConnection).apply {
@@ -58,12 +60,20 @@ object VisionExplainUploader {
         }
     }
 
-    private fun multipartBody(boundary: String, jpeg: ByteArray, question: String): ByteArray = ByteArrayOutputStream().use { output ->
+    internal fun multipartBody(boundary: String, jpeg: ByteArray, question: String, screenshot: ByteArray? = null, screenshotError: String? = null): ByteArray = ByteArrayOutputStream().use { output ->
         fun text(value: String) = output.write(value.toByteArray(Charsets.UTF_8))
         text("--$boundary\r\nContent-Disposition: form-data; name=\"image\"; filename=\"photo.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n")
         output.write(jpeg)
+        if (screenshot != null) {
+            text("\r\n--$boundary\r\nContent-Disposition: form-data; name=\"screenshot\"; filename=\"screenshot.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n")
+            output.write(screenshot)
+        }
         text("\r\n--$boundary\r\nContent-Disposition: form-data; name=\"question\"\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n")
         text(question)
+        if (screenshotError != null) {
+            text("\r\n--$boundary\r\nContent-Disposition: form-data; name=\"screenshot_error\"\r\n\r\n")
+            text(screenshotError)
+        }
         text("\r\n--$boundary--\r\n")
         output.toByteArray()
     }

@@ -50,14 +50,22 @@ object McpTools {
         ToolRegistration("self.audio_speaker.stop", "停止当前音频播放", emptySchema()) { context, _ ->
             RemoteAudioPlayer.stop(context)
         },
-        ToolRegistration("self.camera.take_photo", "拍摄学习照片并由小李视觉模型回答检查问题", JSONObject()
+        ToolRegistration("self.camera.take_photo", "拍摄学习照片并截取当前屏幕，由小李视觉模型结合两张图回答检查问题", JSONObject()
             .put("type", "object")
             .put("properties", JSONObject().put("question", JSONObject().put("type", "string")))
             .put("required", JSONArray().put("question"))) { context, arguments ->
             val question = arguments.optString("question").trim()
             if (question.isBlank()) throw McpException(-32602, "self.camera.take_photo 缺少 question")
+            var screenshotError: String? = null
+            val screenshot = try {
+                runBlocking { ScreenCaptureService.capture() }
+            } catch (error: Exception) {
+                screenshotError = if (error is kotlinx.coroutines.TimeoutCancellationException) "屏幕截图超时" else error.message ?: "屏幕截图失败"
+                null
+            }
             val photo = runBlocking { RemotePhotoCoordinator.take(context, "vga") }
-            JSONObject().put("raw_response", VisionExplainUploader.explain(context, photo, question))
+            val answer = VisionExplainUploader.explain(context, photo, question, screenshot, screenshotError)
+            JSONObject().put("raw_response", if (screenshotError == null) answer else "$answer\n屏幕截图未提交：$screenshotError")
         },
         ToolRegistration("self.camera.snapshot", "拍摄学习照片并安全上传到小李服务端", JSONObject()
             .put("type", "object")

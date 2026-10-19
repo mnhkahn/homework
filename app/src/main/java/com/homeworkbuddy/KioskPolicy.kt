@@ -370,6 +370,29 @@ class KioskPolicy(private val context: Context) {
         if (mode() == KioskMode.STUDY) applyAllowlist(KioskMode.STUDY)
     }
 
+    val isScreenshotSettingsAllowed: Boolean get() = prefs.getBoolean("screenshot_settings_allowed", false)
+
+    /** Parent-only permission setup must remain reachable during Lock Task. */
+    fun allowScreenshotSettings(): Boolean {
+        if (!isDeviceOwner || mode() != KioskMode.STUDY) return false
+        val packageName = context.packageManager.resolveActivity(
+            Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS), PackageManager.MATCH_DEFAULT_ONLY,
+        )?.activityInfo?.packageName ?: return false
+        prefs.edit().putBoolean("external_foreground_allowed", true)
+            .putBoolean("screenshot_settings_allowed", true).apply()
+        allowTemporarily(packageName)
+        return true
+    }
+
+    fun revokeScreenshotSettings() {
+        val packageName = context.packageManager.resolveActivity(
+            Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS), PackageManager.MATCH_DEFAULT_ONLY,
+        )?.activityInfo?.packageName ?: return
+        prefs.edit().putStringSet("temporary_packages", temporaryPackages - packageName)
+            .putBoolean("external_foreground_allowed", false).remove("screenshot_settings_allowed").apply()
+        if (isDeviceOwner && mode() == KioskMode.STUDY) applyAllowlist(KioskMode.STUDY)
+    }
+
     /** Allows the system recorder only while the child is recording homework. */
     fun allowSystemRecorderForCapture(): Boolean {
         if (!isDeviceOwner || mode() != KioskMode.STUDY) return false

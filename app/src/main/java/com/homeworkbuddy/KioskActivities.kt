@@ -120,6 +120,12 @@ private class ParentPinStore(context: Context) {
 }
 
 class KioskSettingsActivity : FragmentActivity() {
+    override fun onResume() {
+        super.onResume()
+        val policy = KioskPolicy(this)
+        if (policy.isScreenshotSettingsAllowed) policy.revokeScreenshotSettings()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -228,6 +234,11 @@ private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
     var endMinute by remember { mutableStateOf((policy.endMinutes % 60).toString()) }
     var message by remember { mutableStateOf<String?>(null) }
     val alarm = activity.getSystemService(AlarmManager::class.java)
+    var screenshotAvailable by remember { mutableStateOf(ScreenCaptureService.available) }
+    androidx.lifecycle.compose.LifecycleResumeEffect(Unit) {
+        screenshotAvailable = ScreenCaptureService.available
+        onPauseOrDispose { }
+    }
 
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 28.dp), contentPadding = PaddingValues(vertical = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
@@ -280,6 +291,16 @@ private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
                 Column(Modifier.fillMaxWidth().padding(16.dp)) {
                     Text("小李连接", fontSize = 21.sp, fontWeight = FontWeight.Medium)
                     Text("扫码绑定这台平板，让小李可查询作业、发送通知、请求拍照和临时开放 15 分钟。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(if (screenshotAvailable) "屏幕截图服务已连接" else "屏幕截图服务未连接", modifier = Modifier.padding(top = 10.dp))
+                    Text("远程拍照检查会同时上传当前屏幕，包括桌面及其他应用。需 Android 11 及以上，并在系统无障碍设置中启用“作业小伙伴屏幕截图”。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    OutlinedButton(enabled = Build.VERSION.SDK_INT >= 30, onClick = {
+                        policy.allowScreenshotSettings()
+                        runCatching { activity.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+                            .onFailure {
+                                if (policy.isScreenshotSettingsAllowed) policy.revokeScreenshotSettings()
+                                message = "无法打开无障碍设置：${it.message}"
+                            }
+                    }) { Text("配置屏幕截图权限") }
                     Button(onClick = { activity.startActivity(Intent(activity, XiaoliSettingsActivity::class.java)) }, modifier = Modifier.padding(top = 10.dp)) { Text("配置小李连接") }
                 }
             }
