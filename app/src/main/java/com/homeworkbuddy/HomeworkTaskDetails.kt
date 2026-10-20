@@ -18,6 +18,7 @@ data class HomeworkTaskDetails(
         private val taskLine = Regex("(?im)^\\s*(?:task|作业内容)\\s*[:：]\\s*(.+?)\\s*$")
         private val wordLine = Regex("(?im)^\\s*背单词\\s*[:：]\\s*(.+?)\\s*$")
         private val translationLinkLine = Regex("(?im)^\\s*翻译链接\\s*[:：]\\s*(https?://\\S+)\\s*$")
+        private val homeworkLinkLine = Regex("(?im)^[\\t ]*(?:link|链接|作业链接)[\\t ]*[:：][\\t ]*(\\S+)[\\t ]*$")
         private val durationLine = Regex("(?im)^\\s*预计用时\\s*[:：].*$")
         private val vocabulary = Regex("^[A-Za-z]+(?:['’-][A-Za-z]+)*(?: +[A-Za-z]+(?:['’-][A-Za-z]+)*)*$")
         private val vocabularyAnnotation = Regex("\\(([^()]*)\\)|（([^（）]*)）")
@@ -44,6 +45,7 @@ data class HomeworkTaskDetails(
                 ?: taskLine.find(description)?.groupValues?.getOrNull(1)?.trim()
                 ?: description.withoutMetadata().ifBlank { null }
             val suppliedLink = json?.optString("link")?.ifBlank { null }
+                ?: homeworkLinkLine.find(description)?.groupValues?.getOrNull(1)?.trim()
                 ?: translationLinkLine.find(description)?.groupValues?.getOrNull(1)?.trim()
 
             return when (explicit) {
@@ -59,23 +61,30 @@ data class HomeworkTaskDetails(
                 }
                 HomeworkTaskType.PDF_ATTACHMENT -> HomeworkTaskDetails(HomeworkTaskType.PDF_ATTACHMENT, rawTask)
                 HomeworkTaskType.ARITHMETIC -> HomeworkTaskDetails(HomeworkTaskType.ARITHMETIC, rawTask)
-                HomeworkTaskType.NORMAL -> HomeworkTaskDetails(HomeworkTaskType.NORMAL, rawTask)
-                null -> infer(rawTask)
+                HomeworkTaskType.NORMAL -> HomeworkTaskDetails(HomeworkTaskType.NORMAL, rawTask, homeworkLink(suppliedLink, rawTask))
+                null -> infer(rawTask).let { inferred ->
+                    if (inferred.type == HomeworkTaskType.NORMAL) inferred.copy(link = homeworkLink(suppliedLink, rawTask))
+                    else inferred
+                }
             }
         }
+
+        private fun homeworkLink(suppliedLink: String?, rawTask: String?): String? =
+            (suppliedLink ?: rawTask?.trim())?.takeIf(HomeworkLinks::isWebUrl)
 
         private fun infer(rawTask: String?): HomeworkTaskDetails {
             val value = rawTask?.trim().orEmpty()
             if (isEnglishReadingLink(value)) return HomeworkTaskDetails(HomeworkTaskType.ENGLISH_READING, value, value)
             val normalizedWords = value.wordsFromLink() ?: words(value)
             return if (normalizedWords != null) HomeworkTaskDetails(HomeworkTaskType.WORD_MEMORIZATION, normalizedWords, normalizedWords.wordLink())
-            else HomeworkTaskDetails(HomeworkTaskType.NORMAL, rawTask)
+            else HomeworkTaskDetails(HomeworkTaskType.NORMAL, rawTask, homeworkLink(null, rawTask))
         }
 
         private fun String.withoutMetadata(): String = durationLine.replace(this, "")
             .let { typeLine.replace(it, "") }
             .let { wordLine.replace(it, "") }
             .let { translationLinkLine.replace(it, "") }
+            .let { homeworkLinkLine.replace(it, "") }
             .trim()
 
         private fun words(value: String?): String? {

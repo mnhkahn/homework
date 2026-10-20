@@ -1819,10 +1819,34 @@ private fun formatStudyDuration(seconds: Long): String {
                 Text("查看照片（${photos.size} 张）")
             }
         }
+        HomeworkLinkButton(task)
         PdfAttachmentButtons(task)
         audio?.let { LocalRecordingButton(it) }
     }
     if (showPhotos) PhotoViewer(photos, HomeworkApi(context)) { showPhotos = false }
+}
+
+@Composable private fun HomeworkLinkButton(task: HomeworkTask, enabled: Boolean = true) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    task.link?.let { link ->
+        FilledTonalButton(onClick = {
+            when (task.type) {
+                HomeworkTaskType.NORMAL -> {
+                    (context as? MainActivity)?.allowManagedActivityLaunch()
+                    context.startActivity(GameActivity.homeworkIntent(context, link))
+                }
+                HomeworkTaskType.WORD_MEMORIZATION -> (context as? MainActivity)?.openWordLearningPage(link)
+                else -> context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link)))
+            }
+        }, enabled = enabled) {
+            Text(when (task.type) {
+                HomeworkTaskType.WORD_MEMORIZATION -> "打开背单词"
+                HomeworkTaskType.ENGLISH_READING -> "打开英语阅读"
+                HomeworkTaskType.PDF_ATTACHMENT -> "预览 PDF"
+                else -> "打开作业链接"
+            })
+        }
+    }
 }
 
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
@@ -1832,7 +1856,6 @@ private fun formatStudyDuration(seconds: Long): String {
         return
     }
     val overdue = task.status == TaskStatus.OVERTIME
-    val context = androidx.compose.ui.platform.LocalContext.current
     Column(modifier.clip(RoundedCornerShape(26.dp)).background(if (overdue) OverdueSurface else Sun).padding(18.dp), horizontalAlignment = Alignment.Start) {
         // Keep the existing home shell and actions; arithmetic owns only the detail area.
         if (task.type == HomeworkTaskType.ARITHMETIC && (running || task.startedAtEpochSeconds != null)) {
@@ -1866,23 +1889,7 @@ private fun formatStudyDuration(seconds: Long): String {
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Button(onClick = onStart, enabled = task.status != TaskStatus.COMPLETED && !submitting && !running) { Text(if (running) "正在做" else "开始做") }
-            task.link?.let { link ->
-                FilledTonalButton(onClick = {
-                    if (task.type == HomeworkTaskType.WORD_MEMORIZATION) {
-                        (context as? MainActivity)?.openWordLearningPage(link)
-                    } else {
-                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link)))
-                    }
-                }, enabled = task.status != TaskStatus.COMPLETED && !submitting) {
-                    Text(when (task.type) {
-                        HomeworkTaskType.WORD_MEMORIZATION -> "打开背单词"
-                        HomeworkTaskType.ENGLISH_READING -> "打开英语阅读"
-                        HomeworkTaskType.NORMAL -> "打开作业链接"
-                        HomeworkTaskType.PDF_ATTACHMENT -> "预览 PDF"
-                        HomeworkTaskType.ARITHMETIC -> "打开作业链接"
-                    })
-                }
-            }
+            HomeworkLinkButton(task, enabled = !submitting)
             PdfAttachmentButtons(task)
             if (pianoPractice != null) {
                 FilledTonalButton(onClick = onPianoRecord, enabled = pianoPractice.cooldownSeconds == 0 && task.status != TaskStatus.COMPLETED && !submitting) {

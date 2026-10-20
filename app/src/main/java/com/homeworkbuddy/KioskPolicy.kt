@@ -791,7 +791,7 @@ class KioskPolicy(private val context: Context) {
         const val LEARNING_BROWSER_PACKAGE = "com.android.chrome"
         private val STUDY_URL_BLOCKLIST = arrayOf("*")
         /** Domains the app itself opens in Chrome: learning pages, Trello consent, and the Pgyer update page. */
-        private val STUDY_URL_ALLOWLIST = arrayOf("cyeam.com", "trello.com", "pgyer.com")
+        private val STUDY_URL_ALLOWLIST = HomeworkLinks.studyAllowedHosts.toTypedArray()
         private const val BROWSER_RESTRICTIONS_BACKUP_KEY = "study_browser_restrictions_backup"
         private var launchableCache: Pair<Long, Set<String>>? = null
     }

@@ -11,6 +11,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -42,8 +43,11 @@ import androidx.compose.ui.viewinterop.AndroidView
 class GameActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val url = intent.getStringExtra(EXTRA_URL)?.takeIf(::isAllowedCyeamToolUrl) ?: GAME_24_URL
-        setContent { MaterialTheme { GameScreen(url, ::finish) } }
+        val homework = intent.getBooleanExtra(EXTRA_HOMEWORK, false)
+        val url = intent.getStringExtra(EXTRA_URL)?.takeIf {
+            if (homework) HomeworkLinks.isWebUrl(it) else isAllowedCyeamToolUrl(it)
+        } ?: run { finish(); return }
+        setContent { MaterialTheme { GameScreen(url, ::finish, homework) } }
     }
 
     override fun onResume() {
@@ -70,9 +74,13 @@ class GameActivity : ComponentActivity() {
         const val ARITHMETIC_URL = "https://www.cyeam.com/tool/arithmetic"
         const val ENGLISH_READING_URL = "https://www.cyeam.com/ai/translate"
         private const val EXTRA_URL = "game_url"
+        private const val EXTRA_HOMEWORK = "homework_link"
 
         fun intent(context: Context, url: String) =
             Intent(context, GameActivity::class.java).putExtra(EXTRA_URL, url)
+
+        fun homeworkIntent(context: Context, url: String) =
+            intent(context, url).putExtra(EXTRA_HOMEWORK, true)
 
         private fun isAllowedCyeamToolUrl(url: String): Boolean {
             if (url == GAME_24_URL || url == SUDOKU_URL || url == ARITHMETIC_URL || url == ENGLISH_READING_URL) return true
@@ -97,7 +105,7 @@ class GameActivity : ComponentActivity() {
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-private fun GameScreen(initialUrl: String, finish: () -> Unit) {
+private fun GameScreen(initialUrl: String, finish: () -> Unit, homework: Boolean = false) {
     var webView by remember { mutableStateOf<WebView?>(null) }
     val goBack = {
         webView?.takeIf(WebView::canGoBack)?.goBack() ?: finish()
@@ -114,7 +122,7 @@ private fun GameScreen(initialUrl: String, finish: () -> Unit) {
                     Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回学习应用")
                 }
                 Text(
-                    GameActivity.titleFor(initialUrl),
+                    if (homework) "作业链接" else GameActivity.titleFor(initialUrl),
                     modifier = Modifier.padding(start = 14.dp),
                     fontSize = 24.sp,
                 )
@@ -143,9 +151,16 @@ private fun GameScreen(initialUrl: String, finish: () -> Unit) {
                         settings.javaScriptCanOpenWindowsAutomatically = false
                         settings.setSupportMultipleWindows(false)
                         webViewClient = object : WebViewClient() {
-                            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
-                                !request.url.isCyeamUrl()
+                            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                                val blocked = if (homework) !HomeworkLinks.allowsNavigation(request.url.toString())
+                                    else !request.url.isCyeamUrl()
+                                if (homework && blocked && request.isForMainFrame) {
+                                    Toast.makeText(view.context, "该链接不在学习网站白名单中", Toast.LENGTH_LONG).show()
+                                }
+                                return blocked
+                            }
                         }
+                        // A parent explicitly assigned this URL. Later navigations use the allowlist.
                         loadUrl(initialUrl)
                         webView = this
                     }
