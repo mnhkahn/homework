@@ -5,17 +5,26 @@ import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.MediaPlayer
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -24,7 +33,50 @@ import kotlinx.coroutines.launch
 import java.io.File
 
 @Composable
-internal fun HomeworkReviewPanel(task: HomeworkTask, modifier: Modifier = Modifier, refreshing: Boolean) {
+internal fun HomeworkReviewDialog(
+    task: HomeworkTask,
+    refreshing: Boolean,
+    submitting: Boolean,
+    onDismiss: () -> Unit,
+    onSubmitCorrection: () -> Unit,
+) {
+    var textSize by rememberSaveable(task.id) { mutableIntStateOf(22) }
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnClickOutside = false),
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize().systemBarsPadding().padding(12.dp),
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surface,
+        ) {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(task.title, Modifier.weight(1f), fontSize = 22.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    TextButton(onClick = onDismiss) { Text("关闭") }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(onClick = { textSize -= 2 }, enabled = textSize > 18) { Text("缩小文字") }
+                    OutlinedButton(onClick = { textSize += 2 }, enabled = textSize < 32) { Text("放大文字") }
+                }
+                HomeworkReviewPanel(task, Modifier.fillMaxWidth().weight(1f), refreshing, textSize.sp)
+                HorizontalDivider()
+                if (task.isCorrection) {
+                    Button(
+                        onClick = onSubmitCorrection,
+                        enabled = !submitting && !refreshing,
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+                    ) { Text("提交改错", fontSize = 20.sp) }
+                } else {
+                    OutlinedButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("看完了") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun HomeworkReviewPanel(task: HomeworkTask, modifier: Modifier = Modifier, refreshing: Boolean, textSize: TextUnit) {
     val context = LocalContext.current
     val api = remember(context) { HomeworkApi(context) }
     var content by remember(task.id) { mutableStateOf<HomeworkReviewContent?>(null) }
@@ -42,8 +94,10 @@ internal fun HomeworkReviewPanel(task: HomeworkTask, modifier: Modifier = Modifi
         finally { loading = false }
     }
     Column(modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text(task.title, style = MaterialTheme.typography.titleLarge)
-        Button(onClick = { refresh++ }, enabled = !loading && !refreshing) { Text("刷新批改") }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("批改结果", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+            TextButton(onClick = { refresh++ }, enabled = !loading && !refreshing) { Text("刷新批改") }
+        }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         if (loading) CircularProgressIndicator()
         val current = content
@@ -55,8 +109,11 @@ internal fun HomeworkReviewPanel(task: HomeworkTask, modifier: Modifier = Modifi
                         val date = runCatching { java.time.OffsetDateTime.parse(review.date).atZoneSameInstant(java.time.ZoneId.of("Asia/Shanghai")).format(java.time.format.DateTimeFormatter.ofPattern("M月d日 HH:mm")) }.getOrDefault(review.date)
                         Text("${if (review.id == current?.reviews?.firstOrNull()?.id) "最新批改 · " else "历史批改 · "}$date")
                         review.hasErrors?.let { Text(if (it) "本次批改有错，请查看订正要求" else "本次批改通过") }
-                        if (review.type == "text") Text(review.text.orEmpty(), style = MaterialTheme.typography.bodyLarge)
-                        else {
+                        if (review.type == "text") {
+                            SelectionContainer {
+                                Text(review.text.orEmpty(), fontSize = textSize, lineHeight = textSize * 1.5f)
+                            }
+                        } else {
                             val attachment = current?.attachments?.get(review.attachmentId)
                             when {
                                 attachment == null -> Text("批改附件已删除或尚未上传，请联系家长重新提交")
@@ -82,7 +139,7 @@ private fun ReviewImage(attachment: HomeworkAttachment, api: HomeworkApi) {
     var expanded by remember(attachment.url) { mutableStateOf(false) }
     val bitmap by produceState<android.graphics.Bitmap?>(null, attachment.url) { value = api.loadPhoto(attachment.url) }
     bitmap?.let {
-        Image(it.asImageBitmap(), "批改图片，点击放大", Modifier.fillMaxWidth().heightIn(max = 320.dp).clickable { expanded = true }, contentScale = ContentScale.Fit)
+        Image(it.asImageBitmap(), "批改图片，点击放大", Modifier.fillMaxWidth().heightIn(max = 480.dp).clickable { expanded = true }, contentScale = ContentScale.Fit)
     }
     TextButton(onClick = { expanded = true }) { Text("查看批改图片（可缩放）") }
     if (expanded) PhotoViewer(listOf(attachment.url), api) { expanded = false }

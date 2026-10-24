@@ -1314,8 +1314,7 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
             }
         }
     }
-    val showReview: (HomeworkTask) -> Unit = { onSelect(it); reviewTask = it }
-    LaunchedEffect(selected?.id) { if (selected?.id != reviewTask?.id) reviewTask = null }
+    val showReview: (HomeworkTask) -> Unit = { reviewTask = it }
     val overdue = tasks.count { it.status == TaskStatus.OVERTIME }
     BoxWithConstraints(
         Modifier
@@ -1367,12 +1366,12 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
             } else if (dayTasks.isEmpty()) {
                 EmptyTaskState(Modifier.fillMaxSize())
             } else if (this@BoxWithConstraints.maxWidth >= 700.dp) Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(22.dp)) {
-                if (selected != null) CurrentTask(Modifier.weight(1.45f).fillMaxHeight(), selected, running, taskElapsedSeconds, pianoPractice, submitting, onStart, onPianoRecord, onFinish, selected.id in reviewedTaskIds, { showReview(selected) }, reviewTask?.id == selected.id, { reviewTask = null }, refreshing)
+                if (selected != null) CurrentTask(Modifier.weight(1.45f).fillMaxHeight(), selected, running, taskElapsedSeconds, pianoPractice, submitting, { onStart(); if (selected.isCorrection) showReview(selected) }, onPianoRecord, onFinish, selected.id in reviewedTaskIds, { showReview(selected) })
                 else AllDoneState(Modifier.weight(1.45f).fillMaxHeight())
                 TaskQueue(Modifier.weight(.8f).fillMaxHeight(), waiting, completedTasks, onSelect, reviewedTaskIds, showReview, onResubmit, submitting)
             } else {
                 Column(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    if (selected != null) CurrentTask(Modifier.fillMaxWidth().weight(1.4f), selected, running, taskElapsedSeconds, pianoPractice, submitting, onStart, onPianoRecord, onFinish, selected.id in reviewedTaskIds, { showReview(selected) }, reviewTask?.id == selected.id, { reviewTask = null }, refreshing)
+                    if (selected != null) CurrentTask(Modifier.fillMaxWidth().weight(1.4f), selected, running, taskElapsedSeconds, pianoPractice, submitting, { onStart(); if (selected.isCorrection) showReview(selected) }, onPianoRecord, onFinish, selected.id in reviewedTaskIds, { showReview(selected) })
                     else AllDoneState(Modifier.fillMaxWidth().weight(1.4f))
                     TaskQueue(Modifier.fillMaxWidth().weight(1f), waiting, completedTasks, onSelect, reviewedTaskIds, showReview, onResubmit, submitting)
                 }
@@ -1388,6 +1387,19 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
         ) {
             Text(syncError, modifier = Modifier.padding(horizontal = 16.dp, vertical = 11.dp), fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
+    }
+    reviewTask?.let { openedTask ->
+        val currentTask = (tasks + weekTasks).firstOrNull { it.id == openedTask.id } ?: openedTask
+        HomeworkReviewDialog(
+            task = currentTask,
+            refreshing = refreshing,
+            submitting = submitting,
+            onDismiss = { reviewTask = null },
+            onSubmitCorrection = {
+                reviewTask = null
+                onResubmit(currentTask.id)
+            },
+        )
     }
     if (showSubmissionChoice) AlertDialog(
         onDismissRequest = onDismissSubmissionChoice,
@@ -1910,19 +1922,7 @@ private fun formatStudyDuration(seconds: Long): String {
 }
 
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
-@Composable private fun CurrentTask(modifier: Modifier, task: HomeworkTask, running: Boolean, elapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, hasReview: Boolean, onReview: () -> Unit, showingReview: Boolean, onCloseReview: () -> Unit, refreshing: Boolean) {
-    if (showingReview) {
-        Column(modifier.clip(RoundedCornerShape(26.dp)).background(Sun).padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onCloseReview) { Text("收起批改结果") }
-                if (task.isCorrection) {
-                    Button(onClick = onFinish, enabled = !submitting && !refreshing) { Text("提交修改后的内容") }
-                }
-            }
-            HomeworkReviewPanel(task, Modifier.fillMaxWidth().weight(1f), refreshing)
-        }
-        return
-    }
+@Composable private fun CurrentTask(modifier: Modifier, task: HomeworkTask, running: Boolean, elapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, hasReview: Boolean, onReview: () -> Unit) {
     if (task.status.isSubmitted) {
         CompletedTask(modifier, task, hasReview, onReview)
         return
