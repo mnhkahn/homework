@@ -3,7 +3,15 @@ package com.homeworkbuddy
 import java.time.LocalTime
 import java.time.LocalDate
 
-enum class TaskStatus { TODO, RUNNING, COMPLETED, OVERTIME, NEEDS_CORRECTION }
+enum class TaskStatus {
+    TODO, RUNNING, COMPLETED, OVERTIME, NEEDS_CORRECTION, CORRECTED;
+
+    /** Both initial and corrected submissions are finished for progress and reminders. */
+    val isSubmitted: Boolean get() = this == COMPLETED || this == CORRECTED
+}
+
+internal fun HomeworkTask.afterSubmission(isCorrection: Boolean = this.isCorrection): HomeworkTask =
+    copy(status = if (isCorrection) TaskStatus.CORRECTED else TaskStatus.COMPLETED, isCorrection = false)
 
 /**
  * The task mode is intentionally separate from the card subject.  Parents can

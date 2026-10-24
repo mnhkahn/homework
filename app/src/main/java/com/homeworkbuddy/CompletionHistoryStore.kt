@@ -45,7 +45,7 @@ class CompletionHistoryStore(context: Context) {
             task.localAudioUri?.let { entry.put("local_audio_uri", it) }
             // This also imports completed cards that existed before this feature
             // was installed, so their earned flower is not lost.
-            if (task.status == TaskStatus.COMPLETED && !entry.has("completed_at")) {
+            if (task.status.isSubmitted && !entry.has("completed_at")) {
                 entry.put("completed_at", task.completedAtEpochSeconds ?: deadline)
             }
             day.put(task.id, entry)

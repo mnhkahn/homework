@@ -7,6 +7,8 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.webkit.MimeTypeMap
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -33,6 +35,7 @@ class AuthorizationExpiredException(message: String) : IllegalStateException(mes
  * the tablet; the user's token never passes through cyeam.com.
  */
 class HomeworkApi(private val context: Context) {
+    private val correctedListMutex = Mutex()
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     private val token: String? get() = prefs.getString(TOKEN, null)?.let(DeviceTokenCipher::decrypt)
     val hasAuthorization get() = token != null
@@ -61,7 +64,8 @@ class HomeworkApi(private val context: Context) {
         val todo = listNamed(TODO_LIST_NAME)
         val done = listNamed(DONE_LIST_NAME)
         val correction = listNamed(CORRECTION_LIST_NAME)
-        prefs.edit().putString(TODO_LIST, todo.id).putString(DONE_LIST, done.id).putString(CORRECTION_LIST, correction.id).apply()
+        val corrected = listNamed(CORRECTED_LIST_NAME)
+        prefs.edit().putString(TODO_LIST, todo.id).putString(DONE_LIST, done.id).putString(CORRECTION_LIST, correction.id).putString(CORRECTED_LIST, corrected.id).apply()
     }
 
     fun clearConnection() = prefs.edit().clear().apply()
@@ -73,7 +77,8 @@ class HomeworkApi(private val context: Context) {
         val todo = cards(prefs.getString(TODO_LIST, "") ?: "", TaskStatus.TODO)
         val done = cards(prefs.getString(DONE_LIST, "") ?: "", TaskStatus.COMPLETED)
             .filter { task -> task.completedAtEpochSeconds?.let(::dateAt) == LocalDate.now() }
-        return (correctionTasks() + todo + done).distinctBy { it.id }.sortedBy { it.deadline }
+        val corrected = correctedTasks().filter { it.dueDate == LocalDate.now(HOMEWORK_ZONE) || it.completedAtEpochSeconds?.let(::dateAt) == LocalDate.now(HOMEWORK_ZONE) }
+        return (correctionTasks() + todo + done + corrected).distinctBy { it.id }.sortedBy { it.deadline }
     }
 
     /** Fast path for the home screen: the 待完成 list is today's live queue. */
@@ -86,14 +91,15 @@ class HomeworkApi(private val context: Context) {
         val todo = cards(prefs.getString(TODO_LIST, "") ?: "", TaskStatus.TODO, dueOn = today)
         val done = cards(prefs.getString(DONE_LIST, "") ?: "", TaskStatus.COMPLETED, dueOn = today)
             .filter { task -> task.completedAtEpochSeconds?.let(::dateAt) == today }
-        return (correctionTasks() + todo + done).distinctBy { it.id }
+        val corrected = correctedTasks().filter { it.dueDate == LocalDate.now(HOMEWORK_ZONE) || it.completedAtEpochSeconds?.let(::dateAt) == LocalDate.now(HOMEWORK_ZONE) }
+        return (correctionTasks() + todo + done + corrected).distinctBy { it.id }
             .sortedBy { it.deadline }
     }
 
     /** Requested Mon–Sun, including completion dates for the reward history. */
     suspend fun weekTasks(date: LocalDate = LocalDate.now(HOMEWORK_ZONE)): List<HomeworkTask> {
         val todo = cards(prefs.getString(TODO_LIST, "") ?: "", TaskStatus.TODO)
-        val done = cards(prefs.getString(DONE_LIST, "") ?: "", TaskStatus.COMPLETED)
+        val done = cards(prefs.getString(DONE_LIST, "") ?: "", TaskStatus.COMPLETED) + correctedTasks()
         val monday = calendarWeekStart(date)
         val sunday = monday.plusDays(6)
         return (correctionTasks().filter { it.dueDate in monday..sunday } + todo.filter { it.dueDate in monday..sunday } + done.filter { task ->
@@ -132,19 +138,19 @@ class HomeworkApi(private val context: Context) {
             request("POST", "/cards/${segment(taskId)}/actions/comments", mapOf("text" to "已上传音频作业附件：${uploadedAudioNames.joinToString("、")}"))
         }
         if (isCorrection) request("POST", "/cards/${segment(taskId)}/actions/comments", mapOf("text" to "作业订正提交：$submissionId"))
-        request("PUT", "/cards/${segment(taskId)}", mapOf("idList" to requiredDoneList(), "dueComplete" to "true"))
+        request("PUT", "/cards/${segment(taskId)}", mapOf("idList" to (if (isCorrection) correctedListId() else requiredDoneList()), "dueComplete" to "true"))
     }
 
     /** Stores a child's written answer in the card activity before completing it. */
     suspend fun submitText(taskId: String, text: String, isCorrection: Boolean = false) = withContext(Dispatchers.IO) {
         require(text.isNotBlank()) { "请先输入文字内容" }
         request("POST", "/cards/${segment(taskId)}/actions/comments", mapOf("text" to "${if (isCorrection) "作业订正文字提交：" else "作业文字提交："}\n${text.trim()}"))
-        request("PUT", "/cards/${segment(taskId)}", mapOf("idList" to requiredDoneList(), "dueComplete" to "true"))
+        request("PUT", "/cards/${segment(taskId)}", mapOf("idList" to (if (isCorrection) correctedListId() else requiredDoneList()), "dueComplete" to "true"))
     }
 
     /** Marks a task complete without uploading a local-only recording. */
-    suspend fun completeWithoutAttachment(taskId: String) = withContext(Dispatchers.IO) {
-        request("PUT", "/cards/${segment(taskId)}", mapOf("idList" to requiredDoneList(), "dueComplete" to "true"))
+    suspend fun completeWithoutAttachment(taskId: String, isCorrection: Boolean = false) = withContext(Dispatchers.IO) {
+        request("PUT", "/cards/${segment(taskId)}", mapOf("idList" to (if (isCorrection) correctedListId() else requiredDoneList()), "dueComplete" to "true"))
     }
 
     /** Downloads a Trello attachment through its authenticated download endpoint. */
@@ -234,7 +240,7 @@ class HomeworkApi(private val context: Context) {
         return (0 until value.length()).mapNotNull { index ->
             val item = value.getJSONObject(index)
             val due = item.optString("due").takeIf { it.isNotBlank() && it != "null" }
-                ?: if (status == TaskStatus.NEEDS_CORRECTION) now.toOffsetDateTime().toString() else return@mapNotNull null
+                ?: if (status == TaskStatus.NEEDS_CORRECTION || status == TaskStatus.CORRECTED) now.toOffsetDateTime().toString() else return@mapNotNull null
             val deadline = runCatching { OffsetDateTime.parse(due).atZoneSameInstant(HOMEWORK_ZONE) }.getOrNull() ?: return@mapNotNull null
             if (dueOn != null && deadline.toLocalDate() != dueOn) return@mapNotNull null
             val labels = item.optJSONArray("labels")
@@ -248,7 +254,7 @@ class HomeworkApi(private val context: Context) {
                     }
                 }
             } ?: emptyList()
-            val activityAt = if (status == TaskStatus.COMPLETED) {
+            val activityAt = if (status.isSubmitted) {
                 completionTime(item.getString("id"), listId)
                     ?: item.optString("dateLastActivity").takeIf { it.isNotBlank() }
                         ?.let { runCatching { OffsetDateTime.parse(it).toEpochSecond() }.getOrNull() }
@@ -266,24 +272,8 @@ class HomeworkApi(private val context: Context) {
         }
     }
 
-    /** Includes old homework and cards without a deadline; independent of today's queue. */
-    suspend fun reviewCards(): List<HomeworkReviewCard> {
-        val cards = mutableListOf<HomeworkReviewCard>()
-        val correctionId = correctionListId()
-        val listIds = listOfNotNull(correctionId, prefs.getString(TODO_LIST, null), prefs.getString(DONE_LIST, null))
-        require(listIds.isNotEmpty()) { "请先关联 Trello" }
-        for (listId in listIds.distinct()) {
-            val values = requestArray("GET", "/lists/${segment(listId)}/cards?fields=id,name,due")
-            for (index in 0 until values.length()) {
-                val card = values.getJSONObject(index)
-                cards += HomeworkReviewCard(card.getString("id"), card.getString("name"), card.optString("due").takeUnless { it == "null" }.orEmpty(), needsCorrection = listId == correctionId)
-            }
-        }
-        return cards.distinctBy { it.id }.sortedByDescending { it.due }
-    }
-
     /** Page through comments so newer unrelated activity cannot hide a review. */
-    suspend fun reviews(cardId: String): HomeworkReviewContent {
+    private suspend fun reviewComments(cardId: String): List<HomeworkReview> {
         val reviews = mutableListOf<HomeworkReview>()
         var before: String? = null
         do {
@@ -295,6 +285,14 @@ class HomeworkApi(private val context: Context) {
             }
             before = if (actions.length() == 1000) actions.getJSONObject(actions.length() - 1).getString("id") else null
         } while (before != null)
+        return reviews.distinctBy { it.id }.sortedByDescending { it.date }
+    }
+
+    /** Only protocol-valid review comments expose the review button. */
+    suspend fun hasReviews(cardId: String): Boolean = reviewComments(cardId).isNotEmpty()
+
+    suspend fun reviews(cardId: String): HomeworkReviewContent {
+        val reviews = reviewComments(cardId)
         val attachments = requestArray("GET", "/cards/${segment(cardId)}/attachments?fields=id,url,name,mimeType,isUpload")
         val media = mutableMapOf<String, HomeworkAttachment>()
         for (index in 0 until attachments.length()) {
@@ -303,7 +301,7 @@ class HomeworkApi(private val context: Context) {
                 media[value.getString("id")] = HomeworkAttachment(value.optString("url"), value.optString("name"), value.optString("mimeType"))
             }
         }
-        return HomeworkReviewContent(reviews.distinctBy { it.id }.sortedByDescending { it.date }, media)
+        return HomeworkReviewContent(reviews, media)
     }
 
     /** Discover the third list for already-bound tablets without requiring reauthorization. */
@@ -317,10 +315,23 @@ class HomeworkApi(private val context: Context) {
             }
     }
 
+    /** Discover or create the fourth list for tablets already bound to a board. */
+    private suspend fun correctedListId(): String = correctedListMutex.withLock {
+        prefs.getString(CORRECTED_LIST, null)?.let { return@withLock it }
+        val todo = prefs.getString(TODO_LIST, null) ?: error("请由家长选择作业看板")
+        val board = request("GET", "/lists/${segment(todo)}?fields=idBoard").getString("idBoard")
+        val list = options("/boards/${segment(board)}/lists?fields=id,name&filter=open")
+            .firstOrNull { it.name == CORRECTED_LIST_NAME } ?: createList(board, CORRECTED_LIST_NAME)
+        prefs.edit().putString(CORRECTED_LIST, list.id).apply()
+        list.id
+    }
+
+    private suspend fun correctedTasks(): List<HomeworkTask> = cards(correctedListId(), TaskStatus.CORRECTED)
+
     /** Revalidate the original card before reopening its submission controls. */
     suspend fun taskForCorrection(cardId: String): HomeworkTask = correctionTasks()
         .firstOrNull { it.id == cardId }
-        ?: error("这份作业当前不是待改错状态，请刷新批改列表")
+        ?: error("这份作业当前不是待改错状态，请刷新作业列表")
 
     private suspend fun correctionTasks(): List<HomeworkTask> = correctionListId()
         ?.let { cards(it, TaskStatus.NEEDS_CORRECTION) }.orEmpty()
@@ -335,7 +346,7 @@ class HomeworkApi(private val context: Context) {
         return (0 until value.length()).map { value.getJSONObject(it).optString("name") }.toSet()
     }
 
-    /** The move into 已完成 is the durable completion timestamp in Trello. */
+    /** The move into 已完成 or 已改错 is the durable completion timestamp in Trello. */
     private suspend fun completionTime(cardId: String, doneListId: String): Long? {
         val actions = requestArray("GET", "/cards/${segment(cardId)}/actions?filter=updateCard:idList&limit=50&fields=date,data")
         return (0 until actions.length()).firstNotNullOfOrNull { index ->
@@ -447,6 +458,8 @@ class HomeworkApi(private val context: Context) {
         private const val TOKEN = "token"
         private const val TODO_LIST = "todo_list_id"
         private const val DONE_LIST = "done_list_id"
+        private const val CORRECTED_LIST = "corrected_list_id"
+        private const val CORRECTED_LIST_NAME = "已改错"
         private const val CORRECTION_LIST = "correction_list_id"
         private const val CORRECTION_LIST_NAME = "待改错"
         private const val TODO_LIST_NAME = "待完成"
@@ -462,7 +475,7 @@ class HomeworkApi(private val context: Context) {
             val token = Uri.parse("https://callback/?$fragment").getQueryParameter("token") ?: return false
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putString(TOKEN, DeviceTokenCipher.encrypt(token))
-                .remove(TODO_LIST).remove(DONE_LIST).remove(CORRECTION_LIST).apply()
+                .remove(TODO_LIST).remove(DONE_LIST).remove(CORRECTION_LIST).remove(CORRECTED_LIST).apply()
             return true
         }
     }

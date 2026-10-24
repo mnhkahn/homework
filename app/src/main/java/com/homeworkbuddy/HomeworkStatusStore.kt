@@ -19,7 +19,7 @@ class HomeworkStatusStore(private val context: Context) {
     fun snapshot(): JSONObject {
         val tasks = JSONArray(prefs.getString("tasks", "[]"))
         var completed = 0
-        for (index in 0 until tasks.length()) if (tasks.getJSONObject(index).optString("status") == TaskStatus.COMPLETED.name) completed++
+        for (index in 0 until tasks.length()) if (tasks.getJSONObject(index).optString("status") in setOf(TaskStatus.COMPLETED.name, TaskStatus.CORRECTED.name)) completed++
         return JSONObject().put("task_count", tasks.length()).put("completed_count", completed)
             .put("current_task_id", prefs.getString("selected_id", ""))
             .put("remaining_seconds", prefs.getInt("remaining_seconds", 0))

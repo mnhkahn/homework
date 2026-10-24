@@ -21,7 +21,7 @@ object HomeworkReminderScheduler {
 
     fun rescheduleFromTasks(context: Context, tasks: List<HomeworkTask>) {
         val now = LocalDateTime.now()
-        val next = tasks.filter { it.status != TaskStatus.COMPLETED }
+        val next = tasks.filter { !it.status.isSubmitted }
             .map { LocalDate.now().atTime(it.deadline) to it.title }
             .filter { it.first.isAfter(now) }
             .minByOrNull { it.first }

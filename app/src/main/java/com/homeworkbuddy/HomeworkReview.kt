@@ -35,5 +35,4 @@ data class HomeworkReview(
     }
 }
 
-data class HomeworkReviewCard(val id: String, val title: String, val due: String, val needsCorrection: Boolean = false)
 data class HomeworkReviewContent(val reviews: List<HomeworkReview>, val attachments: Map<String, HomeworkAttachment>)

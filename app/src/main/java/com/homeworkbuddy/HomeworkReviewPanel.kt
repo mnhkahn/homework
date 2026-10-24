@@ -20,93 +20,49 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
 
 @Composable
-internal fun HomeworkReviewPanel(modifier: Modifier = Modifier, refreshing: Boolean, onResubmit: (String) -> Unit) {
+internal fun HomeworkReviewPanel(task: HomeworkTask, modifier: Modifier = Modifier, refreshing: Boolean) {
     val context = LocalContext.current
     val api = remember(context) { HomeworkApi(context) }
-    var cards by remember { mutableStateOf<List<HomeworkReviewCard>>(emptyList()) }
-    var selected by remember { mutableStateOf<HomeworkReviewCard?>(null) }
-    var content by remember { mutableStateOf<HomeworkReviewContent?>(null) }
-    var listError by remember { mutableStateOf<String?>(null) }
-    var detailError by remember { mutableStateOf<String?>(null) }
-    var listLoaded by remember { mutableStateOf(false) }
-    var loading by remember { mutableStateOf(false) }
+    var content by remember(task.id) { mutableStateOf<HomeworkReviewContent?>(null) }
+    var error by remember(task.id) { mutableStateOf<String?>(null) }
+    var loading by remember(task.id) { mutableStateOf(false) }
     var refresh by remember { mutableIntStateOf(0) }
-    // This mode includes historical cards instead of inheriting the current-day filter.
-    LaunchedEffect(Unit) {
-        while (true) { delay(60_000); refresh++ }
-    }
-    LaunchedEffect(refresh, refreshing) {
-        try {
-            cards = api.reviewCards()
-            listLoaded = true
-            selected?.let { previous -> selected = cards.firstOrNull { it.id == previous.id } }
-            listError = null
-        } catch (cancelled: CancellationException) { throw cancelled }
-        catch (failure: Exception) { listError = failure.message ?: "批改作业列表加载失败" }
-    }
-    LaunchedEffect(selected?.id, refresh, refreshing) {
-        val card = selected ?: return@LaunchedEffect
+    LaunchedEffect(task.id, refresh, refreshing) {
+        if (refreshing) return@LaunchedEffect
         loading = true
-        detailError = null
+        error = null
         try {
-            content = api.reviews(card.id)
-            detailError = null
+            content = api.reviews(task.id)
         } catch (cancelled: CancellationException) { throw cancelled }
-        catch (failure: Exception) { detailError = failure.message ?: "批改结果加载失败" }
+        catch (failure: Exception) { error = failure.message ?: "批改结果加载失败" }
         finally { loading = false }
     }
     Column(modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (selected != null) OutlinedButton(onClick = { selected = null; content = null }) { Text("返回作业列表") }
-            Button(onClick = { refresh++ }) { Text("刷新批改") }
-        }
-        val error = if (selected == null) listError else detailError
+        Text(task.title, style = MaterialTheme.typography.titleLarge)
+        Button(onClick = { refresh++ }, enabled = !loading && !refreshing) { Text("刷新批改") }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        val card = selected
-        if (card == null) {
-            Text("选择作业查看批改（包含历史作业）", style = MaterialTheme.typography.titleLarge)
-            if (cards.isEmpty() && error == null) Text(if (listLoaded) "暂无作业" else "正在加载作业…")
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(cards, key = { it.id }) { item ->
-                    OutlinedCard(onClick = { selected = item; content = null }, modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(16.dp)) {
-                            Text(item.title, style = MaterialTheme.typography.titleMedium)
-                            if (item.due.isNotBlank()) Text("作业日期：${runCatching { java.time.OffsetDateTime.parse(item.due).atZoneSameInstant(java.time.ZoneId.of("Asia/Shanghai")).toLocalDate().toString() }.getOrDefault(item.due.take(10))}")
-                            Text(if (item.needsCorrection) "待改错 · 可重新提交" else "查看批改 →")
-                        }
-                    }
-                }
-            }
-        } else {
-            Text(card.title, style = MaterialTheme.typography.titleLarge)
-            if (card.needsCorrection) {
-                Button(onClick = { onResubmit(card.id) }) { Text("改好了，提交订正") }
-                Text("拍照、录音或输入文字，新内容会追加到原作业。")
-            }
-            if (loading) CircularProgressIndicator()
-            val current = content
-            if (current != null && current.reviews.isEmpty()) Text("还没有批改结果")
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                items(current?.reviews.orEmpty(), key = { it.id }) { review ->
-                    OutlinedCard(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            val date = runCatching { java.time.OffsetDateTime.parse(review.date).atZoneSameInstant(java.time.ZoneId.of("Asia/Shanghai")).format(java.time.format.DateTimeFormatter.ofPattern("M月d日 HH:mm")) }.getOrDefault(review.date)
-                            Text("${if (review.id == current?.reviews?.firstOrNull()?.id) "最新批改 · " else "历史批改 · "}$date")
-                            review.hasErrors?.let { Text(if (it) "本次批改有错，请查看订正要求" else "本次批改通过") }
-                            if (review.type == "text") Text(review.text.orEmpty(), style = MaterialTheme.typography.bodyLarge)
-                            else {
-                                val attachment = current?.attachments?.get(review.attachmentId)
-                                when {
-                                    attachment == null -> Text("批改附件已删除或尚未上传，请联系家长重新提交")
-                                    review.type == "image" && attachment.isReviewImage -> ReviewImage(attachment, api)
-                                    review.type == "audio" && attachment.isReviewAudio -> ReviewAudio(attachment, api)
-                                    else -> Text("批改附件格式与声明不符，请联系家长检查")
-                                }
+        if (loading) CircularProgressIndicator()
+        val current = content
+        if (current != null && current.reviews.isEmpty()) Text("还没有批改结果")
+        LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            items(current?.reviews.orEmpty(), key = { it.id }) { review ->
+                OutlinedCard(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        val date = runCatching { java.time.OffsetDateTime.parse(review.date).atZoneSameInstant(java.time.ZoneId.of("Asia/Shanghai")).format(java.time.format.DateTimeFormatter.ofPattern("M月d日 HH:mm")) }.getOrDefault(review.date)
+                        Text("${if (review.id == current?.reviews?.firstOrNull()?.id) "最新批改 · " else "历史批改 · "}$date")
+                        review.hasErrors?.let { Text(if (it) "本次批改有错，请查看订正要求" else "本次批改通过") }
+                        if (review.type == "text") Text(review.text.orEmpty(), style = MaterialTheme.typography.bodyLarge)
+                        else {
+                            val attachment = current?.attachments?.get(review.attachmentId)
+                            when {
+                                attachment == null -> Text("批改附件已删除或尚未上传，请联系家长重新提交")
+                                review.type == "image" && attachment.isReviewImage -> ReviewImage(attachment, api)
+                                review.type == "audio" && attachment.isReviewAudio -> ReviewAudio(attachment, api)
+                                else -> Text("批改附件格式与声明不符，请联系家长检查")
                             }
                         }
                     }
