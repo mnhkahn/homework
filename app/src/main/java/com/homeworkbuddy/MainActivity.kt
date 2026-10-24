@@ -156,7 +156,7 @@ private data class CelebrationVariant(
     val colors: List<Color>,
 )
 
-private data class CelebrationEvent(val taskTitle: String, val allTasksComplete: Boolean, val completedEarly: Boolean = false)
+private data class CelebrationEvent(val taskTitle: String, val allTasksComplete: Boolean, val completedEarly: Boolean = false, val isCorrection: Boolean = false)
 private data class PhotoLoadState(val bitmap: Bitmap? = null, val finished: Boolean = false)
 
 private val CelebrationVariants = listOf(
@@ -679,13 +679,20 @@ private fun HomeworkBuddyApp() {
         historyRevision++
     }
 
-    fun celebrateRetriedSubmission(taskId: String) {
-        val task = (tasks + weekTasks).firstOrNull { it.id == taskId && it.status != TaskStatus.COMPLETED } ?: return
-        val history = CompletionHistoryStore(context)
-        history.noteTasks(listOf(task))
-        history.recordCompletion(task.id, System.currentTimeMillis() / 1_000, task.dueDate.atTime(task.deadline).atZone(ZoneId.systemDefault()).toEpochSecond())
-        advanceAfterCompletion(task.id)
-        celebration = CelebrationEvent(task.title, allTasksComplete = false, completedEarly = task.dueDate.isAfter(LocalDate.now()))
+    fun celebrateRetriedSubmission(pending: PendingSubmission) {
+        val task = (tasks + weekTasks).firstOrNull { it.id == pending.taskId }
+        if (task != null) {
+            val history = CompletionHistoryStore(context)
+            history.noteTasks(listOf(task))
+            history.recordCompletion(task.id, System.currentTimeMillis() / 1_000, task.dueDate.atTime(task.deadline).atZone(ZoneId.systemDefault()).toEpochSecond())
+            advanceAfterCompletion(task.id)
+        }
+        celebration = CelebrationEvent(
+            task?.title ?: pending.taskTitle ?: "作业",
+            allTasksComplete = false,
+            completedEarly = task?.dueDate?.isAfter(LocalDate.now()) == true,
+            isCorrection = pending.isCorrection || task?.isCorrection == true,
+        )
     }
 
     fun retryPendingSubmissions() {
@@ -701,13 +708,13 @@ private fun HomeworkBuddyApp() {
                         Log.i("HomeworkSubmit", "retry_local_recording task=${pending.taskId}")
                         runCatching { api.completeWithoutAttachment(pending.taskId) }.onSuccess {
                             pendingStore.remove(pending.taskId)
-                            celebrateRetriedSubmission(pending.taskId)
+                            celebrateRetriedSubmission(pending)
                             uploadedAnything = true
                         }
                     } else if (pending.textContent != null) {
-                        runCatching { api.submitText(pending.taskId, pending.textContent) }.onSuccess {
+                        runCatching { api.submitText(pending.taskId, pending.textContent, pending.isCorrection) }.onSuccess {
                             pendingStore.remove(pending.taskId)
-                            celebrateRetriedSubmission(pending.taskId)
+                            celebrateRetriedSubmission(pending)
                             uploadedAnything = true
                         }
                     } else if (pending.photoPaths.isEmpty()) {
@@ -721,12 +728,13 @@ private fun HomeworkBuddyApp() {
                                 pending.photoPaths.map(android.net.Uri::parse),
                                 pending.isOvertime,
                                 pending.submissionId,
+                                pending.isCorrection,
                             )
                         }.onSuccess {
                             pendingStore.remove(pending.taskId)
                             pending.photoPaths.mapNotNull { runCatching { Uri.parse(it) }.getOrNull() }
                                 .forEach { deletePendingHomeworkRecording(context, it) }
-                            celebrateRetriedSubmission(pending.taskId)
+                            celebrateRetriedSubmission(pending)
                             uploadedAnything = true
                         }
                     }
@@ -821,9 +829,9 @@ private fun HomeworkBuddyApp() {
             val completed = weekTasks.filter { it.status == TaskStatus.COMPLETED }
             val scheduled = scheduledCards.map { fresh ->
                 val old = weekTasks.firstOrNull { it.id == fresh.id }
-                if (old?.status == TaskStatus.RUNNING) fresh.copy(status = TaskStatus.RUNNING, startedAtEpochSeconds = old.startedAtEpochSeconds) else fresh
+                if (old?.status == TaskStatus.RUNNING && fresh.status != TaskStatus.NEEDS_CORRECTION) fresh.copy(status = TaskStatus.RUNNING, startedAtEpochSeconds = old.startedAtEpochSeconds) else fresh
             }
-            weekTasks = (completed + scheduled).distinctBy { it.id }
+            weekTasks = (scheduled + completed).distinctBy { it.id }
             taskCache.saveWeek(weekTasks)
         }.onFailure { error ->
             if (error !is kotlinx.coroutines.CancellationException) {
@@ -839,7 +847,7 @@ private fun HomeworkBuddyApp() {
     LaunchedEffect(connected, foreground, refreshRequest, visibleWeekStart) {
         if (!connected || !foreground || historicalWeekLoadedFor == visibleWeekStart) return@LaunchedEffect
         runCatching { api.weekTasks(visibleWeekStart) }.onSuccess { weeklyCards ->
-            weekTasks = (weeklyCards.filter { it.status == TaskStatus.COMPLETED } + weekTasks).distinctBy { it.id }
+            weekTasks = (weeklyCards + weekTasks).distinctBy { it.id }
             taskCache.saveWeek(weekTasks)
             val history = CompletionHistoryStore(context)
             val completedCards = weeklyCards.filter { it.status == TaskStatus.COMPLETED && it.completedAtEpochSeconds != null }
@@ -887,11 +895,14 @@ private fun HomeworkBuddyApp() {
                             }
                             fresh.copy(startedAtEpochSeconds = old.startedAtEpochSeconds, photoPath = old.photoPath)
                         }
-                        else fresh.copy(status = if (old.status == TaskStatus.RUNNING) TaskStatus.RUNNING else fresh.status, startedAtEpochSeconds = old.startedAtEpochSeconds, photoPath = old.photoPath)
+                        else fresh.copy(status = if (old.status == TaskStatus.RUNNING && fresh.status != TaskStatus.NEEDS_CORRECTION) TaskStatus.RUNNING else fresh.status, startedAtEpochSeconds = old.startedAtEpochSeconds, photoPath = old.photoPath)
                     } ?: fresh
                 }
                 tasks = merged
                 taskCache.saveToday(merged)
+                val freshById = merged.associateBy { it.id }
+                weekTasks = weekTasks.map { freshById[it.id] ?: it }
+                taskCache.saveWeek(weekTasks)
                 // Replace only today's live queue; settled day marks live in
                 // their own ledger and are not affected by this cleanup.
                 completionHistory.clearDay(today, preserveEarlyCompletions = true)
@@ -1010,9 +1021,9 @@ private fun HomeworkBuddyApp() {
                 taskStartedAtMillis = startedAt
                 taskElapsedSeconds = 0
                 running = true
-                tasks = tasks.map { if (it.id == selectedId) it.copy(status = TaskStatus.RUNNING, startedAtEpochSeconds = startedAt / 1_000) else it }
+                tasks = tasks.map { if (it.id == selectedId) it.copy(status = if (it.isCorrection) TaskStatus.NEEDS_CORRECTION else TaskStatus.RUNNING, startedAtEpochSeconds = startedAt / 1_000) else it }
                 taskCache.saveToday(tasks)
-                weekTasks = weekTasks.map { if (it.id == selectedId) it.copy(status = TaskStatus.RUNNING, startedAtEpochSeconds = startedAt / 1_000) else it }
+                weekTasks = weekTasks.map { if (it.id == selectedId) it.copy(status = if (it.isCorrection) TaskStatus.NEEDS_CORRECTION else TaskStatus.RUNNING, startedAtEpochSeconds = startedAt / 1_000) else it }
                 taskCache.saveWeek(weekTasks)
             },
             onPianoRecord = {
@@ -1021,6 +1032,28 @@ private fun HomeworkBuddyApp() {
             onFinish = {
                 submissionTask = activeTask?.takeIf { it.status != TaskStatus.COMPLETED }
                 showSubmissionChoice = submissionTask != null
+            },
+            onResubmit = { cardId ->
+                if (submittingTaskId == null && !retryingPendingSubmissions) {
+                    submittingTaskId = cardId
+                    scope.launch {
+                        try {
+                            val correction = api.taskForCorrection(cardId)
+                            tasks = listOf(correction) + tasks.filterNot { it.id == cardId }
+                            taskCache.saveToday(tasks)
+                            selectedDate = LocalDate.now()
+                            selectTask(correction)
+                            submissionTask = correction
+                            showSubmissionChoice = true
+                        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                            throw cancelled
+                        } catch (error: Exception) {
+                            reportSyncError(error, "重新打开订正提交入口失败")
+                        } finally {
+                            submittingTaskId = null
+                        }
+                    }
+                } else connectionError = "正在提交作业，请稍候再提交订正。"
             },
             onChoosePhoto = {
                 selected?.let { current ->
@@ -1086,20 +1119,20 @@ private fun HomeworkBuddyApp() {
                     submittingTaskId = current.id
                     val submissionId = java.util.UUID.randomUUID().toString()
                     scope.launch {
-                        runCatching { api.submit(current.id, attachments, current.status == TaskStatus.OVERTIME, submissionId) }
+                        runCatching { api.submit(current.id, attachments, current.status == TaskStatus.OVERTIME, submissionId, current.isCorrection) }
                             .onSuccess {
                                 CompletionHistoryStore(context).noteTasks(listOf(current))
                                 CompletionHistoryStore(context).recordCompletion(current.id, System.currentTimeMillis() / 1_000, current.dueDate.atTime(current.deadline).atZone(ZoneId.systemDefault()).toEpochSecond(), current.startedAtEpochSeconds, if (recordedAudioUri != null) recordedAudioElapsedSeconds else elapsedSeconds, recordedAudioUri)
                                 advanceAfterCompletion(current.id, recordedAudioUri ?: attachments.first().toString())
-                                celebration = CelebrationEvent(current.title, current.dueDate == LocalDate.now() && tasks.isNotEmpty() && tasks.all { it.status == TaskStatus.COMPLETED }, current.dueDate.isAfter(LocalDate.now()))
+                                celebration = CelebrationEvent(current.title, current.dueDate == LocalDate.now() && tasks.isNotEmpty() && tasks.all { it.status == TaskStatus.COMPLETED }, current.dueDate.isAfter(LocalDate.now()), current.isCorrection)
                                 refreshRequest++
                                 showCameraConfirm = false; pendingPhotos = emptyList(); deletePendingHomeworkRecording(context, pendingAudio); pendingAudio = null; recordedAudioUri = null
                             }
                             .onFailure { error ->
-                                pendingStore.add(PendingSubmission(current.id, attachments.map(Uri::toString), current.status == TaskStatus.OVERTIME, submissionId))
+                                pendingStore.add(PendingSubmission(current.id, attachments.map(Uri::toString), current.status == TaskStatus.OVERTIME, submissionId, isCorrection = current.isCorrection, taskTitle = current.title))
                                 showCameraConfirm = false; pendingPhotos = emptyList(); pendingAudio = null; recordedAudioUri = null
                                 if (error is AuthorizationExpiredException) reportSyncError(error, "")
-                                else connectionError = "作业附件和完成状态尚未同步到 Trello，任务仍是待完成；联网后会自动重试。"
+                                else connectionError = "作业附件和完成状态尚未同步到 Trello，任务保留原状态；联网后会自动重试。"
                             }
                         submittingTaskId = null
                         submissionTask = null
@@ -1120,20 +1153,20 @@ private fun HomeworkBuddyApp() {
                 } else if (submittingTaskId == null) {
                     submittingTaskId = current.id
                     scope.launch {
-                        runCatching { api.submitText(current.id, text) }
+                        runCatching { api.submitText(current.id, text, current.isCorrection) }
                             .onSuccess {
                                 CompletionHistoryStore(context).noteTasks(listOf(current))
                                 CompletionHistoryStore(context).recordCompletion(current.id, System.currentTimeMillis() / 1_000, current.dueDate.atTime(current.deadline).atZone(ZoneId.systemDefault()).toEpochSecond(), current.startedAtEpochSeconds, elapsedSeconds)
                                 advanceAfterCompletion(current.id)
-                                celebration = CelebrationEvent(current.title, current.dueDate == LocalDate.now() && tasks.isNotEmpty() && tasks.all { it.status == TaskStatus.COMPLETED }, current.dueDate.isAfter(LocalDate.now()))
+                                celebration = CelebrationEvent(current.title, current.dueDate == LocalDate.now() && tasks.isNotEmpty() && tasks.all { it.status == TaskStatus.COMPLETED }, current.dueDate.isAfter(LocalDate.now()), current.isCorrection)
                                 refreshRequest++
                                 showTextSubmission = false; submissionText = ""
                             }
                             .onFailure { error ->
-                                pendingStore.add(PendingSubmission(current.id, emptyList(), current.status == TaskStatus.OVERTIME, textContent = text))
+                                pendingStore.add(PendingSubmission(current.id, emptyList(), current.status == TaskStatus.OVERTIME, textContent = text, isCorrection = current.isCorrection, taskTitle = current.title))
                                 showTextSubmission = false; submissionText = ""
                                 if (error is AuthorizationExpiredException) reportSyncError(error, "")
-                                else connectionError = "文字作业和完成状态尚未同步到 Trello，任务仍是待完成；联网后会自动重试。"
+                                else connectionError = "文字作业和完成状态尚未同步到 Trello，任务保留原状态；联网后会自动重试。"
                             }
                         submittingTaskId = null
                         submissionTask = null
@@ -1160,17 +1193,21 @@ private fun HomeworkBuddyApp() {
             onRetake = { submissionTask = null; showCameraConfirm = false; capturePhoto = null; pendingPhotos = emptyList(); deletePendingHomeworkRecording(context, pendingAudio); pendingAudio = null; recordedAudioUri = null },
             onDismissTextSubmission = { if (submittingTaskId == null) { showTextSubmission = false; submissionText = ""; submissionTask = null } },
         )
-        celebration?.let { event -> CelebrationDialog(event.taskTitle, event.allTasksComplete, event.completedEarly) { celebration = null } }
+        celebration?.let { event -> CelebrationDialog(event.taskTitle, event.allTasksComplete, event.completedEarly, event.isCorrection) { celebration = null } }
         AppUpdatePanel()
         if (showBlockedApps) BlockedAppsDialog(systemNonAllowedApps) { showBlockedApps = false }
     }
 }
 
 @Composable
-private fun CelebrationDialog(taskTitle: String, allTasksComplete: Boolean, completedEarly: Boolean, onDismiss: () -> Unit) {
-    val celebration = remember(taskTitle, allTasksComplete, completedEarly) {
-        if (completedEarly) CelebrationVariant("提前完成，真棒！", "你提前完成了《%s》！主动学习，给你一个大大的赞！", AllDoneMelody, CelebrationVariants.first().colors)
-        else (if (allTasksComplete) AllDoneCelebrationVariants else CelebrationVariants).random()
+private fun CelebrationDialog(taskTitle: String, allTasksComplete: Boolean, completedEarly: Boolean, isCorrection: Boolean, onDismiss: () -> Unit) {
+    val celebration = remember(taskTitle, allTasksComplete, completedEarly, isCorrection) {
+        when (submissionCelebrationKind(isCorrection, completedEarly, allTasksComplete)) {
+            SubmissionCelebrationKind.CORRECTION -> CelebrationVariant("订正已提交！", "认真改错又进步一步！《%s》的订正已提交，等批改后再看看。", shortFanfare(523.25, 587.33, 659.25, 1_046.50), CelebrationVariants.first().colors)
+            SubmissionCelebrationKind.EARLY -> CelebrationVariant("提前完成，真棒！", "你提前完成了《%s》！主动学习，给你一个大大的赞！", AllDoneMelody, CelebrationVariants.first().colors)
+            SubmissionCelebrationKind.ALL_DONE -> AllDoneCelebrationVariants.random()
+            SubmissionCelebrationKind.NORMAL -> CelebrationVariants.random()
+        }
     }
     LaunchedEffect(celebration) { CelebrationSound.play(celebration.melody) }
     val animation = rememberInfiniteTransition(label = "fireworks")
@@ -1229,7 +1266,7 @@ private fun CelebrationDialog(taskTitle: String, allTasksComplete: Boolean, comp
     val selectingBoard = boards.isNotEmpty()
     AlertDialog(onDismissRequest = {}, icon = { Text("🔗", fontSize = 38.sp) }, title = { Text(if (expired) "Trello 授权已过期" else "请家长关联 Trello") }, text = {
         Column(Modifier.heightIn(max = 430.dp).verticalScroll(rememberScrollState())) {
-            Text(when { expired && !selectingBoard -> "授权已过期，请家长重新授权 Trello，之后重新选择看板。授权 token 仅加密保存在平板。"; !authorizationStarted -> "家长授权后，这台平板会直接读取 Trello 作业。授权 token 仅加密保存在平板。"; selectingBoard -> "请选择这台平板使用的看板。系统固定使用“待完成”和“已完成”两个列表，缺少时会自动创建。"; else -> "浏览器只负责 Trello 授权；授权后会自动回到这里，再点击继续。" })
+            Text(when { expired && !selectingBoard -> "授权已过期，请家长重新授权 Trello，之后重新选择看板。授权 token 仅加密保存在平板。"; !authorizationStarted -> "家长授权后，这台平板会直接读取 Trello 作业。授权 token 仅加密保存在平板。"; selectingBoard -> "请选择这台平板使用的看板。系统使用“待完成”“已完成”“待改错”三个列表，缺少时会自动创建。"; else -> "浏览器只负责 Trello 授权；授权后会自动回到这里，再点击继续。" })
             if (selectingBoard) boards.forEach { item -> Row(Modifier.fillMaxWidth().clickable { onSelectBoard(item.id) }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) { RadioButton(selectedBoardId == item.id, { onSelectBoard(item.id) }); Text(item.name) } }
             if (error != null) { Spacer(Modifier.height(10.dp)); Text(error, color = MaterialTheme.colorScheme.error) }
         }
@@ -1246,8 +1283,9 @@ private fun CelebrationDialog(taskTitle: String, allTasksComplete: Boolean, comp
 }
 
 @Composable
-private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, selectedDate: LocalDate, onSelectDate: (LocalDate) -> Unit, remainingSeconds: Int, running: Boolean, taskElapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, calendarLoading: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, xiaoliConnection: XiaoliConnectionSnapshot, kioskMode: KioskMode, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onChoosePhoto: () -> Unit, onChooseAudio: () -> Unit, onChooseText: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photoCount: Int, audioAttached: Boolean, showSubmissionChoice: Boolean, showTextSubmission: Boolean, submissionText: String, onSubmissionTextChange: (String) -> Unit, onSubmitText: () -> Unit, onAddPhoto: () -> Unit, onDismissSubmissionChoice: () -> Unit, onRetake: () -> Unit, onDismissTextSubmission: () -> Unit) {
+private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, selectedDate: LocalDate, onSelectDate: (LocalDate) -> Unit, remainingSeconds: Int, running: Boolean, taskElapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, calendarLoading: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, xiaoliConnection: XiaoliConnectionSnapshot, kioskMode: KioskMode, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onResubmit: (String) -> Unit, onChoosePhoto: () -> Unit, onChooseAudio: () -> Unit, onChooseText: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photoCount: Int, audioAttached: Boolean, showSubmissionChoice: Boolean, showTextSubmission: Boolean, submissionText: String, onSubmissionTextChange: (String) -> Unit, onSubmitText: () -> Unit, onAddPhoto: () -> Unit, onDismissSubmissionChoice: () -> Unit, onRetake: () -> Unit, onDismissTextSubmission: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    var reviewMode by remember { mutableStateOf(false) }
     val complete = tasks.count { it.status == TaskStatus.COMPLETED }
     val todayEstimatedSeconds = tasks.sumOf { it.estimatedMinutes.coerceAtLeast(0) * 60 }
     val completedEstimatedSeconds = tasks.filter { it.status == TaskStatus.COMPLETED }
@@ -1268,54 +1306,65 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
     ) {
         Column(Modifier.fillMaxSize()) {
             Header(slogan, refreshing, captureStatus, studyActivity, systemNonAllowedApps, xiaoliConnection, kioskMode, onRefresh, onParent, onStudyApps, onBlockedApps)
-            if (remoteNotice != null) {
-                Spacer(Modifier.height(14.dp))
-                RemoteNoticeCard(remoteNotice)
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                FilterChip(selected = !reviewMode, onClick = { reviewMode = false }, label = { Text("提交作业") })
+                FilterChip(selected = reviewMode, onClick = { reviewMode = true }, label = { Text("查看批改") })
             }
-            Spacer(Modifier.height(14.dp))
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.Bottom,
-            ) {
-                WeekCalendar(
-                    weekMarks,
-                    selectedDate = selectedDate,
-                    todayElapsedSeconds = todayElapsedSeconds,
-                    todayEstimatedSeconds = todayEstimatedSeconds,
-                    onSelectDate = onSelectDate,
-                    modifier = Modifier.weight(1f),
-                )
-                HeadPosePanel(
-                    available = !showSubmissionChoice && !showCameraConfirm && !showTextSubmission,
-                    modifier = Modifier.width(172.dp),
-                )
-            }
-            Spacer(Modifier.height(14.dp))
-            if (calendarLoading && selectedDate != LocalDate.now()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-            } else if (dayTasks.isEmpty() && selectedDate.isAfter(LocalDate.now())) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("${selectedDate.format(DateTimeFormatter.ofPattern("M月d日"))} 暂无作业安排", fontSize = 24.sp)
-                }
-            } else if (dayTasks.isEmpty() && selectedDate != LocalDate.now()) {
-                HistoryDayContent(
-                    modifier = Modifier.fillMaxSize(),
-                    date = selectedDate,
-                    records = CompletionHistoryStore(context).day(selectedDate),
-                    mark = FlowerCalendar(context).markFor(selectedDate),
-                )
-            } else if (dayTasks.isEmpty()) {
-                EmptyTaskState(Modifier.fillMaxSize())
-            } else if (this@BoxWithConstraints.maxWidth >= 700.dp) Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(22.dp)) {
-                if (selected != null) CurrentTask(Modifier.weight(1.45f).fillMaxHeight(), selected, running, taskElapsedSeconds, pianoPractice, submitting, onStart, onPianoRecord, onFinish)
-                else AllDoneState(Modifier.weight(1.45f).fillMaxHeight())
-                TaskQueue(Modifier.weight(.8f).fillMaxHeight(), waiting, completedTasks, onSelect)
+            if (reviewMode) {
+                HomeworkReviewPanel(Modifier.fillMaxWidth().weight(1f), refreshing, onResubmit = { cardId ->
+                    reviewMode = false
+                    onResubmit(cardId)
+                })
             } else {
-                Column(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    if (selected != null) CurrentTask(Modifier.fillMaxWidth().weight(1.4f), selected, running, taskElapsedSeconds, pianoPractice, submitting, onStart, onPianoRecord, onFinish)
-                    else AllDoneState(Modifier.fillMaxWidth().weight(1.4f))
-                    TaskQueue(Modifier.fillMaxWidth().weight(1f), waiting, completedTasks, onSelect)
+                if (remoteNotice != null) {
+                    Spacer(Modifier.height(14.dp))
+                    RemoteNoticeCard(remoteNotice)
+                }
+                Spacer(Modifier.height(14.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.Bottom,
+                ) {
+                    WeekCalendar(
+                        weekMarks,
+                        selectedDate = selectedDate,
+                        todayElapsedSeconds = todayElapsedSeconds,
+                        todayEstimatedSeconds = todayEstimatedSeconds,
+                        onSelectDate = onSelectDate,
+                        modifier = Modifier.weight(1f),
+                    )
+                    HeadPosePanel(
+                        available = !showSubmissionChoice && !showCameraConfirm && !showTextSubmission,
+                        modifier = Modifier.width(172.dp),
+                    )
+                }
+                Spacer(Modifier.height(14.dp))
+                if (calendarLoading && selectedDate != LocalDate.now()) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                } else if (dayTasks.isEmpty() && selectedDate.isAfter(LocalDate.now())) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("${selectedDate.format(DateTimeFormatter.ofPattern("M月d日"))} 暂无作业安排", fontSize = 24.sp)
+                    }
+                } else if (dayTasks.isEmpty() && selectedDate != LocalDate.now()) {
+                    HistoryDayContent(
+                        modifier = Modifier.fillMaxSize(),
+                        date = selectedDate,
+                        records = CompletionHistoryStore(context).day(selectedDate),
+                        mark = FlowerCalendar(context).markFor(selectedDate),
+                    )
+                } else if (dayTasks.isEmpty()) {
+                    EmptyTaskState(Modifier.fillMaxSize())
+                } else if (this@BoxWithConstraints.maxWidth >= 700.dp) Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(22.dp)) {
+                    if (selected != null) CurrentTask(Modifier.weight(1.45f).fillMaxHeight(), selected, running, taskElapsedSeconds, pianoPractice, submitting, onStart, onPianoRecord, onFinish)
+                    else AllDoneState(Modifier.weight(1.45f).fillMaxHeight())
+                    TaskQueue(Modifier.weight(.8f).fillMaxHeight(), waiting, completedTasks, onSelect)
+                } else {
+                    Column(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        if (selected != null) CurrentTask(Modifier.fillMaxWidth().weight(1.4f), selected, running, taskElapsedSeconds, pianoPractice, submitting, onStart, onPianoRecord, onFinish)
+                        else AllDoneState(Modifier.fillMaxWidth().weight(1.4f))
+                        TaskQueue(Modifier.fillMaxWidth().weight(1f), waiting, completedTasks, onSelect)
+                    }
                 }
             }
         }
@@ -1547,7 +1596,7 @@ private fun LocalRecordingButton(localUri: String) {
 }
 
 @OptIn(ExperimentalFoundationApi::class)
-@Composable private fun PhotoViewer(urls: List<String>, api: HomeworkApi, onDismiss: () -> Unit) {
+@Composable internal fun PhotoViewer(urls: List<String>, api: HomeworkApi, onDismiss: () -> Unit) {
     if (urls.isEmpty()) return
     val pagerState = rememberPagerState(pageCount = { urls.size })
     val scope = rememberCoroutineScope()
@@ -1869,6 +1918,7 @@ private fun formatStudyDuration(seconds: Long): String {
                 }
                 Spacer(Modifier.height(14.dp)); Text(task.title, fontSize = 30.sp, fontWeight = FontWeight.Medium)
                 Text(if (overdue) "已超过截止时间，请优先完成" else "截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", color = if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = if (overdue) FontWeight.Medium else FontWeight.Normal)
+                if (task.isCorrection) Text("请先在“查看批改”中查看反馈，改好后提交订正。", color = MaterialTheme.colorScheme.primary)
                 task.startedAtEpochSeconds?.let { Text("开始 ${homeworkTimeLabel(it)}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp) }
                 Spacer(Modifier.height(18.dp)); Box(Modifier.size(166.dp).align(Alignment.CenterHorizontally).clip(CircleShape).background(LocalHomeColors.current.timer).padding(10.dp), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -1888,7 +1938,7 @@ private fun formatStudyDuration(seconds: Long): String {
             horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.Start),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Button(onClick = onStart, enabled = task.status != TaskStatus.COMPLETED && !submitting && !running) { Text(if (running) "正在做" else "开始做") }
+            Button(onClick = onStart, enabled = task.status != TaskStatus.COMPLETED && !submitting && !running) { Text(if (running) "正在做" else if (task.isCorrection) "开始改错" else "开始做") }
             HomeworkLinkButton(task, enabled = !submitting)
             PdfAttachmentButtons(task)
             if (pianoPractice != null) {
@@ -1899,7 +1949,7 @@ private fun formatStudyDuration(seconds: Long): String {
             FilledTonalButton(onClick = onFinish, enabled = !submitting) {
                 Icon(Icons.Outlined.CameraAlt, null)
                 Spacer(Modifier.width(8.dp))
-                Text("完成并提交")
+                Text(if (task.isCorrection) "提交订正" else "完成并提交")
             }
         }
     }
@@ -1956,6 +2006,7 @@ private fun formatStudyDuration(seconds: Long): String {
         TaskStatus.RUNNING -> Triple("正在完成", Color(0xFFFFF3CE), Ink)
         TaskStatus.COMPLETED -> Triple("✓ 已完成", Leaf, Color(0xFF24733A))
         TaskStatus.TODO -> Triple("待完成", TodoSurface, Primary)
+        TaskStatus.NEEDS_CORRECTION -> Triple("✎ 待改错", Color(0xFFFFF3CE), Ink)
     }
     Surface(shape = RoundedCornerShape(10.dp), color = surface, contentColor = content) {
         Text(label, modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp), fontSize = 11.sp, fontWeight = FontWeight.Medium)

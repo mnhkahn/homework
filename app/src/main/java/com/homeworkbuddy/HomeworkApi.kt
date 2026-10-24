@@ -60,7 +60,8 @@ class HomeworkApi(private val context: Context) {
         }
         val todo = listNamed(TODO_LIST_NAME)
         val done = listNamed(DONE_LIST_NAME)
-        prefs.edit().putString(TODO_LIST, todo.id).putString(DONE_LIST, done.id).apply()
+        val correction = listNamed(CORRECTION_LIST_NAME)
+        prefs.edit().putString(TODO_LIST, todo.id).putString(DONE_LIST, done.id).putString(CORRECTION_LIST, correction.id).apply()
     }
 
     fun clearConnection() = prefs.edit().clear().apply()
@@ -72,7 +73,7 @@ class HomeworkApi(private val context: Context) {
         val todo = cards(prefs.getString(TODO_LIST, "") ?: "", TaskStatus.TODO)
         val done = cards(prefs.getString(DONE_LIST, "") ?: "", TaskStatus.COMPLETED)
             .filter { task -> task.completedAtEpochSeconds?.let(::dateAt) == LocalDate.now() }
-        return (todo + done).sortedBy { it.deadline }
+        return (correctionTasks() + todo + done).distinctBy { it.id }.sortedBy { it.deadline }
     }
 
     /** Fast path for the home screen: the 待完成 list is today's live queue. */
@@ -85,7 +86,7 @@ class HomeworkApi(private val context: Context) {
         val todo = cards(prefs.getString(TODO_LIST, "") ?: "", TaskStatus.TODO, dueOn = today)
         val done = cards(prefs.getString(DONE_LIST, "") ?: "", TaskStatus.COMPLETED, dueOn = today)
             .filter { task -> task.completedAtEpochSeconds?.let(::dateAt) == today }
-        return (todo + done)
+        return (correctionTasks() + todo + done).distinctBy { it.id }
             .sortedBy { it.deadline }
     }
 
@@ -95,7 +96,7 @@ class HomeworkApi(private val context: Context) {
         val done = cards(prefs.getString(DONE_LIST, "") ?: "", TaskStatus.COMPLETED)
         val monday = calendarWeekStart(date)
         val sunday = monday.plusDays(6)
-        return (todo.filter { it.dueDate in monday..sunday } + done.filter { task ->
+        return (correctionTasks().filter { it.dueDate in monday..sunday } + todo.filter { it.dueDate in monday..sunday } + done.filter { task ->
             task.dueDate in monday..sunday || task.completedAtEpochSeconds?.let(::dateAt) in monday..sunday
         })
             .sortedWith(compareBy<HomeworkTask> { it.dueDate }.thenBy { it.deadline })
@@ -105,12 +106,12 @@ class HomeworkApi(private val context: Context) {
     suspend fun weekScheduledTasks(date: LocalDate = LocalDate.now(HOMEWORK_ZONE)): List<HomeworkTask> {
         val monday = calendarWeekStart(date)
         val sunday = monday.plusDays(6)
-        return cards(prefs.getString(TODO_LIST, "") ?: "", TaskStatus.TODO)
+        return (correctionTasks() + cards(prefs.getString(TODO_LIST, "") ?: "", TaskStatus.TODO))
             .filter { it.dueDate in monday..sunday }
             .sortedWith(compareBy<HomeworkTask> { it.dueDate }.thenBy { it.deadline })
     }
 
-    suspend fun submit(taskId: String, attachments: List<Uri>, isOvertime: Boolean, submissionId: String) = withContext(Dispatchers.IO) {
+    suspend fun submit(taskId: String, attachments: List<Uri>, isOvertime: Boolean, submissionId: String, isCorrection: Boolean = false) = withContext(Dispatchers.IO) {
         // Trello is the durable record. Submission IDs make attachment retries
         // idempotent: a retry after a partial upload never adds another attachment.
         isOvertime.hashCode()
@@ -130,13 +131,14 @@ class HomeworkApi(private val context: Context) {
         if (uploadedAudioNames.isNotEmpty()) runCatching {
             request("POST", "/cards/${segment(taskId)}/actions/comments", mapOf("text" to "已上传音频作业附件：${uploadedAudioNames.joinToString("、")}"))
         }
+        if (isCorrection) request("POST", "/cards/${segment(taskId)}/actions/comments", mapOf("text" to "作业订正提交：$submissionId"))
         request("PUT", "/cards/${segment(taskId)}", mapOf("idList" to requiredDoneList(), "dueComplete" to "true"))
     }
 
     /** Stores a child's written answer in the card activity before completing it. */
-    suspend fun submitText(taskId: String, text: String) = withContext(Dispatchers.IO) {
+    suspend fun submitText(taskId: String, text: String, isCorrection: Boolean = false) = withContext(Dispatchers.IO) {
         require(text.isNotBlank()) { "请先输入文字内容" }
-        request("POST", "/cards/${segment(taskId)}/actions/comments", mapOf("text" to "作业文字提交：\n${text.trim()}"))
+        request("POST", "/cards/${segment(taskId)}/actions/comments", mapOf("text" to "${if (isCorrection) "作业订正文字提交：" else "作业文字提交："}\n${text.trim()}"))
         request("PUT", "/cards/${segment(taskId)}", mapOf("idList" to requiredDoneList(), "dueComplete" to "true"))
     }
 
@@ -172,7 +174,10 @@ class HomeworkApi(private val context: Context) {
     }
 
     /** Downloads private Trello PDFs without exposing the device token to a viewer. */
-    suspend fun downloadPdf(url: String, destination: java.io.File) = withContext(Dispatchers.IO) {
+    suspend fun downloadPdf(url: String, destination: java.io.File) = downloadAttachment(url, destination)
+
+    /** Credentials stay on the Trello origin; signed storage redirects receive no token. */
+    suspend fun downloadAttachment(url: String, destination: java.io.File) = withContext(Dispatchers.IO) {
         val source = Uri.parse(url)
         val parts = source.pathSegments
         val cardIndex = parts.indexOf("cards")
@@ -180,7 +185,7 @@ class HomeworkApi(private val context: Context) {
         val downloadIndex = parts.indexOf("download")
         require(source.scheme == "https" && source.host in setOf("trello.com", "api.trello.com") &&
             cardIndex >= 0 && attachmentIndex == cardIndex + 2 && downloadIndex == attachmentIndex + 2 &&
-            parts.size > downloadIndex + 1) { "请将 PDF 文件直接上传为 Trello 附件" }
+            parts.size > downloadIndex + 1) { "请将文件直接上传为 Trello 附件" }
         val downloadUrl = "$API_ROOT/cards/${segment(parts[cardIndex + 1])}/attachments/${segment(parts[attachmentIndex + 1])}/download/${Uri.encode(parts.drop(downloadIndex + 1).joinToString("/"))}"
         var connection = URL(downloadUrl).openConnection() as HttpURLConnection
         try {
@@ -190,9 +195,9 @@ class HomeworkApi(private val context: Context) {
             connection.setRequestProperty("Authorization", "OAuth oauth_consumer_key=\"${oauthHeaderValue(BuildConfig.TRELLO_API_KEY)}\", oauth_token=\"${oauthHeaderValue(requireToken())}\"")
             var redirects = 0
             while (connection.responseCode in listOf(301, 302, 303, 307, 308)) {
-                check(redirects++ < 5) { "PDF 下载重定向过多" }
-                val next = URL(connection.url, connection.getHeaderField("Location") ?: error("PDF 下载地址缺失"))
-                require(next.protocol == "https") { "PDF 下载地址必须使用 HTTPS" }
+                check(redirects++ < 5) { "附件下载重定向过多" }
+                val next = URL(connection.url, connection.getHeaderField("Location") ?: error("附件下载地址缺失"))
+                require(next.protocol == "https") { "附件下载地址必须使用 HTTPS" }
                 connection.disconnect()
                 // Signed storage redirects must never receive Trello credentials.
                 connection = (next.openConnection() as HttpURLConnection).apply {
@@ -202,7 +207,7 @@ class HomeworkApi(private val context: Context) {
                 }
             }
             if (connection.responseCode == 401) throw AuthorizationExpiredException("Trello 授权已过期，请家长重新授权")
-            check(connection.responseCode in 200..299) { "PDF 下载失败（${connection.responseCode}）" }
+            check(connection.responseCode in 200..299) { "附件下载失败（${connection.responseCode}）" }
             connection.inputStream.use { input ->
                 destination.outputStream().use { output ->
                     val buffer = ByteArray(8192)
@@ -212,7 +217,7 @@ class HomeworkApi(private val context: Context) {
                         val count = input.read(buffer)
                         if (count < 0) break
                         total += count
-                        check(total <= 50L * 1024 * 1024) { "PDF 超过 50 MB，请压缩后重新上传" }
+                        check(total <= 50L * 1024 * 1024) { "附件超过 50 MB，请压缩后重新上传" }
                         output.write(buffer, 0, count)
                     }
                 }
@@ -228,7 +233,8 @@ class HomeworkApi(private val context: Context) {
         val now = ZonedDateTime.now(HOMEWORK_ZONE)
         return (0 until value.length()).mapNotNull { index ->
             val item = value.getJSONObject(index)
-            val due = item.optString("due").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val due = item.optString("due").takeIf { it.isNotBlank() && it != "null" }
+                ?: if (status == TaskStatus.NEEDS_CORRECTION) now.toOffsetDateTime().toString() else return@mapNotNull null
             val deadline = runCatching { OffsetDateTime.parse(due).atZoneSameInstant(HOMEWORK_ZONE) }.getOrNull() ?: return@mapNotNull null
             if (dueOn != null && deadline.toLocalDate() != dueOn) return@mapNotNull null
             val labels = item.optJSONArray("labels")
@@ -237,7 +243,8 @@ class HomeworkApi(private val context: Context) {
             val attachments = item.optJSONArray("attachments")?.let { attachmentArray ->
                 (0 until attachmentArray.length()).mapNotNull { attachment ->
                     attachmentArray.optJSONObject(attachment)?.let { value ->
-                        value.optString("url").ifBlank { null }?.let { url -> HomeworkAttachment(url, value.optString("name"), value.optString("mimeType")) }
+                        if (value.optString("name").startsWith("homework-review-")) null
+                        else value.optString("url").ifBlank { null }?.let { url -> HomeworkAttachment(url, value.optString("name"), value.optString("mimeType")) }
                     }
                 }
             } ?: emptyList()
@@ -254,9 +261,69 @@ class HomeworkApi(private val context: Context) {
                 attachments = attachments,
                 dueDate = deadline.toLocalDate(), completedAtEpochSeconds = activityAt,
                 type = details.type, task = details.task, link = details.link,
+                isCorrection = status == TaskStatus.NEEDS_CORRECTION,
             )
         }
     }
+
+    /** Includes old homework and cards without a deadline; independent of today's queue. */
+    suspend fun reviewCards(): List<HomeworkReviewCard> {
+        val cards = mutableListOf<HomeworkReviewCard>()
+        val correctionId = correctionListId()
+        val listIds = listOfNotNull(correctionId, prefs.getString(TODO_LIST, null), prefs.getString(DONE_LIST, null))
+        require(listIds.isNotEmpty()) { "请先关联 Trello" }
+        for (listId in listIds.distinct()) {
+            val values = requestArray("GET", "/lists/${segment(listId)}/cards?fields=id,name,due")
+            for (index in 0 until values.length()) {
+                val card = values.getJSONObject(index)
+                cards += HomeworkReviewCard(card.getString("id"), card.getString("name"), card.optString("due").takeUnless { it == "null" }.orEmpty(), needsCorrection = listId == correctionId)
+            }
+        }
+        return cards.distinctBy { it.id }.sortedByDescending { it.due }
+    }
+
+    /** Page through comments so newer unrelated activity cannot hide a review. */
+    suspend fun reviews(cardId: String): HomeworkReviewContent {
+        val reviews = mutableListOf<HomeworkReview>()
+        var before: String? = null
+        do {
+            val cursor = before?.let { "&before=${segment(it)}" }.orEmpty()
+            val actions = requestArray("GET", "/cards/${segment(cardId)}/actions?filter=commentCard&limit=1000$cursor")
+            for (index in 0 until actions.length()) {
+                val action = actions.getJSONObject(index)
+                HomeworkReview.parse(action.getString("id"), action.optString("date"), action.optJSONObject("data")?.optString("text").orEmpty())?.let(reviews::add)
+            }
+            before = if (actions.length() == 1000) actions.getJSONObject(actions.length() - 1).getString("id") else null
+        } while (before != null)
+        val attachments = requestArray("GET", "/cards/${segment(cardId)}/attachments?fields=id,url,name,mimeType,isUpload")
+        val media = mutableMapOf<String, HomeworkAttachment>()
+        for (index in 0 until attachments.length()) {
+            val value = attachments.getJSONObject(index)
+            if (value.optBoolean("isUpload")) {
+                media[value.getString("id")] = HomeworkAttachment(value.optString("url"), value.optString("name"), value.optString("mimeType"))
+            }
+        }
+        return HomeworkReviewContent(reviews.distinctBy { it.id }.sortedByDescending { it.date }, media)
+    }
+
+    /** Discover the third list for already-bound tablets without requiring reauthorization. */
+    private suspend fun correctionListId(): String? {
+        prefs.getString(CORRECTION_LIST, null)?.let { return it }
+        val todo = prefs.getString(TODO_LIST, null) ?: return null
+        val board = request("GET", "/lists/${segment(todo)}?fields=idBoard").getString("idBoard")
+        return options("/boards/${segment(board)}/lists?fields=id,name&filter=open")
+            .firstOrNull { it.name == CORRECTION_LIST_NAME }?.id?.also {
+                prefs.edit().putString(CORRECTION_LIST, it).apply()
+            }
+    }
+
+    /** Revalidate the original card before reopening its submission controls. */
+    suspend fun taskForCorrection(cardId: String): HomeworkTask = correctionTasks()
+        .firstOrNull { it.id == cardId }
+        ?: error("这份作业当前不是待改错状态，请刷新批改列表")
+
+    private suspend fun correctionTasks(): List<HomeworkTask> = correctionListId()
+        ?.let { cards(it, TaskStatus.NEEDS_CORRECTION) }.orEmpty()
 
     private suspend fun createList(boardId: String, name: String): TrelloOption {
         val value = request("POST", "/boards/${segment(boardId)}/lists", mapOf("name" to name, "pos" to "bottom"))
@@ -380,6 +447,8 @@ class HomeworkApi(private val context: Context) {
         private const val TOKEN = "token"
         private const val TODO_LIST = "todo_list_id"
         private const val DONE_LIST = "done_list_id"
+        private const val CORRECTION_LIST = "correction_list_id"
+        private const val CORRECTION_LIST_NAME = "待改错"
         private const val TODO_LIST_NAME = "待完成"
         private const val DONE_LIST_NAME = "已完成"
         private const val MAX_PHOTOS = 4
@@ -393,7 +462,7 @@ class HomeworkApi(private val context: Context) {
             val token = Uri.parse("https://callback/?$fragment").getQueryParameter("token") ?: return false
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putString(TOKEN, DeviceTokenCipher.encrypt(token))
-                .remove(TODO_LIST).remove(DONE_LIST).apply()
+                .remove(TODO_LIST).remove(DONE_LIST).remove(CORRECTION_LIST).apply()
             return true
         }
     }

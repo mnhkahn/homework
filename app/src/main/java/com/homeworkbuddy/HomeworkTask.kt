@@ -3,7 +3,7 @@ package com.homeworkbuddy
 import java.time.LocalTime
 import java.time.LocalDate
 
-enum class TaskStatus { TODO, RUNNING, COMPLETED, OVERTIME }
+enum class TaskStatus { TODO, RUNNING, COMPLETED, OVERTIME, NEEDS_CORRECTION }
 
 /**
  * The task mode is intentionally separate from the card subject.  Parents can
@@ -37,6 +37,8 @@ data class HomeworkTask(
     val task: String? = null,
     /** A safe, child-facing learning destination when this task has one. */
     val link: String? = null,
+    /** Retained while the child starts and submits a correction attempt. */
+    val isCorrection: Boolean = false,
 ) {
     /** System recorder URI retained locally; Trello attachments are never used for playback. */
     val localAudioUri: String? get() = photoPath?.takeIf {

@@ -52,6 +52,7 @@ class HomeworkCacheStore(context: Context) {
         put("type", task.type.name)
         put("task", task.task)
         put("link", task.link)
+        put("is_correction", task.isCorrection)
     }
 
     private fun decode(value: JSONObject): HomeworkTask = HomeworkTask(
@@ -76,5 +77,6 @@ class HomeworkCacheStore(context: Context) {
         type = value.optString("type").let { runCatching { HomeworkTaskType.valueOf(it) }.getOrDefault(HomeworkTaskType.NORMAL) },
         task = value.optString("task").ifBlank { null },
         link = value.optString("link").ifBlank { null },
+        isCorrection = value.optBoolean("is_correction"),
     )
 }

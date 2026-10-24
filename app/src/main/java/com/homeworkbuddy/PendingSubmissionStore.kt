@@ -6,7 +6,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
-data class PendingSubmission(val taskId: String, val photoPaths: List<String>, val isOvertime: Boolean, val submissionId: String = UUID.randomUUID().toString(), val completionOnly: Boolean = false, val textContent: String? = null)
+data class PendingSubmission(val taskId: String, val photoPaths: List<String>, val isOvertime: Boolean, val submissionId: String = UUID.randomUUID().toString(), val completionOnly: Boolean = false, val textContent: String? = null, val isCorrection: Boolean = false, val taskTitle: String? = null)
 
 class PendingSubmissionStore(context: Context) {
     private val prefs = context.getSharedPreferences("pending_submissions", Context.MODE_PRIVATE)
@@ -20,11 +20,11 @@ class PendingSubmissionStore(context: Context) {
                 (0 until paths.length()).mapNotNull { index -> paths.optString(index).ifBlank { null } }
             } ?: listOfNotNull(if (it.isNull("photo_path")) null else it.optString("photo_path").ifBlank { null })
             val stableLegacyId = UUID.nameUUIDFromBytes("$taskId|${photoPaths.joinToString("|")}".toByteArray()).toString()
-            PendingSubmission(taskId, photoPaths, it.getBoolean("overtime"), it.optString("submission_id", stableLegacyId), it.optBoolean("completion_only"), it.optString("text_content").ifBlank { null })
+            PendingSubmission(taskId, photoPaths, it.getBoolean("overtime"), it.optString("submission_id", stableLegacyId), it.optBoolean("completion_only"), it.optString("text_content").ifBlank { null }, it.optBoolean("is_correction"), it.optString("task_title").ifBlank { null })
         } }
     }.getOrDefault(emptyList())
     fun remove(taskId: String) = save(items().filterNot { it.taskId == taskId })
-    private fun save(items: List<PendingSubmission>) { prefs.edit().putString("items", JSONArray().also { array -> items.forEach { item -> array.put(JSONObject().put("task_id", item.taskId).put("photo_paths", JSONArray(item.photoPaths)).put("overtime", item.isOvertime).put("submission_id", item.submissionId).put("completion_only", item.completionOnly).put("text_content", item.textContent)) } }.toString()).apply() }
+    private fun save(items: List<PendingSubmission>) { prefs.edit().putString("items", JSONArray().also { array -> items.forEach { item -> array.put(JSONObject().put("task_id", item.taskId).put("photo_paths", JSONArray(item.photoPaths)).put("overtime", item.isOvertime).put("submission_id", item.submissionId).put("completion_only", item.completionOnly).put("text_content", item.textContent).put("is_correction", item.isCorrection).put("task_title", item.taskTitle)) } }.toString()).apply() }
 }
 
 /**
