@@ -124,6 +124,10 @@ class HomeworkApi(private val context: Context) {
             .sortedBy { it.deadline }
     }
 
+    /** All open future assignments, independent of the currently displayed calendar week. */
+    suspend fun reminderTasks(): List<HomeworkTask> =
+        (cards(prefs.getString(TODO_LIST, "") ?: "", TaskStatus.TODO) + correctionTasks()).distinctBy { it.id }
+
     /** Requested Mon–Sun, including completion dates for the reward history. */
     suspend fun weekTasks(date: LocalDate = LocalDate.now(HOMEWORK_ZONE)): List<HomeworkTask> {
         val todo = cards(prefs.getString(TODO_LIST, "") ?: "", TaskStatus.TODO)
@@ -263,7 +267,7 @@ class HomeworkApi(private val context: Context) {
 
     private suspend fun cards(listId: String, status: TaskStatus, dueOn: LocalDate? = null): List<HomeworkTask> {
         require(listId.isNotBlank()) { "请由家长选择作业看板" }
-        val value = requestArray("GET", "/lists/${segment(listId)}/cards?fields=id,name,desc,due,labels,dateLastActivity&attachments=true&attachment_fields=url,name,mimeType")
+        val value = requestArray("GET", "/lists/${segment(listId)}/cards?fields=id,name,desc,start,due,labels,dateLastActivity&attachments=true&attachment_fields=url,name,mimeType")
         val now = ZonedDateTime.now(HOMEWORK_ZONE)
         return (0 until value.length()).mapNotNull { index ->
             val item = value.getJSONObject(index)
@@ -288,6 +292,8 @@ class HomeworkApi(private val context: Context) {
                         ?.let { runCatching { OffsetDateTime.parse(it).toEpochSecond() }.getOrNull() }
             } else null
             val details = HomeworkTaskDetails.fromDescription(item.optString("desc"))
+            val plannedStart = parseTrelloDate(item.optString("start"))
+            val plannedDue = parseTrelloDate(item.optString("due"))
             HomeworkTask(
                 item.getString("id"), subject, item.getString("name"), homeworkMinutes(item.optString("desc")),
                 deadline.toLocalTime(), taskStatus,
@@ -297,6 +303,9 @@ class HomeworkApi(private val context: Context) {
                 type = details.type, task = details.task, link = details.link,
                 isCorrection = status == TaskStatus.NEEDS_CORRECTION,
                 gradeResult = HomeworkGradeResult.fromDescription(item.optString("desc")),
+                scheduledStartEpochSeconds = plannedStart,
+                scheduledDueEpochSeconds = plannedDue,
+                explicitEstimatedMinutes = explicitHomeworkMinutes(item.optString("desc")),
             )
         }
     }
@@ -511,9 +520,18 @@ class HomeworkApi(private val context: Context) {
     }
 }
 
-private fun homeworkMinutes(desc: String): Int = desc.lineSequence().mapNotNull { line ->
+internal fun explicitHomeworkMinutes(desc: String): Int? = desc.lineSequence().mapNotNull { line ->
+    Regex("^[\\t ]*预计用时[\\t ]*[:：][\\t ]*(\\d+)[\\t ]*(?:分钟)?[\\t ]*$")
+        .find(line)?.groupValues?.getOrNull(1)?.toIntOrNull()
+}.firstOrNull { it in 1..180 }
+
+private fun homeworkMinutes(desc: String): Int = explicitHomeworkMinutes(desc) ?: desc.lineSequence().mapNotNull { line ->
     Regex("^\\s*预计用时:\\s*(\\d+)").find(line)?.groupValues?.getOrNull(1)?.toIntOrNull()
 }.firstOrNull { it in 1..180 } ?: 20
+
+internal fun parseTrelloDate(value: String?): Long? =
+    value?.takeIf { it.isNotBlank() && it != "null" }
+        ?.let { runCatching { OffsetDateTime.parse(it).toEpochSecond() }.getOrNull() }
 
 /** Optional older list IDs may be absent; all saved IDs must match the accessible board. */
 internal fun savedBindingMatches(saved: Map<String, String?>, lists: List<TrelloOption>): Boolean =

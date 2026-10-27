@@ -1,8 +1,6 @@
 package com.homeworkbuddy
 
 import android.Manifest
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -10,7 +8,6 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.IBinder
 import android.util.Log
-import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import okhttp3.OkHttpClient
@@ -26,9 +23,6 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.CopyOnWriteArraySet
-
-private const val XIAOLI_CHANNEL = "xiaoli_connection"
-private const val XIAOLI_NOTIFICATION_ID = 7101
 
 data class XiaoliConnectionConfig(
     val deviceId: String,
@@ -168,14 +162,13 @@ class XiaoliConnectionService : Service() {
     private var reconnectAttempts = 0
     private var stopped = false
     private var cameraCaptureDepth = 0
-    private var foregroundText = "正在连接小李…"
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
                 stopped = true
                 socket?.close(1000, "user disconnected")
-                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopForeground(STOP_FOREGROUND_DETACH)
                 stopSelf()
                 return START_NOT_STICKY
             }
@@ -197,7 +190,6 @@ class XiaoliConnectionService : Service() {
     }
 
     private fun refreshForeground() {
-        ensureChannel()
         var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING
         // Opening the camera while the device is locked requires a camera-type
         // foreground service (Android 12+); carry the type only while a remote
@@ -206,7 +198,7 @@ class XiaoliConnectionService : Service() {
             types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
         }
         runCatching {
-            ServiceCompat.startForeground(this, XIAOLI_NOTIFICATION_ID, notification(foregroundText), types)
+            ServiceCompat.startForeground(this, HomeworkReminderReceiver.NOTIFICATION_ID, HomeworkReminderReceiver.foregroundNotification(this), types)
         }.onFailure { Log.w("XiaoliConnection", "startForeground(types=$types) failed", it) }
     }
 
@@ -217,6 +209,7 @@ class XiaoliConnectionService : Service() {
         socket?.cancel()
         worker.shutdownNow()
         reconnectWorker.shutdownNow()
+        stopForeground(STOP_FOREGROUND_DETACH)
         super.onDestroy()
     }
 
@@ -235,7 +228,7 @@ class XiaoliConnectionService : Service() {
         stopped = true
         reconnectFuture?.cancel(true)
         socket?.close(1000, "foreground service time limit reached")
-        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopForeground(STOP_FOREGROUND_DETACH)
         stopSelf()
     }
     override fun onBind(intent: Intent?): IBinder? = null
@@ -244,7 +237,7 @@ class XiaoliConnectionService : Service() {
         if (stopped || socket != null) return
         val config = XiaoliDeviceStore.config(this) ?: run {
             XiaoliConnectionState.disconnected("尚未绑定设备")
-            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopForeground(STOP_FOREGROUND_DETACH)
             stopSelf()
             return
         }
@@ -306,7 +299,6 @@ class XiaoliConnectionService : Service() {
         if (message.optString("type") == "hello") {
             sessionId = message.optString("session_id").ifBlank { null }
             XiaoliConnectionState.connected()
-            updateNotification("已连接小李")
             return
         }
         if (message.optString("type") == "tts") {
@@ -371,16 +363,6 @@ class XiaoliConnectionService : Service() {
         reconnectAttempts++
         reconnectFuture?.cancel(false)
         reconnectFuture = reconnectWorker.schedule({ if (!stopped) connect() }, delay, TimeUnit.MILLISECONDS)
-    }
-
-    private fun ensureChannel() {
-        getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(XIAOLI_CHANNEL, "小李连接", NotificationManager.IMPORTANCE_LOW))
-    }
-    private fun notification(text: String) = NotificationCompat.Builder(this, XIAOLI_CHANNEL)
-        .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth).setContentTitle("作业小伙伴").setContentText(text).setOngoing(true).build()
-    private fun updateNotification(text: String) {
-        foregroundText = text
-        getSystemService(NotificationManager::class.java).notify(XIAOLI_NOTIFICATION_ID, notification(text))
     }
 
     companion object {

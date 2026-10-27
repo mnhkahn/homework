@@ -49,6 +49,10 @@ data class HomeworkTask(
     val isCorrection: Boolean = false,
     /** Latest published review score; a correction submission does not imply a new score. */
     val gradeResult: HomeworkGradeResult? = null,
+    /** Trello's planned times, distinct from the child's actual start/completion. */
+    val scheduledStartEpochSeconds: Long? = null,
+    val scheduledDueEpochSeconds: Long? = null,
+    val explicitEstimatedMinutes: Int? = null,
 ) {
     /** System recorder URI retained locally; Trello attachments are never used for playback. */
     val localAudioUri: String? get() = photoPath?.takeIf {

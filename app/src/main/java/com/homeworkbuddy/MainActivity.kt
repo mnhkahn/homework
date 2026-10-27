@@ -662,6 +662,7 @@ private fun HomeworkBuddyApp() {
     }
 
     fun advanceAfterCompletion(taskId: String, photoPath: String? = null, isCorrection: Boolean? = null) {
+        HomeworkReminderScheduler.taskCompleted(context, taskId)
         val scheduled = weekTasks.firstOrNull { it.id == taskId }
         if (scheduled != null) {
             weekTasks = weekTasks.map { if (it.id == taskId) it.afterSubmission(isCorrection ?: it.isCorrection).copy(completedAtEpochSeconds = System.currentTimeMillis() / 1_000, photoPath = photoPath ?: it.photoPath) else it }
@@ -914,7 +915,21 @@ private fun HomeworkBuddyApp() {
                 completionHistory.noteTasks(merged, today)
                 historyRevision++
                 connectionError = null
-                HomeworkReminderScheduler.rescheduleFromTasks(context, merged)
+                runCatching { api.reminderTasks() }.onSuccess { planned ->
+                    val current = tasks.associateBy { it.id }
+                    val withLocalState = planned.filterNot { current[it.id]?.status?.isSubmitted == true }.map { remoteTask ->
+                        val localTask = current[remoteTask.id]
+                        if (localTask == null) remoteTask else remoteTask.copy(
+                            status = if (localTask.status == TaskStatus.RUNNING) TaskStatus.RUNNING else remoteTask.status,
+                            startedAtEpochSeconds = localTask.startedAtEpochSeconds,
+                        )
+                    }
+                    HomeworkReminderScheduler.rescheduleFromTasks(context, withLocalState)
+                }.onFailure { error ->
+                    if (error is kotlinx.coroutines.CancellationException) throw error
+                    if (error is AuthorizationExpiredException) reportSyncError(error, "")
+                    else Log.w("HomeworkReminder", "Unable to refresh schedule; keeping the previous alarms", error)
+                }
             }.onFailure { error ->
                 // LaunchedEffect is cancelled when this screen leaves composition (for
                 // example while the tablet sleeps). That is normal lifecycle behavior,
@@ -1053,6 +1068,7 @@ private fun HomeworkBuddyApp() {
                 taskCache.saveToday(tasks)
                 weekTasks = weekTasks.map { if (it.id == selectedId) it.copy(status = if (it.isCorrection) TaskStatus.NEEDS_CORRECTION else TaskStatus.RUNNING, startedAtEpochSeconds = startedAt / 1_000) else it }
                 taskCache.saveWeek(weekTasks)
+                selectedId?.let { HomeworkReminderScheduler.taskStarted(context, it) }
             },
             onPianoRecord = {
                 activeTask?.takeIf { it.title.contains("钢琴") }?.let { pianoPractice = pianoPracticeStore.record(it.id) }

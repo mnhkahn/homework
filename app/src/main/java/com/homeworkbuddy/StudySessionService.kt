@@ -1,7 +1,5 @@
 package com.homeworkbuddy
 
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.app.Service
 import android.app.ActivityManager
 import android.content.BroadcastReceiver
@@ -13,7 +11,6 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import android.os.Process
-import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 
 /**
@@ -100,18 +97,7 @@ class StudySessionService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        getSystemService(NotificationManager::class.java).createNotificationChannel(
-            NotificationChannel(CHANNEL, "学习时间管理", NotificationManager.IMPORTANCE_LOW),
-        )
-        startForeground(
-            NOTIFICATION_ID,
-            NotificationCompat.Builder(this, CHANNEL)
-                .setSmallIcon(android.R.drawable.stat_sys_warning)
-                .setContentTitle("作业小伙伴")
-                .setContentText("学习时间管理已开启")
-                .setOngoing(true)
-                .build(),
-        )
+        startForeground(HomeworkReminderReceiver.NOTIFICATION_ID, HomeworkReminderReceiver.foregroundNotification(this))
         handler.removeCallbacks(scheduleChecker)
         handler.post(scheduleChecker)
         return START_STICKY
@@ -120,6 +106,7 @@ class StudySessionService : Service() {
     override fun onDestroy() {
         handler.removeCallbacks(scheduleChecker)
         unregisterReceiver(unlockReceiver)
+        stopForeground(STOP_FOREGROUND_DETACH)
         super.onDestroy()
     }
 
@@ -136,8 +123,6 @@ class StudySessionService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
-        private const val CHANNEL = "study_session"
-        private const val NOTIFICATION_ID = 7110
         private const val SCHEDULE_CHECK_INTERVAL_MS = 1_000L
         private const val BLOCK_THROTTLE_MS = 3_000L
 

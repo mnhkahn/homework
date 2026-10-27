@@ -1,7 +1,9 @@
 package com.homeworkbuddy
 
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -11,30 +13,51 @@ import androidx.core.app.NotificationCompat
 
 class HomeworkReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        val manager = context.getSystemService(NotificationManager::class.java)
-        // A channel keeps the sound it was created with, so a new id is required
-        // to turn the alarm sound on for existing installs.
-        val channel = NotificationChannel(CHANNEL_ID, "作业提醒", NotificationManager.IMPORTANCE_HIGH).apply {
-            setSound(
-                RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM),
-                AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM).build(),
-            )
-            enableVibration(true)
-        }
-        manager.createNotificationChannel(channel)
-        manager.notify(
-            intent.getIntExtra("id", 0),
-            NotificationCompat.Builder(context, CHANNEL_ID)
-                .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setContentTitle("作业小伙伴")
-                .setContentText(intent.getStringExtra("message") ?: "该做作业啦！")
-                .setAutoCancel(true)
-                .build(),
-        )
-        HomeworkReminderScheduler.rescheduleFromPrefs(context)
+        HomeworkReminderScheduler.fireDue(context)
     }
 
-    private companion object {
-        const val CHANNEL_ID = "homework_reminder_v2"
+    companion object {
+        private const val CHANNEL_ID = "homework_schedule_v3"
+        internal const val NOTIFICATION_ID = 7112
+
+        private fun ensureChannel(context: Context): NotificationManager {
+            val manager = context.getSystemService(NotificationManager::class.java)
+            val channel = NotificationChannel(CHANNEL_ID, "作业开始和截止提醒", NotificationManager.IMPORTANCE_HIGH).apply {
+                setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM), AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM).build())
+                enableVibration(true)
+            }
+            manager.createNotificationChannel(channel)
+            // Remove notices left by older versions after their services have
+            // restarted with the shared notification ID.
+            val prefs = context.getSharedPreferences("homework_notifications", Context.MODE_PRIVATE)
+            if (!prefs.getBoolean("unified_notification_migrated", false)) {
+                listOf(7101, 7110, 7111).forEach(manager::cancel)
+                prefs.edit().putBoolean("unified_notification_migrated", true).apply()
+            }
+            return manager
+        }
+
+        /** The same silent, ongoing notification backs all three foreground services. */
+        fun foregroundNotification(context: Context): Notification =
+            build(context, HomeworkReminderScheduler.statusText(context), audible = false)
+
+        private fun build(context: Context, message: String, audible: Boolean): Notification {
+            ensureChannel(context)
+            val open = PendingIntent.getActivity(context, 7101, Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            return NotificationCompat.Builder(context, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentTitle("作业提醒")
+                .setContentText(message)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(message))
+                .setContentIntent(open)
+                .setOngoing(true)
+                .setSilent(!audible)
+                .build()
+        }
+
+        fun showStatus(context: Context, message: String, audible: Boolean) {
+            val notification = build(context, message, audible)
+            try { ensureChannel(context).notify(NOTIFICATION_ID, notification) } catch (_: SecurityException) { /* Notification permission can be denied. */ }
+        }
     }
 }

@@ -54,6 +54,9 @@ class HomeworkCacheStore(context: Context) {
         put("link", task.link)
         put("is_correction", task.isCorrection)
         put("grade_result", task.gradeResult?.fieldValue)
+        put("scheduled_start", task.scheduledStartEpochSeconds)
+        put("scheduled_due", task.scheduledDueEpochSeconds)
+        put("explicit_estimated_minutes", task.explicitEstimatedMinutes)
     }
 
     private fun decode(value: JSONObject): HomeworkTask = HomeworkTask(
@@ -80,5 +83,8 @@ class HomeworkCacheStore(context: Context) {
         link = value.optString("link").ifBlank { null },
         isCorrection = value.optBoolean("is_correction"),
         gradeResult = HomeworkGradeResult.parse(value.optString("grade_result")),
+        scheduledStartEpochSeconds = value.optLong("scheduled_start").takeIf { it > 0 },
+        scheduledDueEpochSeconds = value.optLong("scheduled_due").takeIf { it > 0 },
+        explicitEstimatedMinutes = value.optInt("explicit_estimated_minutes").takeIf { it in 1..180 },
     )
 }
