@@ -53,6 +53,7 @@ class HomeworkCacheStore(context: Context) {
         put("task", task.task)
         put("link", task.link)
         put("is_correction", task.isCorrection)
+        put("grade_result", task.gradeResult?.fieldValue)
     }
 
     private fun decode(value: JSONObject): HomeworkTask = HomeworkTask(
@@ -78,5 +79,6 @@ class HomeworkCacheStore(context: Context) {
         task = value.optString("task").ifBlank { null },
         link = value.optString("link").ifBlank { null },
         isCorrection = value.optBoolean("is_correction"),
+        gradeResult = HomeworkGradeResult.parse(value.optString("grade_result")),
     )
 }

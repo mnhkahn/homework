@@ -29,6 +29,7 @@ data class TrelloOption(val id: String, val name: String)
 
 /** Thrown when Trello rejects the stored token (HTTP 401); the parent must re-authorize. */
 class AuthorizationExpiredException(message: String) : IllegalStateException(message)
+private class TrelloHttpException(val status: Int, message: String) : IllegalStateException(message)
 
 /**
  * Trello is the source of truth for homework.  This client talks to Trello from
@@ -39,12 +40,12 @@ class HomeworkApi(private val context: Context) {
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     private val token: String? get() = prefs.getString(TOKEN, null)?.let(DeviceTokenCipher::decrypt)
     val hasAuthorization get() = token != null
-    val isConnected get() = token != null && prefs.contains(TODO_LIST) && prefs.contains(DONE_LIST)
+    val isConnected get() = token != null && prefs.contains(TODO_LIST) && prefs.contains(DONE_LIST) && !prefs.getBoolean(VERIFY_BINDING, false)
 
     fun openAuthorization() {
         val url = Uri.Builder()
             .scheme("https").authority("trello.com").appendPath("1").appendPath("authorize")
-            .appendQueryParameter("expiration", "30days")
+            .appendQueryParameter("expiration", "never")
             .appendQueryParameter("scope", "read,write")
             .appendQueryParameter("response_type", "token")
             .appendQueryParameter("callback_method", "fragment")
@@ -65,10 +66,37 @@ class HomeworkApi(private val context: Context) {
         val done = listNamed(DONE_LIST_NAME)
         val correction = listNamed(CORRECTION_LIST_NAME)
         val corrected = listNamed(CORRECTED_LIST_NAME)
-        prefs.edit().putString(TODO_LIST, todo.id).putString(DONE_LIST, done.id).putString(CORRECTION_LIST, correction.id).putString(CORRECTED_LIST, corrected.id).apply()
+        prefs.edit().putString(TODO_LIST, todo.id).putString(DONE_LIST, done.id).putString(CORRECTION_LIST, correction.id).putString(CORRECTED_LIST, corrected.id).remove(VERIFY_BINDING).apply()
     }
 
-    fun clearConnection() = prefs.edit().clear().apply()
+    /** Keep the board binding when a token expires or is revoked. */
+    fun clearAuthorization() = prefs.edit().remove(TOKEN).putBoolean(VERIFY_BINDING, true).apply()
+
+    /** Check the old board and list IDs using the new account before reusing them. */
+    suspend fun restoreBinding(): Boolean {
+        val todo = prefs.getString(TODO_LIST, null) ?: return false
+        val done = prefs.getString(DONE_LIST, null) ?: return false
+        return try {
+            val board = request("GET", "/lists/${segment(todo)}?fields=idBoard").optString("idBoard")
+            if (board.isBlank()) return false
+            val lists = options("/boards/${segment(board)}/lists?fields=id,name&filter=open")
+            val saved = mapOf(
+                TODO_LIST_NAME to todo,
+                DONE_LIST_NAME to done,
+                CORRECTION_LIST_NAME to prefs.getString(CORRECTION_LIST, null),
+                CORRECTED_LIST_NAME to prefs.getString(CORRECTED_LIST, null),
+            )
+            if (!savedBindingMatches(saved, lists)) return false
+            prefs.edit().remove(VERIFY_BINDING).apply()
+            true
+        } catch (_: AuthorizationExpiredException) {
+            // An inaccessible old list may also return 401. The caller checks
+            // the token separately when loading the account's boards.
+            false
+        } catch (error: TrelloHttpException) {
+            if (error.status == 403 || error.status == 404) false else throw error
+        }
+    }
 
     suspend fun todayTasks(): List<HomeworkTask> {
         // The 待完成 list is the parent's current-day queue.  Do not use a
@@ -268,6 +296,7 @@ class HomeworkApi(private val context: Context) {
                 dueDate = deadline.toLocalDate(), completedAtEpochSeconds = activityAt,
                 type = details.type, task = details.task, link = details.link,
                 isCorrection = status == TaskStatus.NEEDS_CORRECTION,
+                gradeResult = HomeworkGradeResult.fromDescription(item.optString("desc")),
             )
         }
     }
@@ -437,7 +466,7 @@ class HomeworkApi(private val context: Context) {
         if (status == 401) throw AuthorizationExpiredException("Trello 授权已过期，请家长重新授权")
         if (status !in 200..299) {
             val message = runCatching { JSONObject(text).optString("message") }.getOrDefault("")
-            throw IllegalStateException(message.ifBlank { "Trello 请求失败（$status）" })
+            throw TrelloHttpException(status, message.ifBlank { "Trello 请求失败（$status）" })
         }
         return text
     }
@@ -456,6 +485,7 @@ class HomeworkApi(private val context: Context) {
         private const val CALLBACK_URL = "https://www.cyeam.com/homework/trello/android/callback"
         private const val PREFS = "trello_connection"
         private const val TOKEN = "token"
+        private const val VERIFY_BINDING = "verify_binding"
         private const val TODO_LIST = "todo_list_id"
         private const val DONE_LIST = "done_list_id"
         private const val CORRECTED_LIST = "corrected_list_id"
@@ -472,10 +502,10 @@ class HomeworkApi(private val context: Context) {
         fun saveAuthorizationResult(context: Context, uri: Uri?): Boolean {
             if (uri?.scheme != "https" || uri.host != "www.cyeam.com" || uri.path != "/homework/trello/android/callback") return false
             val fragment = uri.fragment ?: return false
-            val token = Uri.parse("https://callback/?$fragment").getQueryParameter("token") ?: return false
+            val token = Uri.parse("https://callback/?$fragment").getQueryParameter("token")?.takeIf { it.isNotBlank() } ?: return false
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putString(TOKEN, DeviceTokenCipher.encrypt(token))
-                .remove(TODO_LIST).remove(DONE_LIST).remove(CORRECTION_LIST).remove(CORRECTED_LIST).apply()
+                .putBoolean(VERIFY_BINDING, true).apply()
             return true
         }
     }
@@ -484,3 +514,7 @@ class HomeworkApi(private val context: Context) {
 private fun homeworkMinutes(desc: String): Int = desc.lineSequence().mapNotNull { line ->
     Regex("^\\s*预计用时:\\s*(\\d+)").find(line)?.groupValues?.getOrNull(1)?.toIntOrNull()
 }.firstOrNull { it in 1..180 } ?: 20
+
+/** Optional older list IDs may be absent; all saved IDs must match the accessible board. */
+internal fun savedBindingMatches(saved: Map<String, String?>, lists: List<TrelloOption>): Boolean =
+    saved.all { (name, id) -> id == null || lists.any { it.id == id && it.name == name } }

@@ -59,6 +59,7 @@ internal fun HomeworkReviewDialog(
                     OutlinedButton(onClick = { textSize -= 2 }, enabled = textSize > 18) { Text("缩小文字") }
                     OutlinedButton(onClick = { textSize += 2 }, enabled = textSize < 32) { Text("放大文字") }
                 }
+                task.gradeResult?.let { HomeworkGradeBadge(it) }
                 HomeworkReviewPanel(task, Modifier.fillMaxWidth().weight(1f), refreshing, textSize.sp)
                 HorizontalDivider()
                 if (task.isCorrection) {
@@ -108,6 +109,7 @@ internal fun HomeworkReviewPanel(task: HomeworkTask, modifier: Modifier = Modifi
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         val date = runCatching { java.time.OffsetDateTime.parse(review.date).atZoneSameInstant(java.time.ZoneId.of("Asia/Shanghai")).format(java.time.format.DateTimeFormatter.ofPattern("M月d日 HH:mm")) }.getOrDefault(review.date)
                         Text("${if (review.id == current?.reviews?.firstOrNull()?.id) "最新批改 · " else "历史批改 · "}$date")
+                        review.gradeResult?.let { HomeworkGradeBadge(it, "本次评分") }
                         review.hasErrors?.let { Text(if (it) "本次批改有错，请查看订正要求" else "本次批改通过") }
                         if (review.type == "text") {
                             SelectionContainer {

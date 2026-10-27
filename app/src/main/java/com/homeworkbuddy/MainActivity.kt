@@ -341,9 +341,12 @@ class MainActivity : ComponentActivity() {
         override fun onReceive(context: Context, intent: Intent) = extendStudyScreenTimeout()
     }
 
+    var trelloAuthorizationRevision by mutableIntStateOf(0)
+        private set
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        HomeworkApi.saveAuthorizationResult(this, intent?.data)
+        if (HomeworkApi.saveAuthorizationResult(this, intent?.data)) trelloAuthorizationRevision++
         setShowWhenLocked(true)
         setTurnScreenOn(true)
         KioskPolicy(this).scheduleNextTransitions()
@@ -353,7 +356,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        HomeworkApi.saveAuthorizationResult(this, intent.data)
+        if (HomeworkApi.saveAuthorizationResult(this, intent.data)) trelloAuthorizationRevision++
         ensureXiaoliConnection()
     }
 
@@ -489,6 +492,7 @@ private fun HomeworkBuddyApp() {
     var selectedBoardId by remember { mutableStateOf("") }
     var connectionError by remember { mutableStateOf<String?>(null) }
     var authorizationExpired by remember { mutableStateOf(false) }
+    var checkingAuthorization by remember { mutableStateOf(false) }
     var foreground by remember { mutableStateOf(true) }
     var refreshRequest by remember { mutableIntStateOf(0) }
     var refreshing by remember { mutableStateOf(false) }
@@ -497,6 +501,7 @@ private fun HomeworkBuddyApp() {
     var showTextSubmission by remember { mutableStateOf(false) }
     var submissionText by remember { mutableStateOf("") }
     var capturePhoto by remember { mutableStateOf<Uri?>(null) }
+    var pageToEdit by remember { mutableStateOf<Uri?>(null) }
     var pendingPhotos by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var pendingAudio by remember { mutableStateOf<Uri?>(null) }
     var recordedAudioElapsedSeconds by remember { mutableIntStateOf(0) }
@@ -646,7 +651,7 @@ private fun HomeworkBuddyApp() {
     // bottom-corner sync error nobody acts on.
     fun reportSyncError(error: Throwable, fallback: String) {
         if (error is AuthorizationExpiredException) {
-            api.clearConnection()
+            api.clearAuthorization()
             connected = false
             authorizationStarted = false
             authorizationExpired = true
@@ -751,8 +756,8 @@ private fun HomeworkBuddyApp() {
         val photo = capturePhoto
         Log.i("HomeworkSubmit", "camera_result captured=$captured task=$selectedId uri=${photo != null}")
         if (captured && photo != null) {
-            pendingPhotos = (pendingPhotos + photo).take(MAX_HOMEWORK_PHOTOS)
-            showCameraConfirm = true
+            pageToEdit = photo
+            showCameraConfirm = false
         }
         capturePhoto = null
         KioskPolicy(context).revokeCameraCaptureAccess()
@@ -923,12 +928,44 @@ private fun HomeworkBuddyApp() {
         }
     }
 
+    fun checkTrelloAuthorization() {
+        if (checkingAuthorization) return
+        if (!api.hasAuthorization) {
+            connectionError = "还没有收到 Trello 授权，请在浏览器中点击允许后返回应用。"
+            return
+        }
+        checkingAuthorization = true
+        scope.launch {
+            try {
+                if (api.restoreBinding()) {
+                    connected = true; showConnectionDialog = false; authorizationExpired = false
+                    connectionError = null; refreshRequest++
+                } else {
+                    val values = api.boards()
+                    trelloBoards = values; selectedBoardId = values.firstOrNull()?.id.orEmpty()
+                    connectionError = if (values.isEmpty()) "这个 Trello 账户还没有看板，请先创建看板。" else null
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                if (error is AuthorizationExpiredException) reportSyncError(error, "")
+                else connectionError = error.message ?: "无法读取看板，请重试。"
+            } finally { checkingAuthorization = false }
+        }
+    }
+
+    val authorizationRevision = (activity as? MainActivity)?.trelloAuthorizationRevision ?: 0
+    LaunchedEffect(authorizationRevision) {
+        if (authorizationRevision > 0 && showConnectionDialog && api.hasAuthorization) checkTrelloAuthorization()
+    }
+
     HomeTheme {
         if (showNameDialog) NameDialog(
             onSaved = { name -> context.getSharedPreferences("profile", Context.MODE_PRIVATE).edit().putString("child_name", name).apply(); childName = name; showNameDialog = false; if (!connected) showConnectionDialog = true }
         )
         if (showConnectionDialog) ConnectionDialog(
             expired = authorizationExpired,
+            checkingAuthorization = checkingAuthorization,
             authorizationStarted = authorizationStarted,
             boards = trelloBoards,
             selectedBoardId = selectedBoardId,
@@ -947,16 +984,7 @@ private fun HomeworkBuddyApp() {
                 (activity as? MainActivity)?.allowManagedActivityLaunch()
                 api.openAuthorization()
             },
-            onCheck = {
-                if (!api.hasAuthorization) {
-                    connectionError = "还没有收到 Trello 授权，请在浏览器中点击允许后返回应用。"
-                } else scope.launch {
-                    runCatching { api.boards() }.onSuccess { values ->
-                        trelloBoards = values; selectedBoardId = values.firstOrNull()?.id.orEmpty()
-                        connectionError = if (values.isEmpty()) "这个 Trello 账户还没有看板，请先创建看板。" else null
-                    }.onFailure { connectionError = it.message ?: "无法读取看板" }
-                }
-            },
+            onCheck = { checkTrelloAuthorization() },
             onSelectBoard = { selectedBoardId = it },
             onFinishSetup = {
                 scope.launch {
@@ -1193,6 +1221,23 @@ private fun HomeworkBuddyApp() {
             onRetake = { submissionTask = null; showCameraConfirm = false; capturePhoto = null; pendingPhotos = emptyList(); deletePendingHomeworkRecording(context, pendingAudio); pendingAudio = null; recordedAudioUri = null },
             onDismissTextSubmission = { if (submittingTaskId == null) { showTextSubmission = false; submissionText = ""; submissionTask = null } },
         )
+        pageToEdit?.let { source ->
+            DocumentPageEditor(
+                source = source,
+                onUse = { page ->
+                    pendingPhotos = (pendingPhotos + page).take(MAX_HOMEWORK_PHOTOS)
+                    runCatching { context.contentResolver.delete(source, null, null) }
+                    pageToEdit = null
+                    showCameraConfirm = true
+                },
+                onCancel = {
+                    runCatching { context.contentResolver.delete(source, null, null) }
+                    pageToEdit = null
+                    showCameraConfirm = pendingPhotos.isNotEmpty()
+                    if (pendingPhotos.isEmpty()) showSubmissionChoice = true
+                },
+            )
+        }
         celebration?.let { event -> CelebrationDialog(event.taskTitle, event.allTasksComplete, event.completedEarly, event.isCorrection) { celebration = null } }
         AppUpdatePanel()
         if (showBlockedApps) BlockedAppsDialog(systemNonAllowedApps) { showBlockedApps = false }
@@ -1259,22 +1304,22 @@ private fun CelebrationDialog(taskTitle: String, allTasksComplete: Boolean, comp
 }
 
 @Composable private fun ConnectionDialog(
-    expired: Boolean, authorizationStarted: Boolean, boards: List<TrelloOption>, selectedBoardId: String, error: String?,
+    expired: Boolean, checkingAuthorization: Boolean, authorizationStarted: Boolean, boards: List<TrelloOption>, selectedBoardId: String, error: String?,
     onConnect: () -> Unit, onCheck: () -> Unit, onSelectBoard: (String) -> Unit,
     onFinishSetup: () -> Unit,
 ) {
     val selectingBoard = boards.isNotEmpty()
     AlertDialog(onDismissRequest = {}, icon = { Text("🔗", fontSize = 38.sp) }, title = { Text(if (expired) "Trello 授权已过期" else "请家长关联 Trello") }, text = {
         Column(Modifier.heightIn(max = 430.dp).verticalScroll(rememberScrollState())) {
-            Text(when { expired && !selectingBoard -> "授权已过期，请家长重新授权 Trello，之后重新选择看板。授权 token 仅加密保存在平板。"; !authorizationStarted -> "家长授权后，这台平板会直接读取 Trello 作业。授权 token 仅加密保存在平板。"; selectingBoard -> "请选择这台平板使用的看板。系统使用“待完成”“已完成”“待改错”“已改错”四个列表，缺少时会自动创建。"; else -> "浏览器只负责 Trello 授权；授权后会自动回到这里，再点击继续。" })
+            Text(when { expired && !selectingBoard -> "授权已失效，请家长重新授权 Trello；应用会尝试恢复原来的看板。授权 token 仅加密保存在平板。"; !authorizationStarted -> "家长授权后，这台平板会直接读取 Trello 作业。授权 token 仅加密保存在平板。"; selectingBoard -> "请选择这台平板使用的看板。系统使用“待完成”“已完成”“待改错”“已改错”四个列表，缺少时会自动创建。"; else -> "浏览器授权后会自动返回，并尝试恢复原有看板；如未自动完成，可点击继续。" })
             if (selectingBoard) boards.forEach { item -> Row(Modifier.fillMaxWidth().clickable { onSelectBoard(item.id) }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) { RadioButton(selectedBoardId == item.id, { onSelectBoard(item.id) }); Text(item.name) } }
             if (error != null) { Spacer(Modifier.height(10.dp)); Text(error, color = MaterialTheme.colorScheme.error) }
         }
     }, confirmButton = { Button(
-        enabled = !selectingBoard || selectedBoardId.isNotEmpty(),
+        enabled = !checkingAuthorization && (!selectingBoard || selectedBoardId.isNotEmpty()),
         onClick = when { !authorizationStarted -> onConnect; selectingBoard -> onFinishSetup; else -> onCheck }
-    ) { Text(when { !authorizationStarted -> "授权 Trello"; selectingBoard -> "绑定看板"; else -> "继续" }) } },
-        dismissButton = { if (authorizationStarted && !selectingBoard) TextButton(onClick = onConnect) { Text("重新授权") } })
+    ) { Text(when { checkingAuthorization -> "正在恢复连接…"; !authorizationStarted -> "授权 Trello"; selectingBoard -> "绑定看板"; else -> "继续" }) } },
+        dismissButton = { if (authorizationStarted && !selectingBoard) TextButton(onClick = onConnect, enabled = !checkingAuthorization) { Text("重新授权") } })
 }
 
 @Composable private fun NameDialog(onSaved: (String) -> Unit) {
@@ -1406,11 +1451,11 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
         title = { Text("怎么提交作业？") },
         text = {
             Column {
-                Text("可以拍作业照片、录一段音频，或直接提交文字内容。录音确认后会作为附件上传到 Trello。")
+                Text("文本相机拍照后可框选作业页面、裁掉背景；也可以录音或直接提交文字。确认后上传到 Trello。")
                 TextButton(onClick = onChooseText) { Text("✏️ 提交文字") }
             }
         },
-        confirmButton = { Button(onClick = onChoosePhoto) { Icon(Icons.Outlined.CameraAlt, null); Spacer(Modifier.width(8.dp)); Text("拍照") } },
+        confirmButton = { Button(onClick = onChoosePhoto) { Icon(Icons.Outlined.CameraAlt, null); Spacer(Modifier.width(8.dp)); Text("文本相机") } },
         dismissButton = { OutlinedButton(onClick = onChooseAudio) { Text("🎙️ 录音") } },
     )
     if (showCameraConfirm) AlertDialog(
@@ -1422,7 +1467,7 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
                 Text(
                     if (submitting) "正在上传作业附件并完成任务…"
                     else if (audioAttached) "录音已完成，也已保存在系统录音机中，将作为附件上传到 Trello。"
-                    else "已拍 $photoCount 张，将作为附件上传到 Trello。",
+                    else "已选 $photoCount 张作业页面，将作为附件上传到 Trello。",
                 )
                 if (!submitting && !audioAttached && photoCount < MAX_HOMEWORK_PHOTOS) {
                     Spacer(Modifier.height(12.dp))
@@ -1880,6 +1925,7 @@ private fun formatStudyDuration(seconds: Long): String {
             TaskStatusPill(task.status)
         }
         Text(task.title, fontSize = 30.sp, fontWeight = FontWeight.Medium)
+        task.gradeResult?.let { HomeworkGradeBadge(it) }
         startedAt?.let { Text("开始 ${homeworkTimeLabel(it)}") }
         completedAt?.let { Text("完成 ${homeworkTimeLabel(it)}", color = Color(0xFF24733A)) }
         duration?.let { Text("实际用时 ${elapsedLabel(it)}") }
@@ -1940,6 +1986,7 @@ private fun formatStudyDuration(seconds: Long): String {
                     TaskStatusPill(task.status)
                 }
                 Spacer(Modifier.height(14.dp)); Text(task.title, fontSize = 30.sp, fontWeight = FontWeight.Medium)
+                task.gradeResult?.let { HomeworkGradeBadge(it) }
                 Text(if (overdue) "已超过截止时间，请优先完成" else "截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", color = if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = if (overdue) FontWeight.Medium else FontWeight.Normal)
                 if (task.isCorrection) Text("请查看这份作业的批改结果，改好后提交修改后的内容。", color = MaterialTheme.colorScheme.primary)
                 task.startedAtEpochSeconds?.let { Text("开始 ${homeworkTimeLabel(it)}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp) }
@@ -1995,6 +2042,7 @@ private fun formatStudyDuration(seconds: Long): String {
                         if (task.subject != "作业") Text(task.subject, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
                         TaskStatusPill(task.status)
                     }
+                    task.gradeResult?.let { HomeworkGradeBadge(it) }
                     Spacer(Modifier.height(2.dp))
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Text(task.title, modifier = Modifier.weight(1f), fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)

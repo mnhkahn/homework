@@ -132,11 +132,14 @@ The shipped tablet app talks to Trello directly instead of through the cyeam.com
   authorizes via `https://trello.com/1/authorize` and the app-link callback
   `https://www.cyeam.com/homework/trello/android/callback` delivers the token fragment
   back to `MainActivity`.
-- Any Trello API answer with HTTP 401 means the token expired or was revoked
-  (`AuthorizationExpiredException`). The app then clears the stored connection and
-  reopens the authorization dialog at the "授权 Trello" step; after consent the parent
-  re-selects the board. If the device is in study mode, authorizing first pauses the
-  lockdown for 15 minutes so the browser can open.
+- New Trello authorization requests use `expiration=never`; previously issued
+  30-day tokens keep their original expiration. On HTTP 401, the app clears the
+  rejected token but retains the board/list IDs, then requests authorization again.
+  After the callback it validates all saved list IDs and names against the accessible
+  board and reconnects automatically; inaccessible or changed bindings require board
+  selection. Network errors are surfaced for retry without clearing the binding.
+  Revocation, cleared app data or lost Keystore keys can still require authorization.
+  In study mode, authorization first pauses lockdown for 15 minutes.
 - Failed submissions stay in `PendingSubmissionStore` and are retried by the 60-second
   refresh loop.
 

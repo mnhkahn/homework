@@ -10,6 +10,7 @@ data class HomeworkReview(
     val text: String? = null,
     val attachmentId: String? = null,
     val hasErrors: Boolean? = null,
+    val gradeResult: HomeworkGradeResult? = null,
 ) {
     companion object {
         const val PREFIX = "作业批改："
@@ -29,7 +30,9 @@ data class HomeworkReview(
                     else -> error("Unsupported review type")
                 }
                 val hasErrors = if (json.has("has_errors")) json.get("has_errors").also { require(it is Boolean) } as Boolean else null
-                HomeworkReview(id, date, type, text, attachmentId, hasErrors)
+                val grade = HomeworkGrade.parse(json.optString("grade"))
+                val result = grade?.let { HomeworkGradeResult(it, json.optBoolean("provisional")) }
+                HomeworkReview(id, date, type, text, attachmentId, hasErrors, result)
             }.getOrNull()
         }
     }
