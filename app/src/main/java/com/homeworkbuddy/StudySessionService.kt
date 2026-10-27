@@ -59,8 +59,9 @@ class StudySessionService : Service() {
                 if (!foreground.allowed) {
                     store.addBlockedSeconds(SCHEDULE_CHECK_INTERVAL_MS / 1_000)
                     val now = System.currentTimeMillis()
-                    val suppressed = policy.isExternalForegroundAllowed || RemotePhotoCoordinator.isCaptureInProgress
-                    if (!suppressed && (foreground.packageName != lastBlockedPackage || now - lastBlockedAt > BLOCK_THROTTLE_MS)) {
+                    // Temporary access applies only to its allowlisted package.
+                    // A stale camera/browser flag must not exempt other apps.
+                    if (foreground.packageName != lastBlockedPackage || now - lastBlockedAt > BLOCK_THROTTLE_MS) {
                         lastBlockedPackage = foreground.packageName
                         lastBlockedAt = now
                         policy.openStudyBlock(foreground.packageName)

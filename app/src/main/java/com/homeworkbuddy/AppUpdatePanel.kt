@@ -37,13 +37,16 @@ fun AppUpdatePanel(updater: AppUpdateViewModel = AppUpdateViewModel.get(LocalCon
     var installError by remember { mutableStateOf<String?>(null) }
     fun prepareSystemScreen() {
         val activity = context as? Activity ?: return
-        (activity as? MainActivity)?.allowManagedActivityLaunch()
         val policy = KioskPolicy(activity)
-        if (policy.isDeviceOwner && policy.mode() == KioskMode.STUDY) policy.pause(15, activity)
+        if (policy.isDeviceOwner && policy.mode() == KioskMode.STUDY && ParentTotpStore(activity).configured) {
+            error("请先通过家长动态验证并临时开放，再安装更新。")
+        }
+        (activity as? MainActivity)?.allowManagedActivityLaunch()
+        if (policy.isDeviceOwner && policy.mode() == KioskMode.STUDY) policy.pause(15, activity, source = "安装应用更新")
     }
     fun install() {
         runCatching { prepareSystemScreen(); context.startActivity(updater.installIntent()) }
-            .onFailure { installError = "无法打开系统安装器，请稍后重试" }
+            .onFailure { installError = it.message ?: "无法打开系统安装器，请稍后重试" }
     }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         if (context.packageManager.canRequestPackageInstalls() && state.stage == UpdateStage.READY) install()
@@ -80,7 +83,7 @@ fun AppUpdatePanel(updater: AppUpdateViewModel = AppUpdateViewModel.get(LocalCon
                     else runCatching {
                         prepareSystemScreen()
                         permission.launch(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}")))
-                    }.onFailure { installError = "无法打开安装权限设置，请稍后重试" }
+                    }.onFailure { installError = it.message ?: "无法打开安装权限设置，请稍后重试" }
                 }) { Text("安装更新") }
                 UpdateStage.FAILED -> TextButton(onClick = { installError = null; updater.checkForUpdate() }) { Text("重试") }
                 else -> TextButton(onClick = { hidden = true }) { Text("后台下载") }

@@ -52,6 +52,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -102,6 +103,8 @@ private class ParentPinStore(context: Context) {
         return MessageDigest.isEqual(expected.toByteArray(), hash(pin, salt).toByteArray())
     }
 
+    fun clearSession() { prefs.edit().remove("authenticated_until").apply() }
+
     fun isSessionValid(now: Long = System.currentTimeMillis()): Boolean =
         prefs.getLong("authenticated_until", 0L) > now
 
@@ -120,6 +123,19 @@ private class ParentPinStore(context: Context) {
 }
 
 class KioskSettingsActivity : FragmentActivity() {
+    var parentAuthRevision by mutableIntStateOf(0)
+        private set
+
+    override fun onStop() {
+        if (ParentTotpStore(this).configured) { ParentPinStore(this).clearSession(); parentAuthRevision++ }
+        super.onStop()
+    }
+
+    override fun onDestroy() {
+        if (isFinishing && ParentTotpStore(this).configured) ParentPinStore(this).clearSession()
+        super.onDestroy()
+    }
+
     override fun onResume() {
         super.onResume()
         val policy = KioskPolicy(this)
@@ -128,6 +144,7 @@ class KioskSettingsActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
         setContent {
             MaterialTheme { ParentGate(this) }
         }
@@ -137,7 +154,11 @@ class KioskSettingsActivity : FragmentActivity() {
 @Composable
 private fun ParentGate(activity: KioskSettingsActivity) {
     val store = remember { ParentPinStore(activity) }
-    var authenticated by remember { mutableStateOf(store.isSessionValid()) }
+    val totp = remember { ParentTotpStore(activity) }
+    var authenticated by remember { mutableStateOf(!totp.configured && store.isSessionValid()) }
+    val authRevision = activity.parentAuthRevision
+    LaunchedEffect(authRevision) { if (authRevision > 0 && !store.isSessionValid()) authenticated = false }
+    var useRecovery by remember { mutableStateOf(false) }
     var hasPin by remember { mutableStateOf(store.hasPin) }
     var pin by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
@@ -177,7 +198,7 @@ private fun ParentGate(activity: KioskSettingsActivity) {
     }
 
     LaunchedEffect(hasPin, systemAuthAvailable) {
-        if (hasPin && systemAuthAvailable) biometricPrompt.authenticate(promptInfo)
+        if (hasPin && !totp.configured && systemAuthAvailable) biometricPrompt.authenticate(promptInfo)
     }
 
     if (authenticated) {
@@ -192,8 +213,8 @@ private fun ParentGate(activity: KioskSettingsActivity) {
                 colors = IconButtonDefaults.filledTonalIconButtonColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
             ) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回", modifier = Modifier.size(32.dp)) }
             Column(Modifier.fillMaxWidth(.55f), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(if (hasPin) "家长验证" else "设置家长 PIN", fontSize = 28.sp, fontWeight = FontWeight.Medium)
-                if (hasPin && systemAuthAvailable) {
+                Text(if (totp.configured || hasPin) "家长验证" else "设置家长 PIN", fontSize = 28.sp, fontWeight = FontWeight.Medium)
+                if (hasPin && !totp.configured && systemAuthAvailable) {
                     Spacer(Modifier.height(14.dp))
                     OutlinedButton(onClick = { biometricPrompt.authenticate(promptInfo) }) {
                         Icon(Icons.Outlined.Face, null)
@@ -203,8 +224,9 @@ private fun ParentGate(activity: KioskSettingsActivity) {
                     Text("也可以使用锁屏验证或家长 PIN", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp))
                 }
                 Spacer(Modifier.height(18.dp))
-                OutlinedTextField(pin, { pin = it.filter(Char::isDigit).take(8) }, label = { Text("4–8 位数字 PIN") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
-                if (!hasPin) {
+                OutlinedTextField(pin, { pin = if (totp.configured && useRecovery) it.filter(Char::isLetterOrDigit).uppercase().take(16) else it.filter(Char::isDigit).take(if (totp.configured) 6 else 8) }, label = { Text(if (totp.configured) { if (useRecovery) "一次性恢复码" else "6 位动态验证码" } else "4–8 位数字 PIN") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
+                if (totp.configured) TextButton(onClick = { useRecovery = !useRecovery; pin = ""; error = null }) { Text(if (useRecovery) "使用动态验证码" else "使用恢复码") }
+                if (!hasPin && !totp.configured) {
                     Spacer(Modifier.height(10.dp))
                     OutlinedTextField(confirm, { confirm = it.filter(Char::isDigit).take(8) }, label = { Text("再次输入 PIN") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
                 }
@@ -212,13 +234,15 @@ private fun ParentGate(activity: KioskSettingsActivity) {
                 Spacer(Modifier.height(18.dp))
                 Button(onClick = {
                     when {
+                        totp.configured && totp.verify(pin, useRecovery) -> { store.markAuthenticated(); authenticated = true; error = null }
+                        totp.configured -> error = if (System.currentTimeMillis() < totp.lockedUntil) "尝试次数过多，请等待 30 秒。" else "验证码无效或已使用，请检查设备时间后重试。"
                         hasPin && store.verify(pin) -> { store.markAuthenticated(); authenticated = true }
                         hasPin -> error = "PIN 不正确"
                         pin.length !in 4..8 -> error = "请输入 4–8 位数字"
                         pin != confirm -> error = "两次输入不一致"
                         else -> { store.set(pin); store.markAuthenticated(); hasPin = true; authenticated = true }
                     }
-                }) { Text(if (hasPin) "进入家长设置" else "保存并进入") }
+                }) { Text(if (hasPin || totp.configured) "进入家长设置" else "保存并进入") }
             }
         }
     }
@@ -228,17 +252,28 @@ private fun ParentGate(activity: KioskSettingsActivity) {
 private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
     val policy = remember { KioskPolicy(activity) }
     var showAppSelection by remember { mutableStateOf(false) }
+    var showOpenVerification by remember { mutableStateOf(false) }
     var startHour by remember { mutableStateOf((policy.startMinutes / 60).toString()) }
     var startMinute by remember { mutableStateOf((policy.startMinutes % 60).toString()) }
     var endHour by remember { mutableStateOf((policy.endMinutes / 60).toString()) }
     var endMinute by remember { mutableStateOf((policy.endMinutes % 60).toString()) }
     var message by remember { mutableStateOf<String?>(null) }
+    var openHistoryRevision by remember { mutableIntStateOf(0) }
+    val openHistory = remember(openHistoryRevision) { TemporaryOpenHistory(activity).records() }
     val alarm = activity.getSystemService(AlarmManager::class.java)
     var screenshotAvailable by remember { mutableStateOf(ScreenCaptureService.available) }
     androidx.lifecycle.compose.LifecycleResumeEffect(Unit) {
         screenshotAvailable = ScreenCaptureService.available
+        openHistoryRevision++
         onPauseOrDispose { }
     }
+
+    if (showOpenVerification) ParentCodeDialog(onDismiss = { showOpenVerification = false }, onVerified = {
+        showOpenVerification = false
+        policy.pause(15, activity, parentVerified = true)
+        openHistoryRevision++
+        message = "已临时进入普通模式 15 分钟（今日第 ${policy.temporaryOpenCountToday} 次）"
+    })
 
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 28.dp), contentPadding = PaddingValues(vertical = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
@@ -256,6 +291,7 @@ private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
                 }
             }
         }
+        item { ParentTotpSettings(onChanged = { ParentPinStore(activity).clearSession() }) }
         item { AppUpdateSettingsCard(activity) }
         item { HeadPoseHistoryCard() }
         item { HeadPoseSettingsCard() }
@@ -274,14 +310,38 @@ private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
                 Column(Modifier.fillMaxWidth().padding(16.dp)) {
                     Text("管控与紧急出口", fontSize = 21.sp, fontWeight = FontWeight.Medium)
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 10.dp)) {
-                        Button(enabled = policy.isDeviceOwner, onClick = { policy.pause(15, activity); message = "已临时进入普通模式 15 分钟（今日第 ${policy.temporaryOpenCountToday} 次）" }) { Icon(Icons.Outlined.LockOpen, null); Spacer(Modifier.size(7.dp)); Text("临时开放 15 分钟") }
-                        Button(enabled = policy.isDeviceOwner, onClick = { policy.guardFor(0, activity); message = "已进入学习模式，守护至今天结束" }) { Icon(Icons.Outlined.Lock, null); Spacer(Modifier.size(7.dp)); Text("守护至今天结束") }
+                        Button(enabled = policy.isDeviceOwner, onClick = {
+                            if (ParentTotpStore(activity).configured) showOpenVerification = true
+                            else { policy.pause(15, activity); openHistoryRevision++; message = "已临时进入普通模式 15 分钟（今日第 ${policy.temporaryOpenCountToday} 次）" }
+                        }) { Icon(Icons.Outlined.LockOpen, null); Spacer(Modifier.size(7.dp)); Text("临时开放 15 分钟") }
+                        Button(enabled = policy.isDeviceOwner, onClick = { policy.guardFor(0, activity); openHistoryRevision++; message = "已进入学习模式，守护至今天结束" }) { Icon(Icons.Outlined.Lock, null); Spacer(Modifier.size(7.dp)); Text("守护至今天结束") }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 10.dp)) {
-                        OutlinedButton(enabled = policy.isDeviceOwner, onClick = { policy.resume(activity) }) { Icon(Icons.Outlined.RestartAlt, null); Spacer(Modifier.size(7.dp)); Text("结束临时开放") }
+                        OutlinedButton(enabled = policy.isDeviceOwner, onClick = { policy.resume(activity); openHistoryRevision++ }) { Icon(Icons.Outlined.RestartAlt, null); Spacer(Modifier.size(7.dp)); Text("结束临时开放") }
                         OutlinedButton(enabled = policy.isDeviceOwner, onClick = policy::openStudyLauncher) { Icon(Icons.Outlined.Apps, null); Spacer(Modifier.size(7.dp)); Text("查看学习应用") }
                     }
                     Text("今日临时开放 ${policy.temporaryOpenCountToday} 次", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp))
+                    Text("最近临时开放记录", fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 12.dp))
+                    if (openHistory.isEmpty()) {
+                        Text("暂无时间明细；更新前只记录了每日次数。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (policy.temporaryOpenUntil > 0) {
+                            val lastEnd = java.time.Instant.ofEpochMilli(policy.temporaryOpenUntil).atZone(java.time.ZoneId.systemDefault())
+                                .format(java.time.format.DateTimeFormatter.ofPattern("M月d日 HH:mm"))
+                            Text("旧记录中最近保存的计划截止：$lastEnd（没有开始时间）", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    } else {
+                        val format = java.time.format.DateTimeFormatter.ofPattern("M月d日 HH:mm")
+                        openHistory.take(10).forEach { record ->
+                            val start = java.time.Instant.ofEpochMilli(record.startedAt).atZone(java.time.ZoneId.systemDefault()).format(format)
+                            val end = java.time.Instant.ofEpochMilli(record.endedAt ?: record.plannedEnd).atZone(java.time.ZoneId.systemDefault()).format(format)
+                            val suffix = when {
+                                record.endedAt != null -> "提前结束"
+                                System.currentTimeMillis() < record.plannedEnd -> "进行中，预计结束"
+                                else -> "计划截止"
+                            }
+                            Text("$start — $end · ${record.source} · $suffix", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 5.dp))
+                        }
+                    }
                     message?.let { Text(it, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 10.dp)) }
                 }
             }

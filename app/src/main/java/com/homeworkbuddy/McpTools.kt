@@ -100,10 +100,12 @@ object McpTools {
         ToolRegistration("self.camera.stop_stream", "停止共享学习画面", emptySchema()) { _, _ ->
             RemoteStreamCoordinator.stop()
         },
-        ToolRegistration("self.kiosk.pause_15_minutes", "临时解除学习模式限制 15 分钟", emptySchema()) { context, _ ->
+        ToolRegistration("self.kiosk.pause_15_minutes", "临时解除学习模式限制 15 分钟；启用家长动态验证后必须提供当前验证码", JSONObject().put("type", "object").put("properties", JSONObject().put("code", JSONObject().put("type", "string").put("description", "家长 Google Authenticator 当前 6 位验证码")))) { context, arguments ->
             val policy = KioskPolicy(context)
             if (!policy.isDeviceOwner) throw IllegalStateException("平板尚未配置为 Device Owner，无法解除学习限制")
-            policy.pause(15)
+            val guard = ParentTotpStore(context)
+            if (guard.configured && !guard.verify(arguments.optString("code"))) throw IllegalStateException("需要有效的家长动态验证码才能临时开放")
+            policy.pause(15, source = "小李远程开放", parentVerified = guard.configured)
             JSONObject().put("paused_minutes", 15).put("paused_until", Instant.ofEpochMilli(policy.pausedUntil).toString())
         },
     )

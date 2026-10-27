@@ -493,6 +493,7 @@ private fun HomeworkBuddyApp() {
     var connectionError by remember { mutableStateOf<String?>(null) }
     var authorizationExpired by remember { mutableStateOf(false) }
     var checkingAuthorization by remember { mutableStateOf(false) }
+    var showTrelloVerification by remember { mutableStateOf(false) }
     var foreground by remember { mutableStateOf(true) }
     var refreshRequest by remember { mutableIntStateOf(0) }
     var refreshing by remember { mutableStateOf(false) }
@@ -974,6 +975,19 @@ private fun HomeworkBuddyApp() {
         if (authorizationRevision > 0 && showConnectionDialog && api.hasAuthorization) checkTrelloAuthorization()
     }
 
+    fun launchTrelloAuthorization(parentVerified: Boolean = false) {
+        connectionError = null
+        trelloBoards = emptyList(); selectedBoardId = ""
+        authorizationStarted = true
+        authorizationExpired = false
+        if (kioskPolicy.isDeviceOwner && kioskPolicy.mode() == KioskMode.STUDY) {
+            kioskPolicy.pause(15, activity, source = "Trello 授权", parentVerified = parentVerified)
+            connectionError = "已临时开放 15 分钟，请在浏览器中完成授权。"
+        }
+        (activity as? MainActivity)?.allowManagedActivityLaunch()
+        api.openAuthorization()
+    }
+
     HomeTheme {
         if (showNameDialog) NameDialog(
             onSaved = { name -> context.getSharedPreferences("profile", Context.MODE_PRIVATE).edit().putString("child_name", name).apply(); childName = name; showNameDialog = false; if (!connected) showConnectionDialog = true }
@@ -986,18 +1000,8 @@ private fun HomeworkBuddyApp() {
             selectedBoardId = selectedBoardId,
             error = connectionError,
             onConnect = {
-                connectionError = null
-                trelloBoards = emptyList(); selectedBoardId = ""
-                authorizationStarted = true
-                authorizationExpired = false
-                // The browser is outside the Lock Task allowlist. Temporarily
-                // open the device so the parent can reach Trello consent.
-                if (kioskPolicy.isDeviceOwner && kioskPolicy.mode() == KioskMode.STUDY) {
-                    kioskPolicy.pause(15, activity)
-                    connectionError = "已临时开放 15 分钟，请在浏览器中完成授权。"
-                }
-                (activity as? MainActivity)?.allowManagedActivityLaunch()
-                api.openAuthorization()
+                if (kioskPolicy.isDeviceOwner && kioskPolicy.mode() == KioskMode.STUDY && ParentTotpStore(context).configured) showTrelloVerification = true
+                else launchTrelloAuthorization()
             },
             onCheck = { checkTrelloAuthorization() },
             onSelectBoard = { selectedBoardId = it },
@@ -1009,6 +1013,10 @@ private fun HomeworkBuddyApp() {
                 }
             },
         )
+        if (showTrelloVerification) ParentCodeDialog(onDismiss = { showTrelloVerification = false }, onVerified = {
+            showTrelloVerification = false
+            launchTrelloAuthorization(parentVerified = true)
+        })
         val activeTask = dayTasks.firstOrNull { it.id == selectedId }
         val selected = submissionTask ?: activeTask
         val selectedIsPiano = activeTask?.title?.contains("钢琴") == true

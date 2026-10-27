@@ -24,6 +24,7 @@ import android.os.Bundle
 import android.os.PowerManager
 import android.os.Process
 import android.os.UserManager
+import android.util.Log
 import android.provider.MediaStore
 import android.provider.Settings
 import java.time.LocalDate
@@ -288,7 +289,12 @@ class KioskPolicy(private val context: Context) {
      * desktop, whose only launch targets are the allowlisted apps.
      */
     fun openStudyBlock(blockedPackage: String) {
-        if (mode() == KioskMode.STUDY) applyAllowlist(KioskMode.STUDY)
+        if (!isDeviceOwner || mode() != KioskMode.STUDY) return
+        applyAllowlist(KioskMode.STUDY)
+        val intent = Intent(context, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        runCatching { launchFromBackground(intent, REQUEST_STUDY_BLOCK) }
+            .onFailure { Log.w("StudyGuard", "Unable to return from blocked package $blockedPackage", it) }
     }
 
     fun applyForCurrentTime(activity: Activity? = null, navigate: Boolean = false) {
@@ -312,6 +318,8 @@ class KioskPolicy(private val context: Context) {
             return
         }
         applyAllowlist(current)
+        runCatching { StudySessionService.start(context) }
+            .onFailure { Log.e("StudyGuard", "Unable to start study-mode guard", it) }
         // Package suspension is the durable boundary. Lock Task is retained
         // only as the study-time navigation UX: no system-home exit button,
         // while the app's own back/return paths remain available.
@@ -328,6 +336,7 @@ class KioskPolicy(private val context: Context) {
 
     fun exitStudyMode(activity: Activity? = null) {
         if (!isDeviceOwner) return
+        TemporaryOpenHistory(context).end(System.currentTimeMillis())
         prefs.edit().remove("normal_override_until").remove("paused_until").remove("study_override_until").remove("guarded_until").apply()
         StudySessionService.stop(context)
         releaseLockTask(activity)
@@ -469,6 +478,10 @@ class KioskPolicy(private val context: Context) {
     fun restoreManagedTask() {
         if (!isDeviceOwner || mode() != KioskMode.STUDY) return
         applyAllowlist(KioskMode.STUDY)
+        val intent = Intent(context, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        runCatching { launchFromBackground(intent, REQUEST_RESTORE_STUDY) }
+            .onFailure { Log.w("StudyGuard", "Unable to restore the study task", it) }
     }
 
     /**
@@ -499,9 +512,12 @@ class KioskPolicy(private val context: Context) {
     }
 
     /** Temporarily use ordinary mode while preserving an auditable daily count. */
-    fun pause(minutes: Int, activity: Activity? = null) {
+    fun pause(minutes: Int, activity: Activity? = null, source: String = "家长设置", parentVerified: Boolean = false) {
         require(minutes > 0)
-        val until = System.currentTimeMillis() + minutes * 60_000L
+        check(!ParentTotpStore(context).configured || parentVerified) { "需要家长动态验证码才能临时开放" }
+        val now = System.currentTimeMillis()
+        val until = now + minutes * 60_000L
+        TemporaryOpenHistory(context).start(now, until, source)
         prefs.edit()
             .putLong("normal_override_until", until)
             .remove("paused_until")
@@ -517,6 +533,7 @@ class KioskPolicy(private val context: Context) {
     /** Re-enter study mode until the end of the current calendar day. */
     fun guardFor(minutes: Int, activity: Activity? = null) {
         if (!isDeviceOwner) return
+        TemporaryOpenHistory(context).end(System.currentTimeMillis())
         prefs.edit()
             .remove("normal_override_until")
             .remove("paused_until")
@@ -531,6 +548,7 @@ class KioskPolicy(private val context: Context) {
     }
 
     fun resume(activity: Activity? = null) {
+        TemporaryOpenHistory(context).end(System.currentTimeMillis())
         prefs.edit().remove("normal_override_until").remove("paused_until").apply()
         applyForCurrentTime(activity, navigate = true)
     }
@@ -632,27 +650,31 @@ class KioskPolicy(private val context: Context) {
      * start, survives reboot, and does not require replacing the system home.
      */
     private fun suspendNonAllowedApps() {
-        // First clear our earlier set: a parent might have just changed the
-        // allowlist, and an already-suspended package may no longer appear in
-        // launcher queries on some Android builds.
-        unsuspendManagedApps(clearSaved = false)
+        val previous = prefs.getStringSet(SUSPENDED_PACKAGES_KEY, emptySet()).orEmpty().toSet()
         val browsers = nonLearningBrowserPackages()
-        // Entries whitelisted before the browser rule existed must not survive:
-        // only Chrome can receive the managed URL allowlist.
         if (studyPackages.any { it in browsers }) {
             prefs.edit().putStringSet("study_packages", studyPackages - browsers - LEARNING_BROWSER_PACKAGE).apply()
         }
         val alwaysAvailable = setOf(context.packageName) + studyPackages + temporaryPackages +
             studyInstallSystemPackages() + systemHomePackages() - browsers
-        val candidates = launchableApps().mapTo(LinkedHashSet()) { it.packageName } - alwaysAvailable + browsers
-        if (candidates.isEmpty()) {
-            prefs.edit().remove(SUSPENDED_PACKAGES_KEY).apply()
-            return
+        val plan = studySuspensionPlan(previous, launchableApps().mapTo(HashSet()) { it.packageName }, browsers, alwaysAvailable)
+
+        // Never release the whole protected set while recomputing it: doing so
+        // briefly lets a blocked app launch every time the guard retries.
+        val resumed = if (plan.toResume.isEmpty()) emptySet() else {
+            val failed = runCatching { dpm.setPackagesSuspended(admin, plan.toResume.toTypedArray(), false).toSet() }
+                .getOrElse { error -> Log.w("StudyGuard", "Cannot restore newly allowed apps", error); plan.toResume }
+            plan.toResume - failed
         }
-        val refused = runCatching {
-            dpm.setPackagesSuspended(admin, candidates.toTypedArray(), true).toSet()
-        }.getOrElse { candidates }
-        prefs.edit().putStringSet(SUSPENDED_PACKAGES_KEY, candidates - refused).apply()
+        val failed = if (plan.toSuspend.isEmpty()) emptySet() else {
+            runCatching { dpm.setPackagesSuspended(admin, plan.toSuspend.toTypedArray(), true).toSet() }
+                .getOrElse { error -> Log.e("StudyGuard", "Cannot suspend blocked apps", error); plan.toSuspend }
+        }
+        if (failed.isNotEmpty()) Log.w("StudyGuard", "System refused to suspend: ${failed.sorted().joinToString()}")
+        // Keep ownership of previously suspended packages even if a retry is
+        // refused, so normal mode can still restore them later.
+        val tracked = (previous - resumed) + (plan.toSuspend - failed)
+        prefs.edit().putStringSet(SUSPENDED_PACKAGES_KEY, tracked).apply()
     }
 
     private fun unsuspendManagedApps(clearSaved: Boolean = true) {
@@ -841,4 +863,11 @@ class KioskUnlockReceiver : BroadcastReceiver() {
             policy.applyForCurrentTime(navigate = true)
         }
     }
+}
+
+internal data class StudySuspensionPlan(val toSuspend: Set<String>, val toResume: Set<String>)
+
+internal fun studySuspensionPlan(previous: Set<String>, launchable: Set<String>, browsers: Set<String>, allowed: Set<String>): StudySuspensionPlan {
+    val toSuspend = (previous + launchable + browsers) - allowed + browsers
+    return StudySuspensionPlan(toSuspend, previous - toSuspend)
 }
