@@ -55,9 +55,12 @@ class HomeworkReminderReceiver : BroadcastReceiver() {
                 .build()
         }
 
-        fun showStatus(context: Context, message: String, audible: Boolean) {
+        fun showStatus(context: Context, message: String, audible: Boolean): Boolean {
             val notification = build(context, message, audible)
-            try { ensureChannel(context).notify(NOTIFICATION_ID, notification) } catch (_: SecurityException) { /* Notification permission can be denied. */ }
+            val manager = ensureChannel(context)
+            if (!androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled() ||
+                manager.getNotificationChannel(CHANNEL_ID)?.importance == NotificationManager.IMPORTANCE_NONE) return false
+            return try { manager.notify(NOTIFICATION_ID, notification); true } catch (_: SecurityException) { false }
         }
     }
 }

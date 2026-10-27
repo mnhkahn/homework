@@ -39,6 +39,23 @@ class HomeworkReminderPlanTest {
         assertEquals(listOf("start", "start", "due", "due"), events.map { it.kind })
     }
 
+    @Test fun newlySyncedOverdueTasksAreReportedOncePerCard() {
+        val overdue = task("new").copy(scheduledDueEpochSeconds = now / 1000 - 90)
+        val old = task("known").copy(scheduledDueEpochSeconds = now / 1000 - 90)
+        val completed = task("done").copy(status = TaskStatus.COMPLETED, scheduledDueEpochSeconds = now / 1000 - 90)
+        val future = task("future")
+        val noDeadline = task("undated").copy(scheduledDueEpochSeconds = null)
+        val tasks = listOf(overdue, old, completed, future, noDeadline, overdue)
+        assertEquals(listOf("new"), newlyObservedOverdue(tasks, setOf("known"), now).map { it.taskId })
+        assertTrue(newlyObservedOverdue(tasks, setOf("known", "new"), now + 60_000).isEmpty())
+    }
+
+    @Test fun aPreviouslyObservedFutureTaskIsNotRealertedAsNewAfterDeadline() {
+        val existing = task("seen")
+        assertTrue(newlyObservedOverdue(listOf(existing), setOf("seen"), (due + 1) * 1000).isEmpty())
+        assertEquals(listOf("seen"), newlyObservedOverdue(listOf(existing), emptySet(), (due + 1) * 1000).map { it.taskId })
+    }
+
     @Test fun trelloDatesPreserveOffsetsAndRejectMissingValues() {
         assertEquals(1_700_000_000L, parseTrelloDate("2023-11-15T06:13:20+08:00"))
         assertNull(parseTrelloDate("null"))

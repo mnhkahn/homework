@@ -12,23 +12,44 @@ object HomeworkReminderScheduler {
     private const val PREFS = "homework_reminder"
     private const val EVENTS = "events_v3"
     private const val LAST_MESSAGE = "last_message_v3"
+    private const val SEEN_TASKS = "seen_tasks_v4"
     private const val REQUEST_CODE = 7101
 
     fun rescheduleFromTasks(context: Context, tasks: List<HomeworkTask>) {
-        if (tasks.none { !it.status.isSubmitted }) {
-            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(LAST_MESSAGE).apply()
-        }
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (tasks.none { !it.status.isSubmitted }) prefs.edit().remove(LAST_MESSAGE).apply()
         val now = System.currentTimeMillis()
+        val existing = load(context)
+        // On upgrade, pending alarms already in the queue identify tasks that
+        // were synchronized before this version introduced seen-task tracking.
+        val seen = if (prefs.contains(SEEN_TASKS)) prefs.getStringSet(SEEN_TASKS, emptySet()).orEmpty().toSet()
+            else existing.mapTo(HashSet()) { it.taskId }
+        val newlyOverdue = newlyObservedOverdue(tasks, seen, now)
+        val overdueIds = newlyOverdue.mapTo(HashSet()) { it.taskId }
         val future = homeworkReminderPlan(tasks, now)
-        // A refresh may race an alarm at its boundary. Preserve an already
-        // scheduled event briefly if it still matches the latest task data.
+        // A refresh may race a previously scheduled alarm at its boundary.
         val validRecent = homeworkReminderPlan(tasks, now - 120_000L).toSet()
-        val due = load(context).filter { it.atMillis <= now && it in validRecent }
+        val due = existing.filter { it.atMillis <= now && it in validRecent && !(it.kind == "start" && it.taskId in overdueIds) }
         save(context, (future + due).distinct().sortedBy { it.atMillis })
-        if (due.isNotEmpty()) fireDue(context, now) else {
-            scheduleNext(context)
-            HomeworkReminderReceiver.showStatus(context, statusText(context), audible = false)
+
+        val pending = (due + newlyOverdue).distinctBy { Triple(it.taskId, it.kind, it.atMillis) }
+        val notified = if (pending.isEmpty()) true else {
+            val message = pending.joinToString("；") { event ->
+                if (event in newlyOverdue) "《${event.title}》已经超时，请尽快完成" else event.message
+            }
+            val sent = HomeworkReminderReceiver.showStatus(context, message, audible = true)
+            if (sent) {
+                prefs.edit().putString(LAST_MESSAGE, message).apply()
+                save(context, future)
+            }
+            sent
         }
+        // A blocked notification must not permanently consume a new overdue task.
+        val observed = tasks.mapTo(HashSet()) { it.id }
+        if (!notified) observed.removeAll(overdueIds)
+        prefs.edit().putStringSet(SEEN_TASKS, seen + observed).apply()
+        scheduleNext(context)
+        if (pending.isEmpty()) HomeworkReminderReceiver.showStatus(context, statusText(context), audible = false)
     }
 
     fun taskStarted(context: Context, taskId: String) = removeEvents(context, taskId, onlyStart = true)
@@ -63,7 +84,7 @@ object HomeworkReminderScheduler {
     }
 
     internal fun statusText(context: Context): String {
-        val next = load(context).firstOrNull()
+        val next = load(context).firstOrNull { it.atMillis > System.currentTimeMillis() }
         if (next != null) {
             val time = java.time.Instant.ofEpochMilli(next.atMillis).atZone(java.time.ZoneId.systemDefault())
                 .format(java.time.format.DateTimeFormatter.ofPattern("M月d日 HH:mm"))
@@ -76,7 +97,7 @@ object HomeworkReminderScheduler {
         val alarm = context.getSystemService(AlarmManager::class.java) ?: return
         val pending = PendingIntent.getBroadcast(context, REQUEST_CODE, Intent(context, HomeworkReminderReceiver::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         alarm.cancel(pending)
-        val next = load(context).firstOrNull() ?: return
+        val next = load(context).firstOrNull { it.atMillis > System.currentTimeMillis() } ?: return
         runCatching { alarm.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, next.atMillis, pending) }
             .recoverCatching { alarm.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, next.atMillis, pending) }
     }

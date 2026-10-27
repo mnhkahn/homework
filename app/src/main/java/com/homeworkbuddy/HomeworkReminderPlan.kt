@@ -16,3 +16,11 @@ internal fun homeworkReminderPlan(tasks: List<HomeworkTask>, nowMillis: Long): L
             if (due != null && due * 1000L > nowMillis) add(HomeworkReminderEvent(task.id, task.title, "due", due * 1000L))
         }
     }.distinctBy { Triple(it.taskId, it.kind, it.atMillis) }.sortedWith(compareBy<HomeworkReminderEvent> { it.atMillis }.thenBy { it.taskId }.thenBy { it.kind })
+
+/** Only newly observed, unfinished cards get an overdue notice during sync. */
+internal fun newlyObservedOverdue(tasks: List<HomeworkTask>, seenIds: Set<String>, nowMillis: Long): List<HomeworkReminderEvent> =
+    tasks.asSequence().filter { !it.status.isSubmitted && it.id !in seenIds }
+        .mapNotNull { task ->
+            val at = task.scheduledDueEpochSeconds?.times(1000L) ?: return@mapNotNull null
+            if (at <= nowMillis) HomeworkReminderEvent(task.id, task.title, "due", at) else null
+        }.distinctBy { it.taskId }.sortedBy { it.atMillis }.toList()
