@@ -80,8 +80,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import androidx.core.content.FileProvider
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ViewModelProvider
@@ -437,21 +437,18 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private class DeviceAwareTakePicture(private val preferFrontCamera: Boolean) : ActivityResultContract<Uri, Boolean>() {
+private class RearCameraTakePicture : ActivityResultContract<Uri, Boolean>() {
     override fun createIntent(context: Context, input: Uri): Intent =
         Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
             putExtra(MediaStore.EXTRA_OUTPUT, input)
             clipData = ClipData.newRawUri("作业照片", input)
             addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
-
-            // Android does not define a guaranteed camera-facing extra. These are the
-            // conventions recognized by common system camera apps, including Xiaomi's.
-            val facing = if (preferFrontCamera) 1 else 0
-            putExtra("android.intent.extras.CAMERA_FACING", facing)
-            putExtra("android.intent.extra.CAMERA_FACING", facing)
-            putExtra("android.intent.extra.USE_FRONT_CAMERA", preferFrontCamera)
-            putExtra("android.intent.extra.USE_REAR_CAMERA", !preferFrontCamera)
-            putExtra("com.google.assistant.extra.USE_FRONT_CAMERA", preferFrontCamera)
+            // Common system camera conventions. The receiving camera app chooses the lens.
+            putExtra("android.intent.extras.CAMERA_FACING", 0)
+            putExtra("android.intent.extra.CAMERA_FACING", 0)
+            putExtra("android.intent.extra.USE_FRONT_CAMERA", false)
+            putExtra("android.intent.extra.USE_REAR_CAMERA", true)
+            putExtra("com.google.assistant.extra.USE_FRONT_CAMERA", false)
         }
 
     override fun parseResult(resultCode: Int, intent: Intent?): Boolean = resultCode == Activity.RESULT_OK
@@ -502,7 +499,6 @@ private fun HomeworkBuddyApp() {
     var showTextSubmission by remember { mutableStateOf(false) }
     var submissionText by remember { mutableStateOf("") }
     var capturePhoto by remember { mutableStateOf<Uri?>(null) }
-    var pageToEdit by remember { mutableStateOf<Uri?>(null) }
     var pendingPhotos by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var pendingAudio by remember { mutableStateOf<Uri?>(null) }
     var recordedAudioElapsedSeconds by remember { mutableIntStateOf(0) }
@@ -753,13 +749,15 @@ private fun HomeworkBuddyApp() {
         }
     }
 
-    val isTablet = context.resources.configuration.smallestScreenWidthDp >= 600
-    val takePhoto = rememberLauncherForActivityResult(remember(isTablet) { DeviceAwareTakePicture(isTablet) }) { captured ->
+    val takePhoto = rememberLauncherForActivityResult(remember { RearCameraTakePicture() }) { captured ->
         val photo = capturePhoto
         Log.i("HomeworkSubmit", "camera_result captured=$captured task=$selectedId uri=${photo != null}")
         if (captured && photo != null) {
-            pageToEdit = photo
-            showCameraConfirm = false
+            pendingPhotos = (pendingPhotos + photo).take(MAX_HOMEWORK_PHOTOS)
+            showCameraConfirm = true
+        } else {
+            photo?.let { runCatching { context.contentResolver.delete(it, null, null) } }
+            if (pendingPhotos.isNotEmpty()) showCameraConfirm = true else showSubmissionChoice = true
         }
         capturePhoto = null
         KioskPolicy(context).revokeCameraCaptureAccess()
@@ -791,16 +789,32 @@ private fun HomeworkBuddyApp() {
         if (granted && photo != null) {
             KioskPolicy(context).allowCameraForCapture()
             (activity as? MainActivity)?.allowManagedActivityLaunch()
-            runCatching { takePhoto.launch(photo) }
-                .onFailure {
-                    capturePhoto = null
-                    KioskPolicy(context).revokeCameraCaptureAccess()
-                    connectionError = "无法打开相机，请检查系统相机是否可用。"
-                }
+            runCatching { takePhoto.launch(photo) }.onFailure {
+                capturePhoto = null
+                KioskPolicy(context).revokeCameraCaptureAccess()
+                if (pendingPhotos.isNotEmpty()) showCameraConfirm = true else showSubmissionChoice = true
+                connectionError = "无法打开相机，请检查系统相机是否可用。"
+            }
         } else {
             capturePhoto = null
+            if (pendingPhotos.isNotEmpty()) showCameraConfirm = true else showSubmissionChoice = true
             connectionError = "需要相机权限才能拍照记录作业。"
         }
+    }
+    fun startPhotoCapture(task: HomeworkTask) {
+        if (capturePhoto != null || pendingPhotos.size >= MAX_HOMEWORK_PHOTOS) return
+        val file = File(context.cacheDir, "photos/${task.id}-${System.currentTimeMillis()}.jpg").also { it.parentFile?.mkdirs() }
+        capturePhoto = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            KioskPolicy(context).allowCameraForCapture()
+            (activity as? MainActivity)?.allowManagedActivityLaunch()
+            runCatching { takePhoto.launch(capturePhoto!!) }.onFailure {
+                capturePhoto = null
+                KioskPolicy(context).revokeCameraCaptureAccess()
+                if (pendingPhotos.isNotEmpty()) showCameraConfirm = true else showSubmissionChoice = true
+                connectionError = "无法打开相机，请检查系统相机是否可用。"
+            }
+        } else requestCameraPermission.launch(Manifest.permission.CAMERA)
     }
     val requestNotificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     LaunchedEffect(Unit) {
@@ -1115,20 +1129,7 @@ private fun HomeworkBuddyApp() {
                     pendingPhotos = emptyList()
                     pendingAudio = null
                     recordedAudioUri = null
-                    val file = File(context.cacheDir, "photos/${current.id}-${System.currentTimeMillis()}.jpg").also { it.parentFile?.mkdirs() }
-                    capturePhoto = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-                        KioskPolicy(context).allowCameraForCapture()
-                        (activity as? MainActivity)?.allowManagedActivityLaunch()
-                        runCatching { takePhoto.launch(capturePhoto!!) }
-                            .onFailure {
-                                capturePhoto = null
-                                KioskPolicy(context).revokeCameraCaptureAccess()
-                                connectionError = "无法打开相机，请检查系统相机是否可用。"
-                            }
-                    } else {
-                        requestCameraPermission.launch(Manifest.permission.CAMERA)
-                    }
+                    startPhotoCapture(current)
                 }
             },
             onChooseAudio = {
@@ -1231,37 +1232,14 @@ private fun HomeworkBuddyApp() {
             showSubmissionChoice = showSubmissionChoice,
             onAddPhoto = {
                 selected?.takeIf { pendingPhotos.size < MAX_HOMEWORK_PHOTOS }?.let { current ->
-                    val file = File(context.cacheDir, "photos/${current.id}-${System.currentTimeMillis()}.jpg").also { it.parentFile?.mkdirs() }
-                    capturePhoto = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-                        KioskPolicy(context).allowCameraForCapture()
-                        (activity as? MainActivity)?.allowManagedActivityLaunch()
-                        takePhoto.launch(capturePhoto!!)
-                    }
-                    else requestCameraPermission.launch(Manifest.permission.CAMERA)
+                    showCameraConfirm = false
+                    startPhotoCapture(current)
                 }
             },
             onDismissSubmissionChoice = { showSubmissionChoice = false; submissionTask = null },
-            onRetake = { submissionTask = null; showCameraConfirm = false; capturePhoto = null; pendingPhotos = emptyList(); deletePendingHomeworkRecording(context, pendingAudio); pendingAudio = null; recordedAudioUri = null },
+            onRetake = { submissionTask = null; showCameraConfirm = false; pendingPhotos = emptyList(); deletePendingHomeworkRecording(context, pendingAudio); pendingAudio = null; recordedAudioUri = null },
             onDismissTextSubmission = { if (submittingTaskId == null) { showTextSubmission = false; submissionText = ""; submissionTask = null } },
         )
-        pageToEdit?.let { source ->
-            DocumentPageEditor(
-                source = source,
-                onUse = { page ->
-                    pendingPhotos = (pendingPhotos + page).take(MAX_HOMEWORK_PHOTOS)
-                    runCatching { context.contentResolver.delete(source, null, null) }
-                    pageToEdit = null
-                    showCameraConfirm = true
-                },
-                onCancel = {
-                    runCatching { context.contentResolver.delete(source, null, null) }
-                    pageToEdit = null
-                    showCameraConfirm = pendingPhotos.isNotEmpty()
-                    if (pendingPhotos.isEmpty()) showSubmissionChoice = true
-                },
-            )
-        }
         celebration?.let { event -> CelebrationDialog(event.taskTitle, event.allTasksComplete, event.completedEarly, event.isCorrection) { celebration = null } }
         AppUpdatePanel()
         if (showBlockedApps) BlockedAppsDialog(systemNonAllowedApps) { showBlockedApps = false }
@@ -1475,11 +1453,11 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
         title = { Text("怎么提交作业？") },
         text = {
             Column {
-                Text("文本相机拍照后可框选作业页面、裁掉背景；也可以录音或直接提交文字。确认后上传到 Trello。")
+                Text("拍摄作业照片；也可以录音或直接提交文字。确认后上传到 Trello。")
                 TextButton(onClick = onChooseText) { Text("✏️ 提交文字") }
             }
         },
-        confirmButton = { Button(onClick = onChoosePhoto) { Icon(Icons.Outlined.CameraAlt, null); Spacer(Modifier.width(8.dp)); Text("文本相机") } },
+        confirmButton = { Button(onClick = onChoosePhoto) { Icon(Icons.Outlined.CameraAlt, null); Spacer(Modifier.width(8.dp)); Text("拍照") } },
         dismissButton = { OutlinedButton(onClick = onChooseAudio) { Text("🎙️ 录音") } },
     )
     if (showCameraConfirm) AlertDialog(
@@ -1491,7 +1469,7 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
                 Text(
                     if (submitting) "正在上传作业附件并完成任务…"
                     else if (audioAttached) "录音已完成，也已保存在系统录音机中，将作为附件上传到 Trello。"
-                    else "已选 $photoCount 张作业页面，将作为附件上传到 Trello。",
+                    else "已拍 $photoCount 张作业照片，将作为附件上传到 Trello。",
                 )
                 if (!submitting && !audioAttached && photoCount < MAX_HOMEWORK_PHOTOS) {
                     Spacer(Modifier.height(12.dp))
@@ -1502,11 +1480,13 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
             }
         },
         confirmButton = {
-            Button(onClick = onSubmit, enabled = !submitting) {
-                if (submitting) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)); Text("正在上传…") } else Text("上传并完成")
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Button(onClick = onSubmit, enabled = !submitting, modifier = Modifier.fillMaxWidth()) {
+                    if (submitting) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)); Text("正在上传…") } else Text("上传并完成")
+                }
+                OutlinedButton(onClick = onRetake, enabled = !submitting, modifier = Modifier.fillMaxWidth()) { Text("返回") }
             }
         },
-        dismissButton = { TextButton(onClick = onRetake, enabled = !submitting) { Text("取消") } },
     )
     if (showTextSubmission) AlertDialog(
         onDismissRequest = onDismissTextSubmission,

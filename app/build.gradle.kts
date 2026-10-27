@@ -11,7 +11,7 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.homeworkbuddy"
+        applicationId = providers.gradleProperty("homeworkApplicationId").orNull ?: "com.homeworkbuddy"
         minSdk = 26
         targetSdk = 35
         versionCode = (providers.gradleProperty("releaseVersionCode").orNull ?: "1").toInt()
