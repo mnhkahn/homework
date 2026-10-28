@@ -1,7 +1,7 @@
 package com.homeworkbuddy
 
 enum class HomeworkGrade(val label: String, val symbol: String) {
-    EXCELLENT("优", "★"), GOOD("良", "✓"), FAIR("中", "●"), NEEDS_PRACTICE("差", "△");
+    PERFECT("100", "🏆"), EXCELLENT("优", "★"), GOOD("良", "✓"), FAIR("中", "●"), NEEDS_PRACTICE("差", "△");
     companion object {
         fun parse(value: String?): HomeworkGrade? = entries.firstOrNull { it.label == value }
     }
@@ -15,6 +15,7 @@ data class HomeworkGradeResult(val grade: HomeworkGrade, val provisional: Boolea
             val text = value?.trim() ?: return null
             val provisional = text.startsWith("暂评·")
             val grade = HomeworkGrade.parse(text.removePrefix("暂评·")) ?: return null
+            if (provisional && grade == HomeworkGrade.PERFECT) return null
             return HomeworkGradeResult(grade, provisional)
         }
 

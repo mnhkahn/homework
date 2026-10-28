@@ -1105,6 +1105,7 @@ private fun HomeworkBuddyApp() {
                     scope.launch {
                         try {
                             val correction = api.taskForCorrection(cardId)
+                            check(correction.canCorrect) { "这份作业已获 100 分，无需改错" }
                             tasks = listOf(correction) + tasks.filterNot { it.id == cardId }
                             taskCache.saveToday(tasks)
                             selectedDate = LocalDate.now()
@@ -1992,7 +1993,7 @@ private fun formatStudyDuration(seconds: Long): String {
                 Spacer(Modifier.height(14.dp)); Text(task.title, fontSize = 30.sp, fontWeight = FontWeight.Medium)
                 task.gradeResult?.let { HomeworkGradeBadge(it) }
                 Text(if (overdue) "已超过截止时间，请优先完成" else "截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", color = if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = if (overdue) FontWeight.Medium else FontWeight.Normal)
-                if (task.isCorrection) Text("请查看这份作业的批改结果，改好后提交修改后的内容。", color = MaterialTheme.colorScheme.primary)
+                if (task.canCorrect) Text("请查看这份作业的批改结果，改好后提交修改后的内容。", color = MaterialTheme.colorScheme.primary)
                 task.startedAtEpochSeconds?.let { Text("开始 ${homeworkTimeLabel(it)}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp) }
                 Spacer(Modifier.height(18.dp)); Box(Modifier.size(166.dp).align(Alignment.CenterHorizontally).clip(CircleShape).background(LocalHomeColors.current.timer).padding(10.dp), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -2012,7 +2013,7 @@ private fun formatStudyDuration(seconds: Long): String {
             horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.Start),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Button(onClick = onStart, enabled = !task.status.isSubmitted && !submitting && !running) { Text(if (running) "正在做" else if (task.isCorrection) "开始改错" else "开始做") }
+            if (!task.isCorrection || task.canCorrect) Button(onClick = onStart, enabled = !task.status.isSubmitted && !submitting && !running) { Text(if (running) "正在做" else if (task.canCorrect) "开始改错" else "开始做") }
             HomeworkLinkButton(task, enabled = !submitting)
             PdfAttachmentButtons(task)
             if (pianoPractice != null) {
@@ -2021,10 +2022,10 @@ private fun formatStudyDuration(seconds: Long): String {
                 }
             }
             if (hasReview) OutlinedButton(onClick = onReview) { Text("查看批改结果") }
-            FilledTonalButton(onClick = onFinish, enabled = !submitting) {
+            if (!task.isCorrection || task.canCorrect) FilledTonalButton(onClick = onFinish, enabled = !submitting) {
                 Icon(Icons.Outlined.CameraAlt, null)
                 Spacer(Modifier.width(8.dp))
-                Text(if (task.isCorrection) "提交修改后的内容" else "完成并提交")
+                Text(if (task.canCorrect) "提交修改后的内容" else "完成并提交")
             }
         }
     }
@@ -2056,7 +2057,7 @@ private fun formatStudyDuration(seconds: Long): String {
                     if (task.id in reviewedTaskIds) {
                         TextButton(onClick = { onReview(task) }) { Text("查看批改结果") }
                     }
-                    if (task.isCorrection) {
+                    if (task.canCorrect) {
                         TextButton(onClick = { onResubmit(task.id) }, enabled = !submitting) { Text("提交修改后的内容") }
                     }
                     if (completed && task.photoUrls.isNotEmpty()) {

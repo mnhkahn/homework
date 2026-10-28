@@ -59,6 +59,7 @@ data class HomeworkTask(
         it.startsWith("content://media/") ||
             it.startsWith("content://com.android.soundrecorder.fileprovider/")
     }
+    val canCorrect: Boolean get() = isCorrection && (gradeResult?.grade != HomeworkGrade.PERFECT || gradeResult.provisional)
 }
 
 /** Legacy preview abstraction; production homework sync is implemented by [HomeworkApi]. */

@@ -62,7 +62,7 @@ internal fun HomeworkReviewDialog(
                 task.gradeResult?.let { HomeworkGradeBadge(it) }
                 HomeworkReviewPanel(task, Modifier.fillMaxWidth().weight(1f), refreshing, textSize.sp)
                 HorizontalDivider()
-                if (task.isCorrection) {
+                if (task.canCorrect) {
                     Button(
                         onClick = onSubmitCorrection,
                         enabled = !submitting && !refreshing,
