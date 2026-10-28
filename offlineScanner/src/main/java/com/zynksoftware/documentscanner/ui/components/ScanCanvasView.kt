@@ -117,14 +117,21 @@ internal class ScanCanvasView : FrameLayout {
     fun showMappedShape(points: FloatArray) {
         this.previewWidth = width.toFloat()
         this.previewHeight = height.toFloat()
-        val pointer1x = points[0]
-        val pointer1y = points[1]
-        val pointer2x = points[2]
-        val pointer2y = points[3]
-        val pointer3x = points[4]
-        val pointer3y = points[5]
-        val pointer4x = points[6]
-        val pointer4y = points[7]
+        val current = displayedPoints()
+        val hasFrame = current.any { it != 0f }
+        val maxJump = points.indices.maxOf { kotlin.math.abs(points[it] - current[it]) }
+        // Camera edge pixels move a little even when the page does not. Smooth
+        // nearby updates, but follow a real camera/page movement immediately.
+        val alpha = if (hasFrame && maxJump < minOf(width, height) * 0.08f) 0.25f else 1f
+        val shown = FloatArray(8) { current[it] + (points[it] - current[it]) * alpha }
+        val pointer1x = shown[0]
+        val pointer1y = shown[1]
+        val pointer2x = shown[2]
+        val pointer2y = shown[3]
+        val pointer3x = shown[4]
+        val pointer3y = shown[5]
+        val pointer4x = shown[6]
+        val pointer4y = shown[7]
 
         pointer1.x = pointer1x
         pointer1.y = pointer1y
@@ -145,6 +152,7 @@ internal class ScanCanvasView : FrameLayout {
     )
 
     fun clearShape() {
+        handlerClear.removeCallbacks(runnable)
         handlerClear.postDelayed(runnable, CLEAR_SHAPE_DELAY_IN_MILLIS)
     }
 

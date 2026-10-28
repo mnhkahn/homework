@@ -45,3 +45,4 @@ Desktop.ini
 captures/
 *.hprof
 
+third_party/offline-doc-scanner/**/build/

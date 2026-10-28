@@ -16,4 +16,7 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "HomeworkBuddy"
-include(":app", ":offlineScanner")
+include(":app", ":scanner-core", ":scanner-processing-opencv", ":scanner-camera", ":scanner-ui-compose", ":scanner-export")
+listOf("scanner-core", "scanner-processing-opencv", "scanner-camera", "scanner-ui-compose", "scanner-export").forEach {
+    project(":$it").projectDir = file("third_party/offline-doc-scanner/$it")
+}
