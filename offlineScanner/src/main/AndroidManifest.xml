@@ -1,0 +1,20 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-feature android:name="android.hardware.camera2" android:required="false"/>
+    <uses-permission android:name="android.permission.CAMERA"/>
+
+    <application>
+
+        <activity
+            android:name=".ui.scan.InternalScanActivity"
+            android:exported="false"
+            android:theme="@style/ActivityTheme" />
+
+        <activity
+            android:name=".ScanActivity"
+            android:exported="false"
+            android:theme="@style/ActivityTheme" />
+
+    </application>
+
+</manifest>

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <string name="zdc_cancel">取消</string>
+    <string name="zdc_auto">自动拍摄</string>
+    <string name="zdc_manual">手动拍摄</string>
+</resources>

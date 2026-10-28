@@ -499,6 +499,8 @@ private fun HomeworkBuddyApp() {
     var showTextSubmission by remember { mutableStateOf(false) }
     var submissionText by remember { mutableStateOf("") }
     var capturePhoto by remember { mutableStateOf<Uri?>(null) }
+    var photoCaptureChoiceTask by remember { mutableStateOf<HomeworkTask?>(null) }
+    var captureWithScanner by remember { mutableStateOf(false) }
     var pendingPhotos by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var pendingAudio by remember { mutableStateOf<Uri?>(null) }
     var recordedAudioElapsedSeconds by remember { mutableIntStateOf(0) }
@@ -762,6 +764,27 @@ private fun HomeworkBuddyApp() {
         capturePhoto = null
         KioskPolicy(context).revokeCameraCaptureAccess()
     }
+    val scanPhoto = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val photo = capturePhoto
+        val scannedPath = result.data?.getStringExtra(HomeworkScanActivity.EXTRA_RESULT_PATH)
+        val saved = result.resultCode == Activity.RESULT_OK && photo != null && !scannedPath.isNullOrBlank() &&
+            runCatching {
+                File(scannedPath).inputStream().use { input ->
+                    checkNotNull(context.contentResolver.openOutputStream(photo, "w")).use { output -> input.copyTo(output) }
+                }
+            }.isSuccess
+        Log.i("HomeworkSubmit", "scan_result saved=$saved task=$selectedId")
+        if (saved) {
+            pendingPhotos = (pendingPhotos + checkNotNull(photo)).take(MAX_HOMEWORK_PHOTOS)
+            showCameraConfirm = true
+        } else {
+            if (result.resultCode == Activity.RESULT_OK) connectionError = "扫描照片保存失败，请重拍或改用系统相机。"
+            photo?.let { runCatching { context.contentResolver.delete(it, null, null) } }
+            if (pendingPhotos.isNotEmpty()) showCameraConfirm = true else showSubmissionChoice = true
+        }
+        capturePhoto = null
+        KioskPolicy(context).revokeCameraCaptureAccess()
+    }
     val recordAudio = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         (activity as? MainActivity)?.finishRecordingScreenProtection()
         if (result.resultCode == Activity.RESULT_OK) {
@@ -789,7 +812,10 @@ private fun HomeworkBuddyApp() {
         if (granted && photo != null) {
             KioskPolicy(context).allowCameraForCapture()
             (activity as? MainActivity)?.allowManagedActivityLaunch()
-            runCatching { takePhoto.launch(photo) }.onFailure {
+            runCatching {
+                if (captureWithScanner) scanPhoto.launch(Intent(context, HomeworkScanActivity::class.java))
+                else takePhoto.launch(photo)
+            }.onFailure {
                 capturePhoto = null
                 KioskPolicy(context).revokeCameraCaptureAccess()
                 if (pendingPhotos.isNotEmpty()) showCameraConfirm = true else showSubmissionChoice = true
@@ -801,14 +827,18 @@ private fun HomeworkBuddyApp() {
             connectionError = "需要相机权限才能拍照记录作业。"
         }
     }
-    fun startPhotoCapture(task: HomeworkTask) {
+    fun launchPhotoCapture(task: HomeworkTask, scanner: Boolean) {
         if (capturePhoto != null || pendingPhotos.size >= MAX_HOMEWORK_PHOTOS) return
+        captureWithScanner = scanner
         val file = File(context.cacheDir, "photos/${task.id}-${System.currentTimeMillis()}.jpg").also { it.parentFile?.mkdirs() }
         capturePhoto = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
             KioskPolicy(context).allowCameraForCapture()
             (activity as? MainActivity)?.allowManagedActivityLaunch()
-            runCatching { takePhoto.launch(capturePhoto!!) }.onFailure {
+            runCatching {
+                if (scanner) scanPhoto.launch(Intent(context, HomeworkScanActivity::class.java))
+                else takePhoto.launch(capturePhoto!!)
+            }.onFailure {
                 capturePhoto = null
                 KioskPolicy(context).revokeCameraCaptureAccess()
                 if (pendingPhotos.isNotEmpty()) showCameraConfirm = true else showSubmissionChoice = true
@@ -816,6 +846,7 @@ private fun HomeworkBuddyApp() {
             }
         } else requestCameraPermission.launch(Manifest.permission.CAMERA)
     }
+    fun startPhotoCapture(task: HomeworkTask) { photoCaptureChoiceTask = task }
     val requestNotificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     LaunchedEffect(Unit) {
         if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -1243,6 +1274,28 @@ private fun HomeworkBuddyApp() {
         )
         celebration?.let { event -> CelebrationDialog(event.taskTitle, event.allTasksComplete, event.completedEarly, event.isCorrection) { celebration = null } }
         AppUpdatePanel()
+        photoCaptureChoiceTask?.let { task ->
+            AlertDialog(
+                onDismissRequest = {
+                    photoCaptureChoiceTask = null
+                    if (pendingPhotos.isNotEmpty()) showCameraConfirm = true else showSubmissionChoice = true
+                },
+                title = { Text("拍摄作业") },
+                text = { Text("选择自动识别纸张并裁剪，或使用系统相机拍照。") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        photoCaptureChoiceTask = null
+                        launchPhotoCapture(task, scanner = true)
+                    }) { Text("自动扫描") }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        photoCaptureChoiceTask = null
+                        launchPhotoCapture(task, scanner = false)
+                    }) { Text("系统相机") }
+                },
+            )
+        }
         if (showBlockedApps) BlockedAppsDialog(systemNonAllowedApps) { showBlockedApps = false }
     }
 }

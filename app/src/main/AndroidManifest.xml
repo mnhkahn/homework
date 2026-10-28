@@ -65,6 +65,11 @@
             </intent-filter>
         </activity>
         <activity
+            android:name=".HomeworkScanActivity"
+            android:exported="false"
+            android:screenOrientation="unspecified"
+            android:theme="@style/ActivityTheme" />
+        <activity
             android:name=".ChildLauncherActivity"
             android:enabled="false"
             android:exported="true"
