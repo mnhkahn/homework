@@ -16,7 +16,6 @@ android {
         targetSdk = 35
         versionCode = (providers.gradleProperty("releaseVersionCode").orNull ?: "1").toInt()
         versionName = providers.gradleProperty("releaseVersionName").orNull ?: "0.1.0"
-        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
         buildConfigField("String", "APP_UPDATE_URL", "\"https://www.cyeam.com/api/apps/homework/update\"")
         // Trello documents application keys as public application identifiers.
         // User tokens are never placed in BuildConfig and stay encrypted on the device.
@@ -49,7 +48,7 @@ kotlin {
 }
 
 dependencies {
-    implementation(project(":scanner-ui-compose"))
+    implementation(project(":offlineScanner"))
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.analytics)
     implementation(libs.firebase.crashlytics)

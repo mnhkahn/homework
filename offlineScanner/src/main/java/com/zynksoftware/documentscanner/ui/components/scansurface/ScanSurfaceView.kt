@@ -43,7 +43,6 @@ import com.zynksoftware.documentscanner.model.DocumentScannerErrorModel
 import com.zynksoftware.documentscanner.model.DocumentScannerErrorModel.ErrorMessage
 import kotlinx.android.synthetic.main.scan_surface_view.view.*
 import org.opencv.core.MatOfPoint2f
-import org.opencv.core.Core
 import org.opencv.core.Point
 import org.opencv.core.Size
 import java.io.File
@@ -95,10 +94,7 @@ internal class ScanSurfaceView : FrameLayout {
 
     fun start() {
         viewFinder.post {
-            if (viewFinder.width == 0 || viewFinder.height == 0) {
-                viewFinder.post { start() }
-                return@post
-            }
+            viewFinder.measure(MeasureSpec.UNSPECIFIED, MeasureSpec.UNSPECIFIED)
             previewSize = android.util.Size(viewFinder.width, viewFinder.height)
             openCamera()
         }
@@ -153,24 +149,6 @@ internal class ScanSurfaceView : FrameLayout {
         lastValidFrameAt = 0L
     }
 
-    private fun keepFrameWhenSceneIsStill(current: org.opencv.core.Mat): Boolean {
-        val previous = lastFrame ?: return false
-        if (previous.size() != current.size()) return false
-        val meanChange = Core.norm(previous, current, Core.NORM_L1) / (current.rows() * current.cols())
-        if (meanChange > 14.0) return false
-        // Edge detection can miss a frame after focus or exposure settles. The
-        // saved preview frame is aligned to the captured photo at shutter time.
-        lastValidFrameAt = SystemClock.elapsedRealtime()
-        return true
-    }
-
-    private fun clearIfSceneChanged(current: org.opencv.core.Mat) {
-        if (keepFrameWhenSceneIsStill(current)) return
-        clearLastFrame()
-        cancelAutoCapture()
-        clearAndInvalidateCanvas()
-    }
-
     private fun setUseCases() {
         viewFinder.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
         preview = Preview.Builder()
@@ -202,10 +180,12 @@ internal class ScanSurfaceView : FrameLayout {
                                 lastFrame?.release()
                                 lastFrame = mat.clone()
                                 lastCorners = largestQuad.points.map { Point(it.x, it.y) }.toTypedArray()
-                            } else clearIfSceneChanged(mat)
+                            } else clearLastFrame()
                         } finally { largestQuad.contour.release() }
                     } else {
-                        clearIfSceneChanged(mat)
+                        clearLastFrame()
+                        cancelAutoCapture()
+                        clearAndInvalidateCanvas()
                     }
                 } finally { mat.release() }
             } catch (e: Exception) {
@@ -242,6 +222,7 @@ internal class ScanSurfaceView : FrameLayout {
         val area = kotlin.math.abs(org.opencv.imgproc.Imgproc.contourArea(approx))
         val imageArea = stdSize.width * stdSize.height
         if (target == null || area < imageArea * 0.12 || area > imageArea * 0.97 || com.zynksoftware.documentscanner.common.utils.DocumentCornerOrder.order(points) == null) {
+            clearAndInvalidateCanvas()
             cancelAutoCapture()
             return false
         }
@@ -249,6 +230,7 @@ internal class ScanSurfaceView : FrameLayout {
         val coords = FloatArray(8) { i -> if (i % 2 == 0) points[i / 2].x.toFloat() else points[i / 2].y.toFloat() }
         CoordinateTransform(source, target).mapPoints(coords)
         if (coords.indices.any { !coords[it].isFinite() || coords[it] < -10f || coords[it] > (if (it % 2 == 0) viewFinder.width else viewFinder.height) + 10f }) {
+            clearAndInvalidateCanvas()
             cancelAutoCapture()
             return false
         }

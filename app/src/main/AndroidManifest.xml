@@ -68,7 +68,7 @@
             android:name=".HomeworkScanActivity"
             android:exported="false"
             android:screenOrientation="unspecified"
-            android:theme="@style/Theme.HomeworkBuddy" />
+            android:theme="@style/ActivityTheme" />
         <activity
             android:name=".ChildLauncherActivity"
             android:enabled="false"

@@ -143,13 +143,6 @@ internal class OpenCvNativeBridge {
                                 val points = polygon.toArray()
                                 val area = abs(Imgproc.contourArea(polygon)) / imageArea
                                 if (points.size != 4 || area <= 0.25 || area >= 0.90) { polygon.release(); continue }
-                                val boxArea = (points.maxOf { it.x } - points.minOf { it.x }) *
-                                    (points.maxOf { it.y } - points.minOf { it.y })
-                                // A contour crossing an open book can approximate to a kite:
-                                // four corners, but almost no bottom edge. It cannot crop a page.
-                                if (boxArea <= 0.0 || area * imageArea / boxArea < 0.65) {
-                                    polygon.release(); continue
-                                }
                                 // A page needs four visible edges. Contours clipped by the
                                 // camera buffer are usually a desk, keyboard, or partial page.
                                 val border = max(3.0, minOf(src.cols(), src.rows()) * 0.005)

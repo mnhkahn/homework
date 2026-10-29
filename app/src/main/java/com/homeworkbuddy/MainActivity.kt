@@ -775,7 +775,6 @@ private fun HomeworkBuddyApp() {
             }.isSuccess
         Log.i("HomeworkSubmit", "scan_result saved=$saved task=$selectedId")
         if (saved) {
-            runCatching { File(scannedPath!!).delete() }
             pendingPhotos = (pendingPhotos + checkNotNull(photo)).take(MAX_HOMEWORK_PHOTOS)
             showCameraConfirm = true
         } else {
