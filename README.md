@@ -32,7 +32,9 @@ Trello 卡片描述第一行的「打分结果：良」保存最近一次批改�
 
 ## 拍照提交作业
 
-选择「拍照」后直接进入自动扫描。扫描使用后置摄像头，由 APK 内置的 DocAligner FastViT-T8 小模型在后台预测纸张四角，首次使用和断网时均无需下载模型。有框时按快门，自动透视裁剪并轻度锐化彩色成片；没框或裁剪失败时保留完整照片，也可继续提交。拍完可再拍照片（最多 4 张），确认后选择「上传并完成」。照片保存在应用缓存中，支持断网重试。
+选择「拍照」后直接进入自动扫描。扫描使用后置摄像头，由 APK 内置的 DocAligner FastViT-SA24（压缩权重、FP32 运算） 小模型在后台预测纸张四角，首次使用和断网时均无需下载模型。有框时按快门，自动透视裁剪并轻度锐化彩色成片；没框或裁剪失败时保留完整照片，也可继续提交。拍完可再拍照片（最多 4 张），确认后选择「上传并完成」。照片保存在应用缓存中，支持断网重试。
+
+可用 `scripts/evaluate-document-model.py --model offlineScanner/src/main/assets/document-corners.onnx --image <图片路径> --output <输出目录>` 离线回放已有照片，输出边框预览和 JSON 结果；同一命令可重复传入 `--image`。脚本依赖 `numpy`、`opencv-python-headless`、`onnxruntime`。本地照片及结果放在 `app/build/scanner-evaluation/`，不提交到 Git。Android 图片回放测试位于 `DocumentModelReplayTest`，本地提供 `inputs/a4.jpg` 和 `inputs/notebook.jpg` 后可在设备上执行。
 
 ## 主屏幕护眼模式
 

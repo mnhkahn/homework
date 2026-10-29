@@ -189,28 +189,27 @@ internal class CameraScreenFragment: BaseFragment(), ScanSurfaceListener  {
         resultLauncher.launch(photoPickerIntent)
     }
 
-    override fun scanSurfacePictureTaken(previewFrame: org.opencv.core.Mat?, previewCorners: Array<org.opencv.core.Point>?) {
+    override fun scanSurfacePictureTaken() {
         val activity = getScanActivity()
         Thread {
             try {
                 val bitmap = android.graphics.BitmapFactory.decodeFile(activity.originalImageFile.absolutePath)
                     ?: error("图片读取失败")
                 val upright = determineImageRotation(activity.originalImageFile, bitmap)
-                // Preserve a usable photo when no border was found, alignment fails,
-                // or perspective correction cannot be completed.
-                val cropped = if (previewFrame != null && previewCorners != null) {
-                    try {
-                        val points = com.zynksoftware.documentscanner.common.utils.CapturedFrameAlignment.align(
-                            previewFrame, previewCorners, upright)
-                        if (points != null) {
+                val cropped = try {
+                    val quad = com.zynksoftware.documentscanner.common.utils.NeuralDocumentDetector.detect(activity.applicationContext, upright)
+                    if (quad != null) {
+                        try {
+                            val p = quad.points
                             com.zynksoftware.documentscanner.common.utils.OpenCvNativeBridge().getScannedBitmap(
-                                upright, points[0], points[1], points[2], points[3], points[4], points[5], points[6], points[7])
-                        } else upright
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Automatic crop unavailable; keeping full photo", e)
-                        upright
-                    }
-                } else upright
+                                upright, p[0].x.toFloat(), p[0].y.toFloat(), p[1].x.toFloat(), p[1].y.toFloat(),
+                                p[2].x.toFloat(), p[2].y.toFloat(), p[3].x.toFloat(), p[3].y.toFloat())
+                        } finally { quad.contour.release() }
+                    } else upright
+                } catch (e: Exception) {
+                    Log.w(TAG, "Automatic crop unavailable; keeping full photo", e)
+                    upright
+                }
                 activity.runOnUiThread {
                     if (isAdded) {
                         hideProgressBar()
@@ -227,8 +226,6 @@ internal class CameraScreenFragment: BaseFragment(), ScanSurfaceListener  {
                         activity.recreate()
                     }
                 }
-            } finally {
-                previewFrame?.release()
             }
         }.start()
     }

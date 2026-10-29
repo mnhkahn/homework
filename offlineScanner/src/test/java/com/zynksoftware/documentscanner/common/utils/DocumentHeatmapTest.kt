@@ -41,4 +41,12 @@ class DocumentHeatmapTest {
             assertNotNull(DocumentHeatmap.decode(page(), 800, 600, rotation))
         }
     }
+    @Test fun rotatingTensorKeepsBgrChannelsAndRoundTrips() {
+        val source = FloatArray(12) { it.toFloat() }
+        assertArrayEquals(floatArrayOf(2f, 0f, 3f, 1f, 6f, 4f, 7f, 5f, 10f, 8f, 11f, 9f),
+            DocumentTensorRotation.clockwise(source, 1, 2), 0f)
+        assertArrayEquals(source, DocumentTensorRotation.clockwise(
+            DocumentTensorRotation.clockwise(source, 1, 2), 3, 2), 0f)
+    }
+
 }

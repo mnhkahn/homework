@@ -36,7 +36,6 @@ import androidx.camera.view.transform.ImageProxyTransformFactory
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
 import com.zynksoftware.documentscanner.R
-import com.zynksoftware.documentscanner.common.extensions.luminanceMat
 import com.zynksoftware.documentscanner.common.utils.ImageDetectionProperties
 import com.zynksoftware.documentscanner.common.utils.NeuralDocumentDetector
 import com.zynksoftware.documentscanner.model.DocumentScannerErrorModel
@@ -74,8 +73,7 @@ internal class ScanSurfaceView : FrameLayout {
     private var isAutoCaptureScheduled = false
     @Volatile private var isCapturing = false
     private var lastValidFrameAt = 0L
-    private var lastFrame: org.opencv.core.Mat? = null
-    private var lastCorners: Array<Point>? = null
+    private var lastAnalyzedAt = 0L
 
     private var imageAnalysis: ImageAnalysis? = null
     private var camera: Camera? = null
@@ -143,9 +141,6 @@ internal class ScanSurfaceView : FrameLayout {
     }
 
     private fun clearLastFrame() {
-        lastFrame?.release()
-        lastFrame = null
-        lastCorners = null
         lastValidFrameAt = 0L
     }
 
@@ -170,23 +165,19 @@ internal class ScanSurfaceView : FrameLayout {
             .build()
 
         imageAnalysis?.setAnalyzer(analysisExecutor) { image ->
-            var pendingFrame: org.opencv.core.Mat? = null
             var pendingQuad: com.zynksoftware.documentscanner.ui.components.Quadrilateral? = null
             try {
-                if (isCapturing) return@setAnalyzer
-                val mat = image.luminanceMat()
-                pendingFrame = mat
+                val now = SystemClock.elapsedRealtime()
+                if (isCapturing || now - lastAnalyzedAt < 180L) return@setAnalyzer
+                lastAnalyzedAt = now
+                val frameSize = Size(image.width.toDouble(), image.height.toDouble())
                 val quad = NeuralDocumentDetector.detect(context.applicationContext, image)
                 pendingQuad = quad
                 val source = ImageProxyTransformFactory().getOutputTransform(image)
                 ContextCompat.getMainExecutor(context).execute {
                     try {
                         if (!isCapturing && isAttachedToWindow) {
-                            if (quad != null && drawLargestRect(quad.contour, quad.points, mat.size(), source)) {
-                                lastFrame?.release()
-                                lastFrame = mat.clone()
-                                lastCorners = quad.points.map { Point(it.x, it.y) }.toTypedArray()
-                            } else {
+                            if (quad == null || !drawLargestRect(quad.contour, quad.points, frameSize, source)) {
                                 cancelAutoCapture()
                                 // Tolerate a brief missed frame without flashing the border.
                                 if (SystemClock.elapsedRealtime() - lastValidFrameAt > 350L) {
@@ -197,10 +188,8 @@ internal class ScanSurfaceView : FrameLayout {
                         }
                     } finally {
                         quad?.contour?.release()
-                        mat.release()
                     }
                 }
-                pendingFrame = null
                 pendingQuad = null
             } catch (e: Exception) {
                 Log.e(TAG, ErrorMessage.DETECT_LARGEST_QUADRILATERAL_FAILED.error, e)
@@ -212,7 +201,6 @@ internal class ScanSurfaceView : FrameLayout {
                     }
                 }
             } finally {
-                pendingFrame?.release()
                 pendingQuad?.contour?.release()
                 image.close()
             }
@@ -292,23 +280,16 @@ internal class ScanSurfaceView : FrameLayout {
         if (isCapturing) return
         // Detection only enables automatic cropping; manual capture must always work.
         cancelAutoCapture()
-        val hasRecentFrame = lastValidFrameAt != 0L &&
-            SystemClock.elapsedRealtime() - lastValidFrameAt <= 800L
-        val previewFrame = if (hasRecentFrame) lastFrame?.clone() else null
-        val previewCorners = if (previewFrame != null) {
-            lastCorners?.map { Point(it.x, it.y) }?.toTypedArray()
-        } else null
         Log.d(TAG, "ZDCtakePicture Starts ${System.currentTimeMillis()}")
         listener.scanSurfaceShowProgress()
         isCapturing = true
 
-        val imageCapture = imageCapture ?: run { previewFrame?.release(); listener.scanSurfaceHideProgress(); isCapturing = false; return }
+        val imageCapture = imageCapture ?: run { listener.scanSurfaceHideProgress(); isCapturing = false; return }
         val outputOptions = ImageCapture.OutputFileOptions.Builder(originalImageFile).build()
 
         imageCapture.takePicture(outputOptions, ContextCompat.getMainExecutor(context),
             object : ImageCapture.OnImageSavedCallback {
                 override fun onError(exc: ImageCaptureException) {
-                    previewFrame?.release()
                     listener.scanSurfaceHideProgress()
                     isCapturing = false
                     Log.e(TAG, "${ErrorMessage.PHOTO_CAPTURE_FAILED.error}: ${exc.message}", exc)
@@ -319,9 +300,8 @@ internal class ScanSurfaceView : FrameLayout {
                     try {
                         unbindCamera()
                         clearAndInvalidateCanvas()
-                        listener.scanSurfacePictureTaken(previewFrame, previewCorners)
+                        listener.scanSurfacePictureTaken()
                     } catch (e: Exception) {
-                        previewFrame?.release()
                         listener.scanSurfaceHideProgress()
                         isCapturing = false
                         Log.e(TAG, "Unable to process captured image", e)

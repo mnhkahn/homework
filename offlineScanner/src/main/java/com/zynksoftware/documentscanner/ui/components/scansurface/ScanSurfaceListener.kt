@@ -21,12 +21,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SO
 package com.zynksoftware.documentscanner.ui.components.scansurface
 
 import com.zynksoftware.documentscanner.model.DocumentScannerErrorModel
-import org.opencv.core.Mat
-import org.opencv.core.Point
 
 internal interface ScanSurfaceListener {
-    /** The receiver owns the optional cloned frame; null means capture without a crop. */
-    fun scanSurfacePictureTaken(previewFrame: Mat?, previewCorners: Array<Point>?)
+    fun scanSurfacePictureTaken()
     fun scanSurfaceShowProgress()
     fun scanSurfaceHideProgress()
     fun onError(error: DocumentScannerErrorModel)

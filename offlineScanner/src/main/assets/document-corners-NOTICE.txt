@@ -1,8 +1,11 @@
-Document corner model: DocAligner FastViT-T8, Apache-2.0.
+Document corner model: DocAligner FastViT-SA24, Apache-2.0.
 Upstream: https://github.com/DocsaidLab/DocAligner
-Original filename: fastvit_t8_h_e_bifpn_256_fp32.onnx
-Source: docaligner/heatmap_reg/infer.py, fastvit_t8 configuration.
+Original filename: fastvit_sa24_h_e_bifpn_256_fp32.onnx
+Source: docaligner/heatmap_reg/infer.py, fastvit_sa24 configuration.
+FP16 storage for large weight tensors; Cast nodes restore FP32 before computation.
+All intermediate tensors, operators, small constants and input/output remain FP32.
+Prepared with scripts/prepare-document-model.py.
 Input: BGR image scaled to 256x256, NCHW float32, values divided by 255.
 Output: four corner heatmaps; regions below 0.3 are rejected.
 See DocAligner-LICENSE.txt for the full license.
-SHA-256: 950070fd4a46e25d46db7c35d0ed77612d9063f70d4543c7c504f0da6a943a89
+SHA-256: 47b9327f87ff92186121125efb8bbfca53db3f6aef2ff522ec17045f431e6c21
