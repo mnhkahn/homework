@@ -481,6 +481,8 @@ private fun HomeworkBuddyApp() {
     var submissionText by remember { mutableStateOf("") }
     var capturePhoto by remember { mutableStateOf<Uri?>(null) }
     var pendingPhotos by remember { mutableStateOf<List<Uri>>(emptyList()) }
+    var retakePhotoIndex by remember { mutableStateOf<Int?>(null) }
+    var initialPhotoPreviewIndex by remember { mutableIntStateOf(0) }
     var pendingAudio by remember { mutableStateOf<Uri?>(null) }
     var recordedAudioElapsedSeconds by remember { mutableIntStateOf(0) }
     var recordedAudioUri by remember { mutableStateOf<String?>(null) }
@@ -741,7 +743,16 @@ private fun HomeworkBuddyApp() {
             }.isSuccess
         Log.i("HomeworkSubmit", "scan_result saved=$saved task=$selectedId")
         if (saved) {
-            pendingPhotos = (pendingPhotos + checkNotNull(photo)).take(MAX_HOMEWORK_PHOTOS)
+            val replacement = retakePhotoIndex?.takeIf { it in pendingPhotos.indices }
+            if (replacement != null) {
+                val previous = pendingPhotos[replacement]
+                pendingPhotos = pendingPhotos.toMutableList().also { it[replacement] = checkNotNull(photo) }
+                initialPhotoPreviewIndex = replacement
+                deletePendingHomeworkPhoto(context, previous)
+            } else {
+                pendingPhotos = (pendingPhotos + checkNotNull(photo)).take(MAX_HOMEWORK_PHOTOS)
+                initialPhotoPreviewIndex = pendingPhotos.lastIndex
+            }
             showCameraConfirm = true
         } else {
             if (result.resultCode == Activity.RESULT_OK) connectionError = "扫描照片保存失败，请重新拍摄。"
@@ -749,6 +760,7 @@ private fun HomeworkBuddyApp() {
             if (pendingPhotos.isNotEmpty()) showCameraConfirm = true else showSubmissionChoice = true
         }
         capturePhoto = null
+        retakePhotoIndex = null
     }
     val recordAudio = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         (activity as? MainActivity)?.finishRecordingScreenProtection()
@@ -779,18 +791,25 @@ private fun HomeworkBuddyApp() {
             runCatching {
                 scanPhoto.launch(Intent(context, HomeworkScanActivity::class.java))
             }.onFailure {
+                capturePhoto?.let { deletePendingHomeworkPhoto(context, it) }
                 capturePhoto = null
+                retakePhotoIndex = null
                 if (pendingPhotos.isNotEmpty()) showCameraConfirm = true else showSubmissionChoice = true
                 connectionError = "无法打开自动扫描，请重试。"
             }
         } else {
+            photo?.let { deletePendingHomeworkPhoto(context, it) }
             capturePhoto = null
+            retakePhotoIndex = null
             if (pendingPhotos.isNotEmpty()) showCameraConfirm = true else showSubmissionChoice = true
             connectionError = "需要相机权限才能拍照记录作业。"
         }
     }
-    fun launchPhotoCapture(task: HomeworkTask) {
-        if (capturePhoto != null || pendingPhotos.size >= MAX_HOMEWORK_PHOTOS) return
+    fun launchPhotoCapture(task: HomeworkTask, replacementIndex: Int? = null) {
+        if (capturePhoto != null || submittingTaskId != null) return
+        if (replacementIndex != null && replacementIndex !in pendingPhotos.indices) return
+        if (replacementIndex == null && pendingPhotos.size >= MAX_HOMEWORK_PHOTOS) return
+        retakePhotoIndex = replacementIndex
         val file = File(context.cacheDir, "photos/${task.id}-${System.currentTimeMillis()}.jpg").also { it.parentFile?.mkdirs() }
         capturePhoto = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
@@ -798,7 +817,9 @@ private fun HomeworkBuddyApp() {
             runCatching {
                 scanPhoto.launch(Intent(context, HomeworkScanActivity::class.java))
             }.onFailure {
+                capturePhoto?.let { deletePendingHomeworkPhoto(context, it) }
                 capturePhoto = null
+                retakePhotoIndex = null
                 if (pendingPhotos.isNotEmpty()) showCameraConfirm = true else showSubmissionChoice = true
                 connectionError = "无法打开自动扫描，请重试。"
             }
@@ -1216,17 +1237,48 @@ private fun HomeworkBuddyApp() {
                 }
             },
             showCameraConfirm = showCameraConfirm,
-            photoCount = pendingPhotos.size,
+            photos = pendingPhotos,
+            initialPhotoPreviewIndex = initialPhotoPreviewIndex,
             audioAttached = pendingAudio != null,
             showSubmissionChoice = showSubmissionChoice,
             onAddPhoto = {
-                selected?.takeIf { pendingPhotos.size < MAX_HOMEWORK_PHOTOS }?.let { current ->
+                selected?.takeIf { pendingPhotos.size < MAX_HOMEWORK_PHOTOS && submittingTaskId == null }?.let { current ->
                     showCameraConfirm = false
                     launchPhotoCapture(current)
                 }
             },
+            onRetakePhoto = { index ->
+                selected?.takeIf { index in pendingPhotos.indices && submittingTaskId == null }?.let { current ->
+                    initialPhotoPreviewIndex = index
+                    showCameraConfirm = false
+                    launchPhotoCapture(current, index)
+                }
+            },
+            onRemovePhoto = { index ->
+                if (submittingTaskId == null) {
+                    pendingPhotos.getOrNull(index)?.let { photo ->
+                        pendingPhotos = pendingPhotos.filterIndexed { position, _ -> position != index }
+                        deletePendingHomeworkPhoto(context, photo)
+                        if (pendingPhotos.isEmpty()) {
+                            showCameraConfirm = false
+                            showSubmissionChoice = true
+                        }
+                    }
+                }
+            },
             onDismissSubmissionChoice = { showSubmissionChoice = false; submissionTask = null },
-            onRetake = { submissionTask = null; showCameraConfirm = false; pendingPhotos = emptyList(); deletePendingHomeworkRecording(context, pendingAudio); pendingAudio = null; recordedAudioUri = null },
+            onRetake = {
+                if (submittingTaskId == null) {
+                    submissionTask = null
+                    showCameraConfirm = false
+                    pendingPhotos.forEach { deletePendingHomeworkPhoto(context, it) }
+                    pendingPhotos = emptyList()
+                    retakePhotoIndex = null
+                    deletePendingHomeworkRecording(context, pendingAudio)
+                    pendingAudio = null
+                    recordedAudioUri = null
+                }
+            },
             onDismissTextSubmission = { if (submittingTaskId == null) { showTextSubmission = false; submissionText = ""; submissionTask = null } },
         )
         celebration?.let { event -> CelebrationDialog(event.taskTitle, event.allTasksComplete, event.completedEarly, event.isCorrection) { celebration = null } }
@@ -1319,7 +1371,7 @@ private fun CelebrationDialog(taskTitle: String, allTasksComplete: Boolean, comp
 }
 
 @Composable
-private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, selectedDate: LocalDate, onSelectDate: (LocalDate) -> Unit, remainingSeconds: Int, running: Boolean, taskElapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, calendarLoading: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, xiaoliConnection: XiaoliConnectionSnapshot, kioskMode: KioskMode, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onResubmit: (String) -> Unit, onChoosePhoto: () -> Unit, onChooseAudio: () -> Unit, onChooseText: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photoCount: Int, audioAttached: Boolean, showSubmissionChoice: Boolean, showTextSubmission: Boolean, submissionText: String, onSubmissionTextChange: (String) -> Unit, onSubmitText: () -> Unit, onAddPhoto: () -> Unit, onDismissSubmissionChoice: () -> Unit, onRetake: () -> Unit, onDismissTextSubmission: () -> Unit) {
+private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, selectedDate: LocalDate, onSelectDate: (LocalDate) -> Unit, remainingSeconds: Int, running: Boolean, taskElapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, calendarLoading: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, xiaoliConnection: XiaoliConnectionSnapshot, kioskMode: KioskMode, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onResubmit: (String) -> Unit, onChoosePhoto: () -> Unit, onChooseAudio: () -> Unit, onChooseText: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photos: List<Uri>, initialPhotoPreviewIndex: Int, audioAttached: Boolean, showSubmissionChoice: Boolean, showTextSubmission: Boolean, submissionText: String, onSubmissionTextChange: (String) -> Unit, onSubmitText: () -> Unit, onAddPhoto: () -> Unit, onRetakePhoto: (Int) -> Unit, onRemovePhoto: (Int) -> Unit, onDismissSubmissionChoice: () -> Unit, onRetake: () -> Unit, onDismissTextSubmission: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val reviewApi = remember(context) { HomeworkApi(context) }
     var reviewedTaskIds by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -1449,24 +1501,23 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
         confirmButton = { Button(onClick = onChoosePhoto) { Icon(Icons.Outlined.CameraAlt, null); Spacer(Modifier.width(8.dp)); Text("拍照") } },
         dismissButton = { OutlinedButton(onClick = onChooseAudio) { Text("🎙️ 录音") } },
     )
-    if (showCameraConfirm) AlertDialog(
+    if (showCameraConfirm && !audioAttached) HomeworkPhotoPreviewDialog(
+        photos = photos,
+        initialPage = initialPhotoPreviewIndex,
+        maxPhotos = MAX_HOMEWORK_PHOTOS,
+        submitting = submitting,
+        onRetakePhoto = onRetakePhoto,
+        onRemovePhoto = onRemovePhoto,
+        onAddPhoto = onAddPhoto,
+        onSubmit = onSubmit,
+        onCancel = onRetake,
+    )
+    if (showCameraConfirm && audioAttached) AlertDialog(
         onDismissRequest = { if (!submitting) onRetake() },
-        icon = { if (audioAttached) Text("🎙️", fontSize = 28.sp) else Icon(Icons.Outlined.CameraAlt, null) },
-        title = { Text(if (audioAttached) "上传作业录音" else "上传作业照片") },
+        icon = { Text("🎙️", fontSize = 28.sp) },
+        title = { Text("上传作业录音") },
         text = {
-            Column {
-                Text(
-                    if (submitting) "正在上传作业附件并完成任务…"
-                    else if (audioAttached) "录音已完成，也已保存在系统录音机中，将作为附件上传到 Trello。"
-                    else "已拍 $photoCount 张作业照片，将作为附件上传到 Trello。",
-                )
-                if (!submitting && !audioAttached && photoCount < MAX_HOMEWORK_PHOTOS) {
-                    Spacer(Modifier.height(12.dp))
-                    OutlinedButton(onClick = onAddPhoto) {
-                        Icon(Icons.Outlined.CameraAlt, null); Spacer(Modifier.width(8.dp)); Text("再拍一张（最多 $MAX_HOMEWORK_PHOTOS 张）")
-                    }
-                }
-            }
+            Text(if (submitting) "正在上传作业附件并完成任务…" else "录音已完成，也已保存在系统录音机中，将作为附件上传到 Trello。")
         },
         confirmButton = {
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
