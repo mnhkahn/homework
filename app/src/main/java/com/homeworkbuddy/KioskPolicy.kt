@@ -352,33 +352,6 @@ class KioskPolicy(private val context: Context) {
         context.startActivity(Intent(context, ChildLauncherActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP))
     }
 
-    /**
-     * The system camera is a separate app.  During Lock Task it must be
-     * explicitly allowlisted before ACTION_IMAGE_CAPTURE is launched, or MIUI
-     * opens a black frame and immediately returns to this activity.
-     */
-    fun allowCameraForCapture(): Boolean {
-        if (!isDeviceOwner || mode() != KioskMode.STUDY) return false
-        val packageName = context.packageManager.resolveActivity(
-            Intent(MediaStore.ACTION_IMAGE_CAPTURE),
-            PackageManager.MATCH_DEFAULT_ONLY,
-        )?.activityInfo?.packageName ?: return false
-        prefs.edit().putBoolean("external_foreground_allowed", true).apply()
-        allowTemporarily(packageName)
-        return true
-    }
-
-    fun revokeCameraCaptureAccess() {
-        if (!isDeviceOwner) return
-        val packageName = context.packageManager.resolveActivity(
-            Intent(MediaStore.ACTION_IMAGE_CAPTURE),
-            PackageManager.MATCH_DEFAULT_ONLY,
-        )?.activityInfo?.packageName ?: return
-        val updated = temporaryPackages - packageName
-        prefs.edit().putStringSet("temporary_packages", updated).putBoolean("external_foreground_allowed", false).apply()
-        if (mode() == KioskMode.STUDY) applyAllowlist(KioskMode.STUDY)
-    }
-
     val isScreenshotSettingsAllowed: Boolean get() = prefs.getBoolean("screenshot_settings_allowed", false)
 
     /** Parent-only permission setup must remain reachable during Lock Task. */

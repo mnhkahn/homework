@@ -7,7 +7,6 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.content.BroadcastReceiver
-import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -26,7 +25,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.result.contract.ActivityResultContract
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -437,23 +435,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private class RearCameraTakePicture : ActivityResultContract<Uri, Boolean>() {
-    override fun createIntent(context: Context, input: Uri): Intent =
-        Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
-            putExtra(MediaStore.EXTRA_OUTPUT, input)
-            clipData = ClipData.newRawUri("作业照片", input)
-            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            // Common system camera conventions. The receiving camera app chooses the lens.
-            putExtra("android.intent.extras.CAMERA_FACING", 0)
-            putExtra("android.intent.extra.CAMERA_FACING", 0)
-            putExtra("android.intent.extra.USE_FRONT_CAMERA", false)
-            putExtra("android.intent.extra.USE_REAR_CAMERA", true)
-            putExtra("com.google.assistant.extra.USE_FRONT_CAMERA", false)
-        }
-
-    override fun parseResult(resultCode: Int, intent: Intent?): Boolean = resultCode == Activity.RESULT_OK
-}
-
 @Composable
 private fun HomeworkBuddyApp() {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -499,8 +480,6 @@ private fun HomeworkBuddyApp() {
     var showTextSubmission by remember { mutableStateOf(false) }
     var submissionText by remember { mutableStateOf("") }
     var capturePhoto by remember { mutableStateOf<Uri?>(null) }
-    var photoCaptureChoiceTask by remember { mutableStateOf<HomeworkTask?>(null) }
-    var captureWithScanner by remember { mutableStateOf(false) }
     var pendingPhotos by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var pendingAudio by remember { mutableStateOf<Uri?>(null) }
     var recordedAudioElapsedSeconds by remember { mutableIntStateOf(0) }
@@ -751,19 +730,6 @@ private fun HomeworkBuddyApp() {
         }
     }
 
-    val takePhoto = rememberLauncherForActivityResult(remember { RearCameraTakePicture() }) { captured ->
-        val photo = capturePhoto
-        Log.i("HomeworkSubmit", "camera_result captured=$captured task=$selectedId uri=${photo != null}")
-        if (captured && photo != null) {
-            pendingPhotos = (pendingPhotos + photo).take(MAX_HOMEWORK_PHOTOS)
-            showCameraConfirm = true
-        } else {
-            photo?.let { runCatching { context.contentResolver.delete(it, null, null) } }
-            if (pendingPhotos.isNotEmpty()) showCameraConfirm = true else showSubmissionChoice = true
-        }
-        capturePhoto = null
-        KioskPolicy(context).revokeCameraCaptureAccess()
-    }
     val scanPhoto = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val photo = capturePhoto
         val scannedPath = result.data?.getStringExtra(HomeworkScanActivity.EXTRA_RESULT_PATH)
@@ -778,12 +744,11 @@ private fun HomeworkBuddyApp() {
             pendingPhotos = (pendingPhotos + checkNotNull(photo)).take(MAX_HOMEWORK_PHOTOS)
             showCameraConfirm = true
         } else {
-            if (result.resultCode == Activity.RESULT_OK) connectionError = "扫描照片保存失败，请重拍或改用系统相机。"
+            if (result.resultCode == Activity.RESULT_OK) connectionError = "扫描照片保存失败，请重新拍摄。"
             photo?.let { runCatching { context.contentResolver.delete(it, null, null) } }
             if (pendingPhotos.isNotEmpty()) showCameraConfirm = true else showSubmissionChoice = true
         }
         capturePhoto = null
-        KioskPolicy(context).revokeCameraCaptureAccess()
     }
     val recordAudio = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         (activity as? MainActivity)?.finishRecordingScreenProtection()
@@ -810,16 +775,13 @@ private fun HomeworkBuddyApp() {
     val requestCameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         val photo = capturePhoto
         if (granted && photo != null) {
-            KioskPolicy(context).allowCameraForCapture()
             (activity as? MainActivity)?.allowManagedActivityLaunch()
             runCatching {
-                if (captureWithScanner) scanPhoto.launch(Intent(context, HomeworkScanActivity::class.java))
-                else takePhoto.launch(photo)
+                scanPhoto.launch(Intent(context, HomeworkScanActivity::class.java))
             }.onFailure {
                 capturePhoto = null
-                KioskPolicy(context).revokeCameraCaptureAccess()
                 if (pendingPhotos.isNotEmpty()) showCameraConfirm = true else showSubmissionChoice = true
-                connectionError = "无法打开相机，请检查系统相机是否可用。"
+                connectionError = "无法打开自动扫描，请重试。"
             }
         } else {
             capturePhoto = null
@@ -827,26 +789,21 @@ private fun HomeworkBuddyApp() {
             connectionError = "需要相机权限才能拍照记录作业。"
         }
     }
-    fun launchPhotoCapture(task: HomeworkTask, scanner: Boolean) {
+    fun launchPhotoCapture(task: HomeworkTask) {
         if (capturePhoto != null || pendingPhotos.size >= MAX_HOMEWORK_PHOTOS) return
-        captureWithScanner = scanner
         val file = File(context.cacheDir, "photos/${task.id}-${System.currentTimeMillis()}.jpg").also { it.parentFile?.mkdirs() }
         capturePhoto = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-            KioskPolicy(context).allowCameraForCapture()
             (activity as? MainActivity)?.allowManagedActivityLaunch()
             runCatching {
-                if (scanner) scanPhoto.launch(Intent(context, HomeworkScanActivity::class.java))
-                else takePhoto.launch(capturePhoto!!)
+                scanPhoto.launch(Intent(context, HomeworkScanActivity::class.java))
             }.onFailure {
                 capturePhoto = null
-                KioskPolicy(context).revokeCameraCaptureAccess()
                 if (pendingPhotos.isNotEmpty()) showCameraConfirm = true else showSubmissionChoice = true
-                connectionError = "无法打开相机，请检查系统相机是否可用。"
+                connectionError = "无法打开自动扫描，请重试。"
             }
         } else requestCameraPermission.launch(Manifest.permission.CAMERA)
     }
-    fun startPhotoCapture(task: HomeworkTask) { photoCaptureChoiceTask = task }
     val requestNotificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     LaunchedEffect(Unit) {
         if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -1161,7 +1118,7 @@ private fun HomeworkBuddyApp() {
                     pendingPhotos = emptyList()
                     pendingAudio = null
                     recordedAudioUri = null
-                    startPhotoCapture(current)
+                    launchPhotoCapture(current)
                 }
             },
             onChooseAudio = {
@@ -1265,7 +1222,7 @@ private fun HomeworkBuddyApp() {
             onAddPhoto = {
                 selected?.takeIf { pendingPhotos.size < MAX_HOMEWORK_PHOTOS }?.let { current ->
                     showCameraConfirm = false
-                    startPhotoCapture(current)
+                    launchPhotoCapture(current)
                 }
             },
             onDismissSubmissionChoice = { showSubmissionChoice = false; submissionTask = null },
@@ -1274,28 +1231,6 @@ private fun HomeworkBuddyApp() {
         )
         celebration?.let { event -> CelebrationDialog(event.taskTitle, event.allTasksComplete, event.completedEarly, event.isCorrection) { celebration = null } }
         AppUpdatePanel()
-        photoCaptureChoiceTask?.let { task ->
-            AlertDialog(
-                onDismissRequest = {
-                    photoCaptureChoiceTask = null
-                    if (pendingPhotos.isNotEmpty()) showCameraConfirm = true else showSubmissionChoice = true
-                },
-                title = { Text("拍摄作业") },
-                text = { Text("选择自动识别纸张并裁剪，或使用系统相机拍照。") },
-                confirmButton = {
-                    TextButton(onClick = {
-                        photoCaptureChoiceTask = null
-                        launchPhotoCapture(task, scanner = true)
-                    }) { Text("自动扫描") }
-                },
-                dismissButton = {
-                    TextButton(onClick = {
-                        photoCaptureChoiceTask = null
-                        launchPhotoCapture(task, scanner = false)
-                    }) { Text("系统相机") }
-                },
-            )
-        }
         if (showBlockedApps) BlockedAppsDialog(systemNonAllowedApps) { showBlockedApps = false }
     }
 }

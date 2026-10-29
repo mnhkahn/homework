@@ -46,7 +46,10 @@ internal fun HomeworkReviewDialog(
         properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnClickOutside = false),
     ) {
         Surface(
-            modifier = Modifier.fillMaxSize().systemBarsPadding().padding(12.dp),
+            // Some tablet navigation modes report no bottom inset to a Dialog.
+            // Keep the action above the system Back/Home area even then.
+            modifier = Modifier.fillMaxSize().systemBarsPadding()
+                .padding(start = 12.dp, top = 12.dp, end = 12.dp, bottom = 80.dp),
             shape = RoundedCornerShape(24.dp),
             color = MaterialTheme.colorScheme.surface,
         ) {
