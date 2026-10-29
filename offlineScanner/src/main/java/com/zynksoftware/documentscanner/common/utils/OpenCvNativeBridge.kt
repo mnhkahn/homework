@@ -106,8 +106,7 @@ internal class OpenCvNativeBridge {
         return if (src.channels() == 1) findPaperRegion(src) else null
     }
 
-    // Score quadrilateral edges by how much brighter the interior is than the
-    // immediate exterior, together with size and distance from the centre.
+    // Rank visible quadrilaterals by edge contrast, size and distance from the centre.
     private fun findPaperRegion(src: Mat): Quadrilateral? {
         val gray = Mat()
         val edges = Mat()
@@ -142,22 +141,16 @@ internal class OpenCvNativeBridge {
                                 Imgproc.approxPolyDP(raw, polygon, epsilon * perimeter, true)
                                 val points = polygon.toArray()
                                 val area = abs(Imgproc.contourArea(polygon)) / imageArea
-                                if (points.size != 4 || area <= 0.25 || area >= 0.90) { polygon.release(); continue }
+                                if (points.size != 4 || area <= 0.12 || area >= 0.97) { polygon.release(); continue }
                                 // A page needs four visible edges. Contours clipped by the
                                 // camera buffer are usually a desk, keyboard, or partial page.
                                 val border = max(3.0, minOf(src.cols(), src.rows()) * 0.005)
                                 if (points.any { it.x <= border || it.y <= border || it.x >= src.cols() - border || it.y >= src.rows() - border }) {
                                     polygon.release(); continue
                                 }
-                                val centerClearance = Imgproc.pointPolygonTest(
-                                    polygon, Point(src.cols() / 2.0, src.rows() / 2.0), true)
-                                if (centerClearance < minOf(src.cols(), src.rows()) * 0.10) {
-                                    polygon.release(); continue
-                                }
                                 val cx = points.sumOf { it.x } / 4.0
                                 val cy = points.sumOf { it.y } / 4.0
                                 val offset = ((cx - src.cols() / 2.0) / src.cols()).pow(2) + ((cy - src.rows() / 2.0) / src.rows()).pow(2)
-                                if (offset > 0.07) { polygon.release(); continue }
                                 var contrast = 0.0
                                 var count = 0
                                 for (i in 0..3) {
@@ -175,16 +168,15 @@ internal class OpenCvNativeBridge {
                                         val ix = (x + nx * sampleDistance).toInt(); val iy = (y + ny * sampleDistance).toInt()
                                         val ox = (x - nx * sampleDistance).toInt(); val oy = (y - ny * sampleDistance).toInt()
                                         if (ix in 0 until src.cols() && ox in 0 until src.cols() && iy in 0 until src.rows() && oy in 0 until src.rows()) {
-                                            contrast += gray.get(iy, ix)[0] - gray.get(oy, ox)[0]; count++
+                                            contrast += abs(gray.get(iy, ix)[0] - gray.get(oy, ox)[0]); count++
                                         }
                                     }
                                 }
                                 val score = if (count > 0) contrast / count + area * 15.0 - offset * 50.0 else -1.0
                                 val ordered = DocumentCornerOrder.order(points)
-                                // Weak edge contrast often selects a large background patch.
-                                // The previous camera sample scored 5 for that false page,
-                                // while the two centered-paper samples scored 28 and 82.
-                                if (score >= 12.0 && score > bestScore && ordered != null) {
+                                // Position and contrast rank candidates rather than vetoing
+                                // off-centre pages or paper on a similarly bright desk.
+                                if (count > 0 && score > bestScore && ordered != null) {
                                     best?.contour?.release()
                                     best = Quadrilateral(polygon, ordered)
                                     bestScore = score

@@ -38,7 +38,7 @@ import androidx.lifecycle.LifecycleOwner
 import com.zynksoftware.documentscanner.R
 import com.zynksoftware.documentscanner.common.extensions.luminanceMat
 import com.zynksoftware.documentscanner.common.utils.ImageDetectionProperties
-import com.zynksoftware.documentscanner.common.utils.OpenCvNativeBridge
+import com.zynksoftware.documentscanner.common.utils.NeuralDocumentDetector
 import com.zynksoftware.documentscanner.model.DocumentScannerErrorModel
 import com.zynksoftware.documentscanner.model.DocumentScannerErrorModel.ErrorMessage
 import kotlinx.android.synthetic.main.scan_surface_view.view.*
@@ -58,6 +58,7 @@ internal class ScanSurfaceView : FrameLayout {
         private const val TIME_POST_PICTURE = 1500L
         private const val DEFAULT_TIME_POST_PICTURE = 1500L
         private const val IMAGE_ANALYSIS_SCALE_WIDTH = 800
+        private val analysisExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
     }
 
     constructor(context: Context) : super(context)
@@ -68,11 +69,10 @@ internal class ScanSurfaceView : FrameLayout {
     lateinit var listener: ScanSurfaceListener
     lateinit var originalImageFile: File
 
-    private val nativeClass = OpenCvNativeBridge()
     private var autoCaptureTimer: CountDownTimer? = null
     private var millisLeft = 0L
     private var isAutoCaptureScheduled = false
-    private var isCapturing = false
+    @Volatile private var isCapturing = false
     private var lastValidFrameAt = 0L
     private var lastFrame: org.opencv.core.Mat? = null
     private var lastCorners: Array<Point>? = null
@@ -169,31 +169,51 @@ internal class ScanSurfaceView : FrameLayout {
             .setTargetResolution(android.util.Size(width, height))
             .build()
 
-        imageAnalysis?.setAnalyzer(ContextCompat.getMainExecutor(context)) { image ->
+        imageAnalysis?.setAnalyzer(analysisExecutor) { image ->
+            var pendingFrame: org.opencv.core.Mat? = null
+            var pendingQuad: com.zynksoftware.documentscanner.ui.components.Quadrilateral? = null
             try {
+                if (isCapturing) return@setAnalyzer
                 val mat = image.luminanceMat()
-                try {
-                    val largestQuad = nativeClass.detectLargestQuadrilateral(mat)
-                    if (largestQuad != null) {
-                        try {
-                            if (drawLargestRect(largestQuad.contour, largestQuad.points, mat.size(), image)) {
+                pendingFrame = mat
+                val quad = NeuralDocumentDetector.detect(context.applicationContext, image)
+                pendingQuad = quad
+                val source = ImageProxyTransformFactory().getOutputTransform(image)
+                ContextCompat.getMainExecutor(context).execute {
+                    try {
+                        if (!isCapturing && isAttachedToWindow) {
+                            if (quad != null && drawLargestRect(quad.contour, quad.points, mat.size(), source)) {
                                 lastFrame?.release()
                                 lastFrame = mat.clone()
-                                lastCorners = largestQuad.points.map { Point(it.x, it.y) }.toTypedArray()
-                            } else clearLastFrame()
-                        } finally { largestQuad.contour.release() }
-                    } else {
+                                lastCorners = quad.points.map { Point(it.x, it.y) }.toTypedArray()
+                            } else {
+                                cancelAutoCapture()
+                                // Tolerate a brief missed frame without flashing the border.
+                                if (SystemClock.elapsedRealtime() - lastValidFrameAt > 350L) {
+                                    clearLastFrame()
+                                    clearAndInvalidateCanvas()
+                                }
+                            }
+                        }
+                    } finally {
+                        quad?.contour?.release()
+                        mat.release()
+                    }
+                }
+                pendingFrame = null
+                pendingQuad = null
+            } catch (e: Exception) {
+                Log.e(TAG, ErrorMessage.DETECT_LARGEST_QUADRILATERAL_FAILED.error, e)
+                ContextCompat.getMainExecutor(context).execute {
+                    if (!isCapturing) {
                         clearLastFrame()
                         cancelAutoCapture()
                         clearAndInvalidateCanvas()
                     }
-                } finally { mat.release() }
-            } catch (e: Exception) {
-                Log.e(TAG, ErrorMessage.DETECT_LARGEST_QUADRILATERAL_FAILED.error, e)
-                clearLastFrame()
-                cancelAutoCapture()
-                clearAndInvalidateCanvas()
+                }
             } finally {
+                pendingFrame?.release()
+                pendingQuad?.contour?.release()
                 image.close()
             }
         }
@@ -203,7 +223,7 @@ internal class ScanSurfaceView : FrameLayout {
         camera = cameraProvider!!.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, group.build())
     }
 
-    private fun drawLargestRect(approx: MatOfPoint2f, points: Array<Point>, stdSize: Size, image: ImageProxy): Boolean {
+    private fun drawLargestRect(approx: MatOfPoint2f, points: Array<Point>, stdSize: Size, source: androidx.camera.view.transform.OutputTransform): Boolean {
         // Attention: axis are swapped
         val previewWidth = stdSize.height.toFloat()
         val previewHeight = stdSize.width.toFloat()
@@ -226,7 +246,6 @@ internal class ScanSurfaceView : FrameLayout {
             cancelAutoCapture()
             return false
         }
-        val source = ImageProxyTransformFactory().getOutputTransform(image)
         val coords = FloatArray(8) { i -> if (i % 2 == 0) points[i / 2].x.toFloat() else points[i / 2].y.toFloat() }
         CoordinateTransform(source, target).mapPoints(coords)
         if (coords.indices.any { !coords[it].isFinite() || coords[it] < -10f || coords[it] > (if (it % 2 == 0) viewFinder.width else viewFinder.height) + 10f }) {
@@ -271,27 +290,25 @@ internal class ScanSurfaceView : FrameLayout {
 
     fun takePicture() {
         if (isCapturing) return
-        if (lastValidFrameAt == 0L || SystemClock.elapsedRealtime() - lastValidFrameAt > 800L) {
-            Toast.makeText(context, "请先对准作业纸，等边框出现后再拍照", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val previewFrame = lastFrame?.clone()
-        val previewCorners = lastCorners?.map { Point(it.x, it.y) }?.toTypedArray()
-        if (previewFrame == null || previewCorners == null) {
-            Toast.makeText(context, "边框不稳定，请重新对准", Toast.LENGTH_SHORT).show()
-            return
-        }
+        // Detection only enables automatic cropping; manual capture must always work.
+        cancelAutoCapture()
+        val hasRecentFrame = lastValidFrameAt != 0L &&
+            SystemClock.elapsedRealtime() - lastValidFrameAt <= 800L
+        val previewFrame = if (hasRecentFrame) lastFrame?.clone() else null
+        val previewCorners = if (previewFrame != null) {
+            lastCorners?.map { Point(it.x, it.y) }?.toTypedArray()
+        } else null
         Log.d(TAG, "ZDCtakePicture Starts ${System.currentTimeMillis()}")
         listener.scanSurfaceShowProgress()
         isCapturing = true
 
-        val imageCapture = imageCapture ?: run { previewFrame.release(); listener.scanSurfaceHideProgress(); isCapturing = false; return }
+        val imageCapture = imageCapture ?: run { previewFrame?.release(); listener.scanSurfaceHideProgress(); isCapturing = false; return }
         val outputOptions = ImageCapture.OutputFileOptions.Builder(originalImageFile).build()
 
         imageCapture.takePicture(outputOptions, ContextCompat.getMainExecutor(context),
             object : ImageCapture.OnImageSavedCallback {
                 override fun onError(exc: ImageCaptureException) {
-                    previewFrame.release()
+                    previewFrame?.release()
                     listener.scanSurfaceHideProgress()
                     isCapturing = false
                     Log.e(TAG, "${ErrorMessage.PHOTO_CAPTURE_FAILED.error}: ${exc.message}", exc)
@@ -304,7 +321,7 @@ internal class ScanSurfaceView : FrameLayout {
                         clearAndInvalidateCanvas()
                         listener.scanSurfacePictureTaken(previewFrame, previewCorners)
                     } catch (e: Exception) {
-                        previewFrame.release()
+                        previewFrame?.release()
                         listener.scanSurfaceHideProgress()
                         isCapturing = false
                         Log.e(TAG, "Unable to process captured image", e)

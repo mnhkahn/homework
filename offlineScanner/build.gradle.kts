@@ -18,6 +18,8 @@ kotlin {
 }
 
 dependencies {
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
+    testImplementation("junit:junit:4.13.2")
     implementation("org.opencv:opencv:4.9.0")
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")

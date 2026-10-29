@@ -189,17 +189,28 @@ internal class CameraScreenFragment: BaseFragment(), ScanSurfaceListener  {
         resultLauncher.launch(photoPickerIntent)
     }
 
-    override fun scanSurfacePictureTaken(previewFrame: org.opencv.core.Mat, previewCorners: Array<org.opencv.core.Point>) {
+    override fun scanSurfacePictureTaken(previewFrame: org.opencv.core.Mat?, previewCorners: Array<org.opencv.core.Point>?) {
         val activity = getScanActivity()
         Thread {
             try {
                 val bitmap = android.graphics.BitmapFactory.decodeFile(activity.originalImageFile.absolutePath)
                     ?: error("图片读取失败")
                 val upright = determineImageRotation(activity.originalImageFile, bitmap)
-                val points = com.zynksoftware.documentscanner.common.utils.CapturedFrameAlignment.align(previewFrame, previewCorners, upright)
-                    ?: error("无法对齐取景框与照片，请重拍")
-                val cropped = com.zynksoftware.documentscanner.common.utils.OpenCvNativeBridge().getScannedBitmap(
-                    upright, points[0], points[1], points[2], points[3], points[4], points[5], points[6], points[7])
+                // Preserve a usable photo when no border was found, alignment fails,
+                // or perspective correction cannot be completed.
+                val cropped = if (previewFrame != null && previewCorners != null) {
+                    try {
+                        val points = com.zynksoftware.documentscanner.common.utils.CapturedFrameAlignment.align(
+                            previewFrame, previewCorners, upright)
+                        if (points != null) {
+                            com.zynksoftware.documentscanner.common.utils.OpenCvNativeBridge().getScannedBitmap(
+                                upright, points[0], points[1], points[2], points[3], points[4], points[5], points[6], points[7])
+                        } else upright
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Automatic crop unavailable; keeping full photo", e)
+                        upright
+                    }
+                } else upright
                 activity.runOnUiThread {
                     if (isAdded) {
                         hideProgressBar()
@@ -208,16 +219,16 @@ internal class CameraScreenFragment: BaseFragment(), ScanSurfaceListener  {
                     }
                 }
             } catch (e: Exception) {
-                android.util.Log.e("OfflineScan", "Automatic crop failed", e)
+                android.util.Log.e("OfflineScan", "Unable to read captured photo", e)
                 activity.runOnUiThread {
                     if (isAdded) {
                         hideProgressBar()
-                        android.widget.Toast.makeText(activity, "自动裁剪失败，请重新拍摄", android.widget.Toast.LENGTH_LONG).show()
+                        android.widget.Toast.makeText(activity, "照片读取失败，请重新拍摄", android.widget.Toast.LENGTH_LONG).show()
                         activity.recreate()
                     }
                 }
             } finally {
-                previewFrame.release()
+                previewFrame?.release()
             }
         }.start()
     }

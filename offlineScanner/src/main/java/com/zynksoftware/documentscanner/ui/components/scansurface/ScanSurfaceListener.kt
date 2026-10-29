@@ -25,8 +25,8 @@ import org.opencv.core.Mat
 import org.opencv.core.Point
 
 internal interface ScanSurfaceListener {
-    /** The receiver owns and must release the cloned preview frame. */
-    fun scanSurfacePictureTaken(previewFrame: Mat, previewCorners: Array<Point>)
+    /** The receiver owns the optional cloned frame; null means capture without a crop. */
+    fun scanSurfacePictureTaken(previewFrame: Mat?, previewCorners: Array<Point>?)
     fun scanSurfaceShowProgress()
     fun scanSurfaceHideProgress()
     fun onError(error: DocumentScannerErrorModel)
