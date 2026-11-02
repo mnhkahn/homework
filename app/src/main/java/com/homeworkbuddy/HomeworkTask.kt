@@ -10,7 +10,11 @@ enum class TaskStatus {
     val isSubmitted: Boolean get() = this == COMPLETED || this == CORRECTED
 }
 
-internal fun HomeworkTask.afterSubmission(isCorrection: Boolean = this.isCorrection): HomeworkTask =
+/** Supplementing a corrected task must not move it back into the initial done list. */
+internal val HomeworkTask.submitsCorrection: Boolean
+    get() = isCorrection || status == TaskStatus.CORRECTED
+
+internal fun HomeworkTask.afterSubmission(isCorrection: Boolean = this.submitsCorrection): HomeworkTask =
     copy(status = if (isCorrection) TaskStatus.CORRECTED else TaskStatus.COMPLETED, isCorrection = false)
 
 /**

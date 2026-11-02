@@ -232,7 +232,7 @@ class MainActivity : ComponentActivity() {
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
     private val dimStudyScreen = Runnable {
-        if (isCharging() && KioskPolicy(this).mode() == KioskMode.STUDY) {
+        if (homeworkInProgress || (isCharging() && KioskPolicy(this).mode() == KioskMode.STUDY)) {
             window.attributes = window.attributes.apply { screenBrightness = IDLE_STUDY_BRIGHTNESS }
         }
     }
@@ -279,15 +279,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Keep this Activity's display awake during an assignment. */
+    /** Keep assignments visible, with dimming after inactivity. */
     fun setHomeworkInProgress(inProgress: Boolean) {
         homeworkInProgress = inProgress
-        if (inProgress) extendStudyScreenTimeout() else clearStudyScreenTimeout()
+        extendStudyScreenTimeout()
     }
 
     /**
      * When plugged in, keep the current app visible in either mode.  Learning
-     * mode additionally keeps its quiet-screen dimming behavior on charging.
+     * mode additionally dims on charging. Assignments dim on either power source.
      */
     private fun extendStudyScreenTimeout() {
         if (homeworkInProgress) {
@@ -295,6 +295,7 @@ class MainActivity : ComponentActivity() {
             screenTimeoutHandler.removeCallbacks(clearKeepScreenOn)
             screenTimeoutHandler.removeCallbacks(dimStudyScreen)
             restoreStudyBrightness()
+            screenTimeoutHandler.postDelayed(dimStudyScreen, STUDY_SCREEN_IDLE_DIM_MS)
             return
         }
         val studyMode = KioskPolicy(this).mode() == KioskMode.STUDY
@@ -314,11 +315,6 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun clearStudyScreenTimeout() {
-        if (homeworkInProgress) {
-            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            restoreStudyBrightness()
-            return
-        }
         screenTimeoutHandler.removeCallbacks(clearKeepScreenOn)
         screenTimeoutHandler.removeCallbacks(dimStudyScreen)
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -336,7 +332,11 @@ class MainActivity : ComponentActivity() {
         }
     }
     private val batteryChangeReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) = extendStudyScreenTimeout()
+        override fun onReceive(context: Context, intent: Intent) {
+            // Assignment dimming is independent of power; battery updates are
+            // not user activity and must not restart its inactivity timer.
+            if (!homeworkInProgress) extendStudyScreenTimeout()
+        }
     }
 
     var trelloAuthorizationRevision by mutableIntStateOf(0)
@@ -645,11 +645,11 @@ private fun HomeworkBuddyApp() {
         HomeworkReminderScheduler.taskCompleted(context, taskId)
         val scheduled = weekTasks.firstOrNull { it.id == taskId }
         if (scheduled != null) {
-            weekTasks = weekTasks.map { if (it.id == taskId) it.afterSubmission(isCorrection ?: it.isCorrection).copy(completedAtEpochSeconds = System.currentTimeMillis() / 1_000, photoPath = photoPath ?: it.photoPath) else it }
+            weekTasks = weekTasks.map { if (it.id == taskId) it.afterSubmission(isCorrection ?: it.submitsCorrection).copy(completedAtEpochSeconds = System.currentTimeMillis() / 1_000, photoPath = photoPath ?: it.photoPath) else it }
             taskCache.saveWeek(weekTasks)
         }
         tasks = tasks.map { task ->
-            if (task.id == taskId) task.afterSubmission(isCorrection ?: task.isCorrection).copy(completedAtEpochSeconds = System.currentTimeMillis() / 1_000, photoPath = photoPath ?: task.photoPath) else task
+            if (task.id == taskId) task.afterSubmission(isCorrection ?: task.submitsCorrection).copy(completedAtEpochSeconds = System.currentTimeMillis() / 1_000, photoPath = photoPath ?: task.photoPath) else task
         }
         taskCache.saveToday(tasks)
         if (selectedId == taskId) {
@@ -1105,7 +1105,7 @@ private fun HomeworkBuddyApp() {
                 activeTask?.takeIf { it.title.contains("钢琴") }?.let { pianoPractice = pianoPracticeStore.record(it.id) }
             },
             onFinish = {
-                submissionTask = activeTask?.takeIf { !it.status.isSubmitted }
+                submissionTask = activeTask?.takeIf { submittingTaskId == null }
                 showSubmissionChoice = submissionTask != null
             },
             onResubmit = { cardId ->
@@ -1182,17 +1182,17 @@ private fun HomeworkBuddyApp() {
                     submittingTaskId = current.id
                     val submissionId = java.util.UUID.randomUUID().toString()
                     scope.launch {
-                        runCatching { api.submit(current.id, attachments, current.status == TaskStatus.OVERTIME, submissionId, current.isCorrection) }
+                        runCatching { api.submit(current.id, attachments, current.status == TaskStatus.OVERTIME, submissionId, current.submitsCorrection) }
                             .onSuccess {
                                 CompletionHistoryStore(context).noteTasks(listOf(current))
                                 CompletionHistoryStore(context).recordCompletion(current.id, System.currentTimeMillis() / 1_000, current.dueDate.atTime(current.deadline).atZone(ZoneId.systemDefault()).toEpochSecond(), current.startedAtEpochSeconds, if (recordedAudioUri != null) recordedAudioElapsedSeconds else elapsedSeconds, recordedAudioUri)
                                 advanceAfterCompletion(current.id, recordedAudioUri ?: attachments.first().toString())
-                                celebration = CelebrationEvent(current.title, current.dueDate == LocalDate.now() && tasks.isNotEmpty() && tasks.all { it.status.isSubmitted }, current.dueDate.isAfter(LocalDate.now()), current.isCorrection)
+                                celebration = CelebrationEvent(current.title, current.dueDate == LocalDate.now() && tasks.isNotEmpty() && tasks.all { it.status.isSubmitted }, current.dueDate.isAfter(LocalDate.now()), current.submitsCorrection)
                                 refreshRequest++
                                 showCameraConfirm = false; pendingPhotos = emptyList(); deletePendingHomeworkRecording(context, pendingAudio); pendingAudio = null; recordedAudioUri = null
                             }
                             .onFailure { error ->
-                                pendingStore.add(PendingSubmission(current.id, attachments.map(Uri::toString), current.status == TaskStatus.OVERTIME, submissionId, isCorrection = current.isCorrection, taskTitle = current.title))
+                                pendingStore.add(PendingSubmission(current.id, attachments.map(Uri::toString), current.status == TaskStatus.OVERTIME, submissionId, isCorrection = current.submitsCorrection, taskTitle = current.title))
                                 showCameraConfirm = false; pendingPhotos = emptyList(); pendingAudio = null; recordedAudioUri = null
                                 if (error is AuthorizationExpiredException) reportSyncError(error, "")
                                 else connectionError = "作业附件和完成状态尚未同步到 Trello，任务保留原状态；联网后会自动重试。"
@@ -1216,17 +1216,17 @@ private fun HomeworkBuddyApp() {
                 } else if (submittingTaskId == null) {
                     submittingTaskId = current.id
                     scope.launch {
-                        runCatching { api.submitText(current.id, text, current.isCorrection) }
+                        runCatching { api.submitText(current.id, text, current.submitsCorrection) }
                             .onSuccess {
                                 CompletionHistoryStore(context).noteTasks(listOf(current))
                                 CompletionHistoryStore(context).recordCompletion(current.id, System.currentTimeMillis() / 1_000, current.dueDate.atTime(current.deadline).atZone(ZoneId.systemDefault()).toEpochSecond(), current.startedAtEpochSeconds, elapsedSeconds)
                                 advanceAfterCompletion(current.id)
-                                celebration = CelebrationEvent(current.title, current.dueDate == LocalDate.now() && tasks.isNotEmpty() && tasks.all { it.status.isSubmitted }, current.dueDate.isAfter(LocalDate.now()), current.isCorrection)
+                                celebration = CelebrationEvent(current.title, current.dueDate == LocalDate.now() && tasks.isNotEmpty() && tasks.all { it.status.isSubmitted }, current.dueDate.isAfter(LocalDate.now()), current.submitsCorrection)
                                 refreshRequest++
                                 showTextSubmission = false; submissionText = ""
                             }
                             .onFailure { error ->
-                                pendingStore.add(PendingSubmission(current.id, emptyList(), current.status == TaskStatus.OVERTIME, textContent = text, isCorrection = current.isCorrection, taskTitle = current.title))
+                                pendingStore.add(PendingSubmission(current.id, emptyList(), current.status == TaskStatus.OVERTIME, textContent = text, isCorrection = current.submitsCorrection, taskTitle = current.title))
                                 showTextSubmission = false; submissionText = ""
                                 if (error is AuthorizationExpiredException) reportSyncError(error, "")
                                 else connectionError = "文字作业和完成状态尚未同步到 Trello，任务保留原状态；联网后会自动重试。"
@@ -1949,7 +1949,7 @@ private fun formatStudyDuration(seconds: Long): String {
     }
 }
 
-@Composable private fun CompletedTask(modifier: Modifier, task: HomeworkTask, hasReview: Boolean, onReview: () -> Unit) {
+@Composable private fun CompletedTask(modifier: Modifier, task: HomeworkTask, hasReview: Boolean, onReview: () -> Unit, submitting: Boolean, onSubmitAgain: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val record = remember(task) { CompletionHistoryStore(context).day(task.dueDate).firstOrNull { it.taskId == task.id } }
     val completedAt = task.completedAtEpochSeconds ?: record?.completedAtEpochSeconds
@@ -1981,6 +1981,11 @@ private fun formatStudyDuration(seconds: Long): String {
             }
         }
         if (hasReview) OutlinedButton(onClick = onReview) { Text("查看批改结果") }
+        FilledTonalButton(onClick = onSubmitAgain, enabled = !submitting) {
+            Icon(Icons.Outlined.CameraAlt, null)
+            Spacer(Modifier.width(8.dp))
+            Text("再次提交")
+        }
         HomeworkLinkButton(task)
         PdfAttachmentButtons(task)
         audio?.let { LocalRecordingButton(it) }
@@ -2014,7 +2019,7 @@ private fun formatStudyDuration(seconds: Long): String {
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable private fun CurrentTask(modifier: Modifier, task: HomeworkTask, running: Boolean, elapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, hasReview: Boolean, onReview: () -> Unit) {
     if (task.status.isSubmitted) {
-        CompletedTask(modifier, task, hasReview, onReview)
+        CompletedTask(modifier, task, hasReview, onReview, submitting, onFinish)
         return
     }
     val overdue = task.status == TaskStatus.OVERTIME

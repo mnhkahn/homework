@@ -29,4 +29,20 @@ class HomeworkSubmissionStateTest {
         listOf(TaskStatus.TODO, TaskStatus.NEEDS_CORRECTION, TaskStatus.RUNNING, TaskStatus.OVERTIME)
             .forEach { assertFalse(it.isSubmitted) }
     }
+
+    @Test fun repeatedSupplementsKeepTheCompletedListAndOriginalCard() {
+        for (status in listOf(TaskStatus.COMPLETED, TaskStatus.CORRECTED)) {
+            var completed = task.copy(status = status)
+            repeat(3) {
+                val correctionUpload = completed.submitsCorrection
+                assertEquals(status == TaskStatus.CORRECTED, correctionUpload)
+                // The same flag is persisted for offline retries and sent to Trello.
+                completed = completed.afterSubmission(correctionUpload)
+                assertEquals(status, completed.status)
+                assertEquals(task.id, completed.id)
+                assertFalse(completed.isCorrection)
+            }
+            assertEquals(status, completed.afterSubmission().status)
+        }
+    }
 }

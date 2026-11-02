@@ -25,6 +25,7 @@ import android.os.CountDownTimer
 import android.util.AttributeSet
 import android.util.Log
 import android.view.LayoutInflater
+import android.view.Surface
 import android.widget.FrameLayout
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -131,6 +132,7 @@ internal class ScanSurfaceView : FrameLayout {
 
         imageCapture = null
         imageCapture = ImageCapture.Builder()
+            .setTargetRotation(viewFinder.display?.rotation ?: Surface.ROTATION_0)
             .setFlashMode(flashMode)
             .build()
     }
@@ -147,6 +149,7 @@ internal class ScanSurfaceView : FrameLayout {
     private fun setUseCases() {
         viewFinder.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
         preview = Preview.Builder()
+            .setTargetRotation(viewFinder.display?.rotation ?: Surface.ROTATION_0)
             .setTargetResolution(previewSize)
             .build()
             .also {
@@ -160,6 +163,7 @@ internal class ScanSurfaceView : FrameLayout {
         val height = (width / aspectRatio).roundToInt()
 
         imageAnalysis = ImageAnalysis.Builder()
+            .setTargetRotation(viewFinder.display?.rotation ?: Surface.ROTATION_0)
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .setTargetResolution(android.util.Size(width, height))
             .build()
@@ -285,6 +289,10 @@ internal class ScanSurfaceView : FrameLayout {
         isCapturing = true
 
         val imageCapture = imageCapture ?: run { listener.scanSurfaceHideProgress(); isCapturing = false; return }
+        // A tablet's natural orientation may be landscape. Use the current
+        // display rotation, including rotation since binding the camera, so the
+        // JPEG's EXIF describes the same upright image as the preview.
+        imageCapture.targetRotation = viewFinder.display?.rotation ?: Surface.ROTATION_0
         val outputOptions = ImageCapture.OutputFileOptions.Builder(originalImageFile).build()
 
         imageCapture.takePicture(outputOptions, ContextCompat.getMainExecutor(context),
