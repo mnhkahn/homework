@@ -55,7 +55,7 @@ internal fun HomeworkReviewDialog(
         ) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(task.title, Modifier.weight(1f), fontSize = 22.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    HomeworkTaskTitle(task, Modifier.weight(1f), fontSize = 22.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     TextButton(onClick = onDismiss) { Text("关闭") }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {

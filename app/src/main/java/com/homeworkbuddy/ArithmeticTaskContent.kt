@@ -23,7 +23,7 @@ import java.time.format.DateTimeFormatter
 fun ArithmeticTaskContent(modifier: Modifier, task: HomeworkTask, elapsedSeconds: Int, overdue: Boolean) {
     val questions = remember(task.task) { arithmeticQuestions(task.task) }
     Column(modifier) {
-        Text(task.title, fontSize = 22.sp, fontWeight = FontWeight.Medium)
+        HomeworkTaskTitle(task, fontSize = 22.sp, fontWeight = FontWeight.Medium)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             if (task.subject != "作业") Text(task.subject, fontSize = 13.sp)
             Text(if (overdue) "已超期" else "正在完成", fontSize = 13.sp,

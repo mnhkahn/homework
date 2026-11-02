@@ -1968,7 +1968,7 @@ private fun formatStudyDuration(seconds: Long): String {
             if (task.subject != "作业") Text(task.subject, color = MaterialTheme.colorScheme.onSurfaceVariant)
             TaskStatusPill(task.status)
         }
-        Text(task.title, fontSize = 30.sp, fontWeight = FontWeight.Medium)
+        HomeworkTaskTitle(task, fontSize = 30.sp, fontWeight = FontWeight.Medium)
         task.gradeResult?.let { HomeworkGradeBadge(it) }
         startedAt?.let { Text("开始 ${homeworkTimeLabel(it)}") }
         completedAt?.let { Text("完成 ${homeworkTimeLabel(it)}", color = Color(0xFF24733A)) }
@@ -2034,7 +2034,7 @@ private fun formatStudyDuration(seconds: Long): String {
                     if (task.subject != "作业") AssistChip(onClick = {}, label = { Text(task.subject) })
                     TaskStatusPill(task.status)
                 }
-                Spacer(Modifier.height(14.dp)); Text(task.title, fontSize = 30.sp, fontWeight = FontWeight.Medium)
+                Spacer(Modifier.height(14.dp)); HomeworkTaskTitle(task, fontSize = 30.sp, fontWeight = FontWeight.Medium)
                 task.gradeResult?.let { HomeworkGradeBadge(it) }
                 Text(if (overdue) "已超过截止时间，请优先完成" else "截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", color = if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = if (overdue) FontWeight.Medium else FontWeight.Normal)
                 if (task.canCorrect) Text("请查看这份作业的批改结果，改好后提交修改后的内容。", color = MaterialTheme.colorScheme.primary)
@@ -2094,7 +2094,7 @@ private fun formatStudyDuration(seconds: Long): String {
                     task.gradeResult?.let { HomeworkGradeBadge(it) }
                     Spacer(Modifier.height(2.dp))
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text(task.title, modifier = Modifier.weight(1f), fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        HomeworkTaskTitle(task, modifier = Modifier.weight(1f), fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Spacer(Modifier.width(8.dp))
                         Text(homeworkTimingLabel(task).ifBlank { if (completed) "已完成" else "截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}" }, color = if (completed) Color(0xFF24733A) else if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
                     }

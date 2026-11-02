@@ -26,6 +26,7 @@ import android.util.AttributeSet
 import android.util.Log
 import android.view.LayoutInflater
 import android.view.Surface
+import android.view.OrientationEventListener
 import android.widget.FrameLayout
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -39,6 +40,7 @@ import androidx.lifecycle.LifecycleOwner
 import com.zynksoftware.documentscanner.R
 import com.zynksoftware.documentscanner.common.utils.ImageDetectionProperties
 import com.zynksoftware.documentscanner.common.utils.NeuralDocumentDetector
+import com.zynksoftware.documentscanner.common.utils.PhotoCaptureRotation
 import com.zynksoftware.documentscanner.model.DocumentScannerErrorModel
 import com.zynksoftware.documentscanner.model.DocumentScannerErrorModel.ErrorMessage
 import kotlinx.android.synthetic.main.scan_surface_view.view.*
@@ -79,6 +81,12 @@ internal class ScanSurfaceView : FrameLayout {
     private var imageAnalysis: ImageAnalysis? = null
     private var camera: Camera? = null
     private var imageCapture: ImageCapture? = null
+    private var deviceCaptureRotation: Int? = null
+    private val orientationListener = object : OrientationEventListener(context) {
+        override fun onOrientationChanged(orientation: Int) {
+            PhotoCaptureRotation.fromDeviceOrientation(orientation)?.let { deviceCaptureRotation = it }
+        }
+    }
     private var preview: Preview? = null
     private var cameraProvider: ProcessCameraProvider? = null
     private lateinit var previewSize: android.util.Size
@@ -90,6 +98,19 @@ internal class ScanSurfaceView : FrameLayout {
     init {
         LayoutInflater.from(context).inflate(R.layout.scan_surface_view, this, true)
     }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        if (orientationListener.canDetectOrientation()) orientationListener.enable()
+    }
+
+    override fun onDetachedFromWindow() {
+        orientationListener.disable()
+        super.onDetachedFromWindow()
+    }
+
+    private fun captureRotation(): Int = deviceCaptureRotation
+        ?: viewFinder.display?.rotation ?: Surface.ROTATION_0
 
     fun start() {
         viewFinder.post {
@@ -132,7 +153,7 @@ internal class ScanSurfaceView : FrameLayout {
 
         imageCapture = null
         imageCapture = ImageCapture.Builder()
-            .setTargetRotation(viewFinder.display?.rotation ?: Surface.ROTATION_0)
+            .setTargetRotation(captureRotation())
             .setFlashMode(flashMode)
             .build()
     }
@@ -289,10 +310,11 @@ internal class ScanSurfaceView : FrameLayout {
         isCapturing = true
 
         val imageCapture = imageCapture ?: run { listener.scanSurfaceHideProgress(); isCapturing = false; return }
-        // A tablet's natural orientation may be landscape. Use the current
-        // display rotation, including rotation since binding the camera, so the
-        // JPEG's EXIF describes the same upright image as the preview.
-        imageCapture.targetRotation = viewFinder.display?.rotation ?: Surface.ROTATION_0
+        // Display rotation stays unchanged when auto-rotate is locked. Snapshot
+        // the physical orientation instead, including on landscape-native tablets.
+        // CameraScreenFragment then bakes the JPEG's EXIF rotation into pixels
+        // before cropping/saving the file that will be uploaded to Trello.
+        imageCapture.targetRotation = captureRotation()
         val outputOptions = ImageCapture.OutputFileOptions.Builder(originalImageFile).build()
 
         imageCapture.takePicture(outputOptions, ContextCompat.getMainExecutor(context),
