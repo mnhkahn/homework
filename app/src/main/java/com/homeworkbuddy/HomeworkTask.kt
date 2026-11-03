@@ -57,6 +57,8 @@ data class HomeworkTask(
     val scheduledStartEpochSeconds: Long? = null,
     val scheduledDueEpochSeconds: Long? = null,
     val explicitEstimatedMinutes: Int? = null,
+    /** Complete card details, including links outside the structured task field. */
+    val description: String? = null,
 ) {
     /** System recorder URI retained locally; Trello attachments are never used for playback. */
     val localAudioUri: String? get() = photoPath?.takeIf {

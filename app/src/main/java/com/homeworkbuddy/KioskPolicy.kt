@@ -354,6 +354,30 @@ class KioskPolicy(private val context: Context) {
 
     val isScreenshotSettingsAllowed: Boolean get() = prefs.getBoolean("screenshot_settings_allowed", false)
 
+    /** Permit only the resolved system screen needed by our verified APK update. */
+    fun allowAppUpdateScreen(intent: Intent) {
+        if (!isDeviceOwner || mode() != KioskMode.STUDY) return
+        val target = checkNotNull(context.packageManager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY)) {
+            "无法找到系统更新安装页面"
+        }.activityInfo
+        check(target.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM != 0) {
+            "更新必须使用系统安装页面"
+        }
+        val packageName = target.packageName
+        val added = prefs.getStringSet("app_update_packages", emptySet()).orEmpty() + (setOf(packageName) - temporaryPackages)
+        prefs.edit().putStringSet("app_update_packages", added)
+            .putBoolean("external_foreground_allowed", true).apply()
+        allowTemporarily(packageName)
+    }
+
+    fun revokeAppUpdateScreen() {
+        if (!prefs.contains("app_update_packages")) return
+        val added = prefs.getStringSet("app_update_packages", emptySet()).orEmpty()
+        prefs.edit().putStringSet("temporary_packages", temporaryPackages - added)
+            .remove("app_update_packages").putBoolean("external_foreground_allowed", false).apply()
+        if (isDeviceOwner && mode() == KioskMode.STUDY) applyAllowlist(KioskMode.STUDY)
+    }
+
     /** Parent-only permission setup must remain reachable during Lock Task. */
     fun allowScreenshotSettings(): Boolean {
         if (!isDeviceOwner || mode() != KioskMode.STUDY) return false

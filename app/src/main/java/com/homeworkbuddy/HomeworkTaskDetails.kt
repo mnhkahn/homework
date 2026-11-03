@@ -69,6 +69,14 @@ data class HomeworkTaskDetails(
             }
         }
 
+        /** Keep every detail line; structured JSON is rendered as readable content. */
+        fun displayText(description: String): String? {
+            val json = runCatching { JSONObject(description.trim()) }.getOrNull()
+            return (if (json == null) description else listOf(
+                json.optString("task"), json.optString("link"),
+            ).filter(String::isNotBlank).distinct().joinToString("\n")).trim().ifBlank { null }
+        }
+
         private fun homeworkLink(suppliedLink: String?, rawTask: String?): String? =
             (suppliedLink ?: rawTask?.trim())?.takeIf(HomeworkLinks::isWebUrl)
 

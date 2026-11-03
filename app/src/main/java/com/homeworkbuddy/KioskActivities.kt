@@ -163,6 +163,7 @@ private fun ParentGate(activity: KioskSettingsActivity) {
     var pin by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
+    var showUpdate by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     // Some vendors expose face unlock only through the device credential path,
     // rather than as BIOMETRIC_WEAK.  Supporting both lets the system present
     // the familiar face/fingerprint/PIN sheet instead of forcing our local PIN.
@@ -197,10 +198,16 @@ private fun ParentGate(activity: KioskSettingsActivity) {
         })
     }
 
-    LaunchedEffect(hasPin, systemAuthAvailable) {
-        if (hasPin && !totp.configured && systemAuthAvailable) biometricPrompt.authenticate(promptInfo)
+    if (showUpdate) {
+        androidx.activity.compose.BackHandler { showUpdate = false }
+        Surface(Modifier.fillMaxSize()) {
+            Column(Modifier.fillMaxSize().padding(28.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                TextButton(onClick = { showUpdate = false }) { Text("返回家长验证") }
+                AppUpdateSettingsCard(activity)
+            }
+        }
+        return
     }
-
     if (authenticated) {
         KioskSettingsScreen(activity)
         return
@@ -243,6 +250,8 @@ private fun ParentGate(activity: KioskSettingsActivity) {
                         else -> { store.set(pin); store.markAuthenticated(); hasPin = true; authenticated = true }
                     }
                 }) { Text(if (hasPin || totp.configured) "进入家长设置" else "保存并进入") }
+                Spacer(Modifier.height(18.dp))
+                OutlinedButton(onClick = { showUpdate = true }) { Text("版本更新（无需家长验证）") }
             }
         }
     }

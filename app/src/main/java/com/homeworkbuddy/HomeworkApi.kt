@@ -301,6 +301,7 @@ class HomeworkApi(private val context: Context) {
                 attachments = attachments,
                 dueDate = deadline.toLocalDate(), completedAtEpochSeconds = activityAt,
                 type = details.type, task = details.task, link = details.link,
+                description = HomeworkTaskDetails.displayText(item.optString("desc")),
                 isCorrection = status == TaskStatus.NEEDS_CORRECTION,
                 gradeResult = HomeworkGradeResult.fromDescription(item.optString("desc")),
                 scheduledStartEpochSeconds = plannedStart,

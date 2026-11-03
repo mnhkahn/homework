@@ -52,6 +52,7 @@ class HomeworkCacheStore(context: Context) {
         put("type", task.type.name)
         put("task", task.task)
         put("link", task.link)
+        put("description", task.description)
         put("is_correction", task.isCorrection)
         put("grade_result", task.gradeResult?.fieldValue)
         put("scheduled_start", task.scheduledStartEpochSeconds)
@@ -81,6 +82,7 @@ class HomeworkCacheStore(context: Context) {
         type = value.optString("type").let { runCatching { HomeworkTaskType.valueOf(it) }.getOrDefault(HomeworkTaskType.NORMAL) },
         task = value.optString("task").ifBlank { null },
         link = value.optString("link").ifBlank { null },
+        description = value.optString("description").ifBlank { null },
         isCorrection = value.optBoolean("is_correction"),
         gradeResult = HomeworkGradeResult.parse(value.optString("grade_result")),
         scheduledStartEpochSeconds = value.optLong("scheduled_start").takeIf { it > 0 },

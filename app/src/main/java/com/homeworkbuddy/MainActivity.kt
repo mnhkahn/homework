@@ -1970,6 +1970,7 @@ private fun formatStudyDuration(seconds: Long): String {
         }
         HomeworkTaskTitle(task, fontSize = 30.sp, fontWeight = FontWeight.Medium)
         task.gradeResult?.let { HomeworkGradeBadge(it) }
+        HomeworkDescription(task)
         startedAt?.let { Text("开始 ${homeworkTimeLabel(it)}") }
         completedAt?.let { Text("完成 ${homeworkTimeLabel(it)}", color = Color(0xFF24733A)) }
         duration?.let { Text("实际用时 ${elapsedLabel(it)}") }
@@ -1998,10 +1999,6 @@ private fun formatStudyDuration(seconds: Long): String {
     task.link?.let { link ->
         FilledTonalButton(onClick = {
             when (task.type) {
-                HomeworkTaskType.NORMAL -> {
-                    (context as? MainActivity)?.allowManagedActivityLaunch()
-                    context.startActivity(GameActivity.homeworkIntent(context, link))
-                }
                 HomeworkTaskType.WORD_MEMORIZATION -> (context as? MainActivity)?.openWordLearningPage(link)
                 else -> context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link)))
             }
@@ -2046,6 +2043,7 @@ private fun formatStudyDuration(seconds: Long): String {
                     }
                 }
                 Spacer(Modifier.height(18.dp))
+                HomeworkDescription(task)
                 if (task.type == HomeworkTaskType.ARITHMETIC) {
                     Text("口算 · ${arithmeticQuestions(task.task).size} 题，开始后在这里展示题目", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }

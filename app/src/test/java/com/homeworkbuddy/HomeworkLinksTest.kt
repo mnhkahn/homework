@@ -4,6 +4,16 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class HomeworkLinksTest {
+    @Test fun detailTextKeepsLinksOutsideTheFirstTaskLine() {
+        val description = "作业内容：先阅读课文\n参考：http://example.com/first\n阅读英语链接：https://example.com/second?q=1&part=2"
+        assertEquals(description, HomeworkTaskDetails.displayText(description))
+        assertEquals(
+            "先阅读 https://example.com/first\nhttp://example.com/second",
+            HomeworkTaskDetails.displayText("""{"type":"normal","task":"先阅读 https://example.com/first","link":"http://example.com/second"}"""),
+        )
+        assertNull(HomeworkTaskDetails.displayText("  "))
+    }
+
     @Test fun plainLinksAndTaskContentBecomeNormalHomeworkLinks() {
         listOf("http://example.com/lesson?q=1#page", "https://example.com/lesson").forEach { url ->
             listOf(url, "类型: 普通作业\n作业内容: $url\n预计用时: 15").forEach { description ->

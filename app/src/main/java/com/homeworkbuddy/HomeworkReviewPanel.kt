@@ -116,7 +116,10 @@ internal fun HomeworkReviewPanel(task: HomeworkTask, modifier: Modifier = Modifi
                         review.hasErrors?.let { Text(if (it) "本次批改有错，请查看订正要求" else "本次批改通过") }
                         if (review.type == "text") {
                             SelectionContainer {
-                                Text(review.text.orEmpty(), fontSize = textSize, lineHeight = textSize * 1.5f)
+                                HomeworkLinkedText(
+                                    review.text.orEmpty(),
+                                    style = LocalTextStyle.current.copy(fontSize = textSize, lineHeight = textSize * 1.5f),
+                                )
                             }
                         } else {
                             val attachment = current?.attachments?.get(review.attachmentId)
