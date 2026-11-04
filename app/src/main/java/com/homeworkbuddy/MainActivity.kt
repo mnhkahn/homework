@@ -60,6 +60,7 @@ import androidx.compose.material.icons.outlined.CloudSync
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.LockOpen
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -251,32 +252,6 @@ class MainActivity : ComponentActivity() {
 
     fun allowManagedActivityLaunch() {
         allowNextUserLeaveHint = true
-    }
-
-    fun openWordLearningPage(url: String) {
-        val policy = KioskPolicy(this)
-        val chromeIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-            .addCategory(Intent.CATEGORY_BROWSABLE)
-            .setPackage("com.android.chrome")
-        allowManagedActivityLaunch()
-        try {
-            // Chrome may currently be suspended by study mode. Allow it before
-            // launching, instead of mistaking a suspended browser for a missing one.
-            policy.allowLearningBrowser("com.android.chrome")
-            startActivity(chromeIntent)
-            return
-        } catch (error: android.content.ActivityNotFoundException) {
-            Log.i("HomeworkBuddy", "Chrome unavailable; opening vocabulary in WebView", error)
-        } catch (error: SecurityException) {
-            Log.w("HomeworkBuddy", "Chrome launch denied; opening vocabulary in WebView", error)
-        }
-        policy.revokeLearningBrowserAccess()
-        try {
-            startActivity(GameActivity.intent(this, url))
-        } catch (error: RuntimeException) {
-            allowNextUserLeaveHint = false
-            throw error
-        }
     }
 
     /** Keep assignments visible, with dimming after inactivity. */
@@ -1964,9 +1939,12 @@ private fun formatStudyDuration(seconds: Long): String {
         modifier.clip(RoundedCornerShape(26.dp)).background(Leaf).padding(18.dp).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (task.subject != "作业") Text(task.subject, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            TaskStatusPill(task.status)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (task.subject != "作业") Text(task.subject, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                TaskStatusPill(task.status)
+            }
+            Text("截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         HomeworkTaskTitle(task, fontSize = 30.sp, fontWeight = FontWeight.Medium)
         task.gradeResult?.let { HomeworkGradeBadge(it) }
@@ -1998,10 +1976,7 @@ private fun formatStudyDuration(seconds: Long): String {
     val context = androidx.compose.ui.platform.LocalContext.current
     task.link?.let { link ->
         FilledTonalButton(onClick = {
-            when (task.type) {
-                HomeworkTaskType.WORD_MEMORIZATION -> (context as? MainActivity)?.openWordLearningPage(link)
-                else -> context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link)))
-            }
+            GameActivity.openHomeworkLink(context, link)
         }, enabled = enabled) {
             Text(when (task.type) {
                 HomeworkTaskType.WORD_MEMORIZATION -> "打开背单词"
@@ -2025,24 +2000,27 @@ private fun formatStudyDuration(seconds: Long): String {
         if (task.type == HomeworkTaskType.ARITHMETIC && (running || task.startedAtEpochSeconds != null)) {
             ArithmeticTaskContent(Modifier.fillMaxWidth().weight(1f), task, elapsedSeconds, overdue)
         } else {
-            // Only the details scroll; the primary actions always retain their own height.
-            Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.Start) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.Top) {
+                androidx.compose.foundation.layout.FlowRow(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (task.subject != "作业") AssistChip(onClick = {}, label = { Text(task.subject) })
                     TaskStatusPill(task.status)
                 }
-                Spacer(Modifier.height(14.dp)); HomeworkTaskTitle(task, fontSize = 30.sp, fontWeight = FontWeight.Medium)
+                Column(horizontalAlignment = Alignment.End) {
+                    Text("截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", fontSize = 14.sp,
+                        color = if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = if (overdue) FontWeight.Medium else FontWeight.Normal)
+                    if (running) Text("已用时 ${elapsedLabel(elapsedSeconds)}", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            // Only the details scroll; the primary actions always retain their own height.
+            Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.Start) {
+                HomeworkTaskTitle(task, fontSize = 30.sp, fontWeight = FontWeight.Medium)
                 task.gradeResult?.let { HomeworkGradeBadge(it) }
-                Text(if (overdue) "已超过截止时间，请优先完成" else "截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", color = if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = if (overdue) FontWeight.Medium else FontWeight.Normal)
+                if (overdue) Text("已超过截止时间，请优先完成", color = OverdueInk, fontWeight = FontWeight.Medium)
                 if (task.canCorrect) Text("请查看这份作业的批改结果，改好后提交修改后的内容。", color = MaterialTheme.colorScheme.primary)
                 task.startedAtEpochSeconds?.let { Text("开始 ${homeworkTimeLabel(it)}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp) }
-                Spacer(Modifier.height(18.dp)); Box(Modifier.size(166.dp).align(Alignment.CenterHorizontally).clip(CircleShape).background(LocalHomeColors.current.timer).padding(10.dp), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(if (running) "已用时" else if (overdue) "已超期" else "截止", fontSize = 15.sp, color = if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(if (running) elapsedLabel(elapsedSeconds) else task.deadline.format(DateTimeFormatter.ofPattern("HH:mm")), fontSize = 31.sp, fontWeight = FontWeight.Medium)
-                    }
-                }
-                Spacer(Modifier.height(18.dp))
+                Spacer(Modifier.height(12.dp))
                 HomeworkDescription(task)
                 if (task.type == HomeworkTaskType.ARITHMETIC) {
                     Text("口算 · ${arithmeticQuestions(task.task).size} 题，开始后在这里展示题目", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -2075,13 +2053,42 @@ private fun formatStudyDuration(seconds: Long): String {
 
 @Composable private fun TaskQueue(modifier: Modifier, tasks: List<HomeworkTask>, completedTasks: List<HomeworkTask>, onSelect: (HomeworkTask) -> Unit, reviewedTaskIds: Set<String>, onReview: (HomeworkTask) -> Unit, onResubmit: (String) -> Unit, submitting: Boolean) {
     val allTasks = tasks + completedTasks
+    var selectedSubject by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<HomeworkSubject?>(null) }
+    var filterExpanded by remember { mutableStateOf(false) }
+    val visibleTasks = allTasks.filter { selectedSubject == null || HomeworkSubject.fromTitle(it.title) == selectedSubject }
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    LaunchedEffect(selectedSubject) { listState.scrollToItem(0) }
     val context = androidx.compose.ui.platform.LocalContext.current
     var photoUrls by remember { mutableStateOf<List<String>?>(null) }
     Column(modifier) {
-        Text("作业清单 · ${allTasks.size} 项", fontSize = 20.sp, fontWeight = FontWeight.Medium)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+            Text("作业清单 · ${visibleTasks.size} 项", fontSize = 20.sp, fontWeight = FontWeight.Medium)
+            Box {
+                TextButton(onClick = { filterExpanded = true }) {
+                    Text(selectedSubject?.label ?: "全部")
+                    Icon(Icons.Outlined.ArrowDropDown, "筛选作业学科")
+                }
+                DropdownMenu(expanded = filterExpanded, onDismissRequest = { filterExpanded = false }) {
+                    DropdownMenuItem(
+                        text = { Text("全部（${allTasks.size}）") },
+                        onClick = { selectedSubject = null; filterExpanded = false },
+                    )
+                    HomeworkSubject.entries.forEach { subject ->
+                        val count = allTasks.count { HomeworkSubject.fromTitle(it.title) == subject }
+                        DropdownMenuItem(
+                            text = { Text("${subject.label}（$count）") },
+                            onClick = { selectedSubject = subject; filterExpanded = false },
+                        )
+                    }
+                }
+            }
+        }
         Spacer(Modifier.height(6.dp))
-        LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            items(allTasks, key = { it.id }) { task ->
+        LazyColumn(Modifier.weight(1f), state = listState, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (visibleTasks.isEmpty()) item {
+                Text("暂无${selectedSubject?.label.orEmpty()}作业", modifier = Modifier.padding(12.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            items(visibleTasks, key = { it.id }) { task ->
                 val overdue = task.status == TaskStatus.OVERTIME
                 val completed = task.status.isSubmitted
                 Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(if (completed) Leaf else if (overdue) OverdueSurface else TodoSurface).clickable { onSelect(task) }.padding(horizontal = 12.dp, vertical = 8.dp)) {

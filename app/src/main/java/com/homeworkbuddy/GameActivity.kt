@@ -82,6 +82,13 @@ class GameActivity : ComponentActivity() {
         fun homeworkIntent(context: Context, url: String) =
             intent(context, url).putExtra(EXTRA_HOMEWORK, true)
 
+        /** All assignment and review web links stay in the app-owned WebView. */
+        fun openHomeworkLink(context: Context, url: String) {
+            require(HomeworkLinks.isWebUrl(url)) { "无效的作业链接" }
+            (context as? MainActivity)?.allowManagedActivityLaunch()
+            context.startActivity(homeworkIntent(context, url))
+        }
+
         private fun isAllowedCyeamToolUrl(url: String): Boolean {
             if (url == GAME_24_URL || url == SUDOKU_URL || url == ARITHMETIC_URL || url == ENGLISH_READING_URL) return true
 

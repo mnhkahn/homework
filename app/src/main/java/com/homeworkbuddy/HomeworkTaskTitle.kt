@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Calculate
+import androidx.compose.material.icons.outlined.DirectionsRun
 import androidx.compose.material.icons.automirrored.outlined.MenuBook
 import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material.icons.outlined.Translate
@@ -14,6 +15,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -38,8 +40,22 @@ internal fun HomeworkTaskTitle(
     maxLines: Int = Int.MAX_VALUE,
     overflow: TextOverflow = TextOverflow.Clip,
 ) {
-    val mode = task.titleMode
-    val icon = when (mode) {
+    val subject = HomeworkSubject.fromTitle(task.title)
+    val color = when (subject) {
+        HomeworkSubject.CHINESE -> Color(0xFFB33D48)
+        HomeworkSubject.MATH -> Color(0xFF245DB3)
+        HomeworkSubject.ENGLISH -> Color(0xFF7542A3)
+        HomeworkSubject.SPORTS -> Color(0xFF237044)
+        null -> MaterialTheme.colorScheme.onSurface
+    }
+    val subjectIcon = when (subject) {
+        HomeworkSubject.CHINESE -> Icons.AutoMirrored.Outlined.MenuBook
+        HomeworkSubject.MATH -> Icons.Outlined.Calculate
+        HomeworkSubject.ENGLISH -> Icons.Outlined.Translate
+        HomeworkSubject.SPORTS -> Icons.Outlined.DirectionsRun
+        null -> null
+    }
+    val icon = subjectIcon?.let { it to subject!!.label } ?: when (task.titleMode) {
         HomeworkTaskType.WORD_MEMORIZATION -> Icons.Outlined.Translate to "背单词"
         HomeworkTaskType.ENGLISH_READING -> Icons.AutoMirrored.Outlined.MenuBook to "英语阅读"
         HomeworkTaskType.ARITHMETIC -> Icons.Outlined.Calculate to "口算"
@@ -50,10 +66,10 @@ internal fun HomeworkTaskTitle(
         if (icon != null) Icon(
             imageVector = icon.first,
             contentDescription = icon.second,
-            tint = MaterialTheme.colorScheme.primary,
+            tint = if (subject != null) color else MaterialTheme.colorScheme.primary,
             modifier = Modifier.size(with(LocalDensity.current) { fontSize.toDp() }),
         )
-        Text(task.title, Modifier.weight(1f, fill = false), fontSize = fontSize, fontWeight = fontWeight,
+        Text(task.title, Modifier.weight(1f, fill = false), color = color, fontSize = fontSize, fontWeight = fontWeight,
             maxLines = maxLines, overflow = overflow)
     }
 }

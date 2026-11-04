@@ -1,7 +1,5 @@
 package com.homeworkbuddy
 
-import android.content.Intent
-import android.net.Uri
 import android.text.SpannableString
 import android.text.style.URLSpan
 import android.text.util.Linkify
@@ -22,7 +20,7 @@ internal fun HomeworkDescription(task: HomeworkTask) {
     HomeworkLinkedText(content)
 }
 
-/** Assignment and review links use the English reading button's ACTION_VIEW route. */
+/** Assignment and review links share the built-in learning browser. */
 @Suppress("DEPRECATION")
 @Composable
 internal fun HomeworkLinkedText(content: String, style: TextStyle = MaterialTheme.typography.bodyLarge) {
@@ -50,7 +48,7 @@ internal fun HomeworkLinkedText(content: String, style: TextStyle = MaterialThem
     } else {
         ClickableText(text, style = style.copy(color = MaterialTheme.colorScheme.onSurface)) { offset ->
             text.getStringAnnotations("url", offset, offset).firstOrNull()?.let {
-                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it.item)))
+                GameActivity.openHomeworkLink(context, it.item)
             }
         }
     }

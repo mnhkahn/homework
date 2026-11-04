@@ -9,6 +9,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
@@ -23,12 +24,15 @@ import java.time.format.DateTimeFormatter
 fun ArithmeticTaskContent(modifier: Modifier, task: HomeworkTask, elapsedSeconds: Int, overdue: Boolean) {
     val questions = remember(task.task) { arithmeticQuestions(task.task) }
     Column(modifier) {
-        HomeworkTaskTitle(task, fontSize = 22.sp, fontWeight = FontWeight.Medium)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.Top) {
+            HomeworkTaskTitle(task, modifier = Modifier.weight(1f), fontSize = 22.sp, fontWeight = FontWeight.Medium)
+            Text("截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", fontSize = 14.sp,
+                color = if (overdue) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             if (task.subject != "作业") Text(task.subject, fontSize = 13.sp)
             Text(if (overdue) "已超期" else "正在完成", fontSize = 13.sp,
                 color = if (overdue) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
-            Text("截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", fontSize = 13.sp)
             Text("已用时 %02d:%02d".format(elapsedSeconds.coerceAtLeast(0) / 60, elapsedSeconds.coerceAtLeast(0) % 60), fontSize = 13.sp)
         }
         Spacer(Modifier.height(6.dp))
