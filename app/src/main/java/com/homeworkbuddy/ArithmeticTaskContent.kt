@@ -26,14 +26,14 @@ fun ArithmeticTaskContent(modifier: Modifier, task: HomeworkTask, elapsedSeconds
     Column(modifier) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.Top) {
             HomeworkTaskTitle(task, modifier = Modifier.weight(1f), fontSize = 22.sp, fontWeight = FontWeight.Medium)
-            Text("截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", fontSize = 14.sp,
+            Text("截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", fontSize = 18.sp, fontWeight = FontWeight.Bold,
                 color = if (overdue) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
         }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             if (task.subject != "作业") Text(task.subject, fontSize = 13.sp)
             Text(if (overdue) "已超期" else "正在完成", fontSize = 13.sp,
                 color = if (overdue) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
-            Text("已用时 %02d:%02d".format(elapsedSeconds.coerceAtLeast(0) / 60, elapsedSeconds.coerceAtLeast(0) % 60), fontSize = 13.sp)
+            Text("已用时 %02d:%02d".format(elapsedSeconds.coerceAtLeast(0) / 60, elapsedSeconds.coerceAtLeast(0) % 60), fontSize = 18.sp, fontWeight = FontWeight.Bold)
         }
         Spacer(Modifier.height(6.dp))
         if (questions.isEmpty()) {

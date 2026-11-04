@@ -1944,7 +1944,7 @@ private fun formatStudyDuration(seconds: Long): String {
                 if (task.subject != "作业") Text(task.subject, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 TaskStatusPill(task.status)
             }
-            Text("截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         HomeworkTaskTitle(task, fontSize = 30.sp, fontWeight = FontWeight.Medium)
         task.gradeResult?.let { HomeworkGradeBadge(it) }
@@ -2006,10 +2006,9 @@ private fun formatStudyDuration(seconds: Long): String {
                     TaskStatusPill(task.status)
                 }
                 Column(horizontalAlignment = Alignment.End) {
-                    Text("截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", fontSize = 14.sp,
-                        color = if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontWeight = if (overdue) FontWeight.Medium else FontWeight.Normal)
-                    if (running) Text("已用时 ${elapsedLabel(elapsedSeconds)}", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("截止 ${task.deadline.format(DateTimeFormatter.ofPattern("HH:mm"))}", fontSize = 18.sp, fontWeight = FontWeight.Bold,
+                        color = if (overdue) OverdueInk else MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (running) Text("已用时 ${elapsedLabel(elapsedSeconds)}", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             Spacer(Modifier.height(10.dp))
