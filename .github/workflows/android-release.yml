@@ -76,16 +76,15 @@ jobs:
           fi
           echo "$DEBUG_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/debug.keystore"
 
-      - name: Build debug APK
-        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
-
-      - name: Build signed release APK
+      # One Gradle invocation: a second call would pay JVM startup, dependency
+      # verification and the configuration phase all over again.
+      - name: Build debug and signed release APKs
         env:
           HOMEWORK_RELEASE_STORE_FILE: ${{ runner.temp }}/release.keystore
           HOMEWORK_RELEASE_STORE_PASSWORD: ${{ secrets.HOMEWORK_RELEASE_STORE_PASSWORD }}
           RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
         run: |
-          ./gradlew :app:assembleRelease --no-daemon --stacktrace \
+          ./gradlew :app:assembleDebug :app:assembleRelease --no-daemon --stacktrace \
           -PreleaseVersionName="${RELEASE_VERSION#v}" \
           -PreleaseVersionCode="${{ github.run_number }}"
 
@@ -120,8 +119,8 @@ jobs:
 
       - name: Set up git-chglog
         run: |
-          go install github.com/git-chglog/git-chglog/cmd/git-chglog@v0.15.4
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          curl -sL https://github.com/git-chglog/git-chglog/releases/download/v0.15.4/git-chglog_0.15.4_linux_amd64.tar.gz | tar xz
+          sudo mv git-chglog /usr/local/bin/
 
       - name: Generate release notes
         env:
