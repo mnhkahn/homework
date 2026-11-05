@@ -114,6 +114,7 @@ class GameActivity : ComponentActivity() {
 @Composable
 private fun GameScreen(initialUrl: String, finish: () -> Unit, homework: Boolean = false) {
     var webView by remember { mutableStateOf<WebView?>(null) }
+    var ttsBridge by remember { mutableStateOf<WebViewTtsBridge?>(null) }
     val goBack = {
         webView?.takeIf(WebView::canGoBack)?.goBack() ?: finish()
     }
@@ -148,6 +149,11 @@ private fun GameScreen(initialUrl: String, finish: () -> Unit, homework: Boolean
                 modifier = Modifier.fillMaxSize(),
                 factory = { context ->
                     WebView(context).apply {
+                        val bridge = WebViewTtsBridge(context).also {
+                            it.attach(this)
+                            ttsBridge = it
+                        }
+                        addJavascriptInterface(bridge, "__androidTts")
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
                         if (Uri.parse(initialUrl).path == "/ai/translate") {
@@ -166,6 +172,12 @@ private fun GameScreen(initialUrl: String, finish: () -> Unit, homework: Boolean
                                 }
                                 return blocked
                             }
+
+                            override fun onPageFinished(view: WebView, url: String?) {
+                                // WebView ships without the Web Speech API; back the page's
+                                // speechSynthesis usage (e.g. dictation) with the device TTS.
+                                view.evaluateJavascript(WebViewTtsBridge.POLYFILL_JS, null)
+                            }
                         }
                         // A parent explicitly assigned this URL. Later navigations use the allowlist.
                         loadUrl(initialUrl)
@@ -178,6 +190,8 @@ private fun GameScreen(initialUrl: String, finish: () -> Unit, homework: Boolean
 
     DisposableEffect(Unit) {
         onDispose {
+            ttsBridge?.shutdown()
+            ttsBridge = null
             webView?.apply {
                 stopLoading()
                 destroy()
