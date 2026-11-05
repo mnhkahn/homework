@@ -206,15 +206,19 @@ jobs:
           echo "::error::Timed out waiting for Pgyer to publish the APK"
           exit 1
 
+      # gh CLI streams the 300MB APK; softprops/action-gh-release buffers assets
+      # in memory and died silently on the Node 24 runner (run 42060254743).
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          name: ${{ github.ref_name }}
-          tag_name: ${{ github.ref_name }}
-          body_path: artifacts/release-notes.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "$TAG" --notes-file artifacts/release-notes.md
+          fi
           # 固定文件名，App 内自动升级按资产名匹配下载。
-          files: artifacts/HomeworkBuddy-release.apk
+          gh release upload "$TAG" artifacts/HomeworkBuddy-release.apk --clobber
 
       - name: Notify Feishu
         if: always()
