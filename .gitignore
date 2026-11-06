@@ -1,5 +1,6 @@
 # Gradle caches and build outputs
 .gradle/
+.kotlin/
 build/
 **/build/
 
@@ -44,4 +45,3 @@ Desktop.ini
 # Android Studio screenshots / profiling captures
 captures/
 *.hprof
-/.kotlin/sessions/kotlin-compiler-6499128034089777828.salive

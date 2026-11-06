@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Refresh
@@ -39,6 +40,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 
 class GameActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -47,6 +51,7 @@ class GameActivity : ComponentActivity() {
         val url = intent.getStringExtra(EXTRA_URL)?.takeIf {
             if (homework) HomeworkLinks.isWebUrl(it) else isAllowedCyeamToolUrl(it)
         } ?: run { finish(); return }
+        hideNavigationBar()
         setContent { MaterialTheme { GameScreen(url, ::finish, homework) } }
     }
 
@@ -55,6 +60,21 @@ class GameActivity : ComponentActivity() {
         KioskPolicy(this).apply {
             markManagedActivityForeground()
             if (mode() == KioskMode.STUDY) applyForCurrentTime(this@GameActivity)
+        }
+        hideNavigationBar()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) hideNavigationBar()
+    }
+
+    private fun hideNavigationBar() {
+        // Keep clock/battery visible and use the in-app back button for navigation.
+        // Reapply after keyboard/dialog/external-activity focus changes.
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            hide(WindowInsetsCompat.Type.navigationBars())
         }
     }
 
@@ -121,7 +141,8 @@ private fun GameScreen(initialUrl: String, finish: () -> Unit, homework: Boolean
     BackHandler(onBack = goBack)
 
     Surface(Modifier.fillMaxSize()) {
-        Column(Modifier.fillMaxSize()) {
+        // Reserve space for system bars/keyboard whenever Android keeps them visible.
+        Column(Modifier.fillMaxSize().safeDrawingPadding()) {
             Row(
                 modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
