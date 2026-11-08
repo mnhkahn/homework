@@ -2050,34 +2050,63 @@ private fun formatStudyDuration(seconds: Long): String {
     }
 }
 
+private enum class TaskProgressFilter(val label: String) {
+    UNFINISHED("未完成"), SUBMITTED("已提交"), ALL("全部进度");
+
+    fun includes(status: TaskStatus): Boolean = when (this) {
+        UNFINISHED -> !status.isSubmitted
+        SUBMITTED -> status.isSubmitted
+        ALL -> true
+    }
+}
+
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable private fun TaskQueue(modifier: Modifier, tasks: List<HomeworkTask>, completedTasks: List<HomeworkTask>, onSelect: (HomeworkTask) -> Unit, reviewedTaskIds: Set<String>, onReview: (HomeworkTask) -> Unit, onResubmit: (String) -> Unit, submitting: Boolean) {
-    val allTasks = tasks + completedTasks
+    var selectedProgress by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(TaskProgressFilter.UNFINISHED) }
     var selectedSubject by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<HomeworkSubject?>(null) }
-    var filterExpanded by remember { mutableStateOf(false) }
-    val visibleTasks = allTasks.filter { selectedSubject == null || HomeworkSubject.fromTitle(it.title) == selectedSubject }
+    var progressExpanded by remember { mutableStateOf(false) }
+    var subjectExpanded by remember { mutableStateOf(false) }
+    val progressTasks = (tasks + completedTasks).filter { selectedProgress.includes(it.status) }
+    val visibleTasks = progressTasks.filter { selectedSubject == null || HomeworkSubject.fromTitle(it.title) == selectedSubject }
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
-    LaunchedEffect(selectedSubject) { listState.scrollToItem(0) }
+    LaunchedEffect(selectedProgress, selectedSubject) { listState.scrollToItem(0) }
     val context = androidx.compose.ui.platform.LocalContext.current
     var photoUrls by remember { mutableStateOf<List<String>?>(null) }
     Column(modifier) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("作业清单 · ${visibleTasks.size} 项", fontSize = 20.sp, fontWeight = FontWeight.Medium)
-            Box {
-                TextButton(onClick = { filterExpanded = true }) {
-                    Text(selectedSubject?.label ?: "全部")
-                    Icon(Icons.Outlined.ArrowDropDown, "筛选作业学科")
+        androidx.compose.foundation.layout.FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text("作业清单 · ${visibleTasks.size} 项", modifier = Modifier.align(Alignment.CenterVertically), fontSize = 20.sp, fontWeight = FontWeight.Medium)
+            Row(Modifier.align(Alignment.CenterVertically)) {
+                Box {
+                    TextButton(onClick = { progressExpanded = true }) {
+                        Text(selectedProgress.label)
+                        Icon(Icons.Outlined.ArrowDropDown, "筛选作业进度")
+                    }
+                    DropdownMenu(expanded = progressExpanded, onDismissRequest = { progressExpanded = false }) {
+                        TaskProgressFilter.entries.forEach { progress ->
+                            DropdownMenuItem(
+                                text = { Text(progress.label) },
+                                onClick = { selectedProgress = progress; progressExpanded = false },
+                            )
+                        }
+                    }
                 }
-                DropdownMenu(expanded = filterExpanded, onDismissRequest = { filterExpanded = false }) {
-                    DropdownMenuItem(
-                        text = { Text("全部（${allTasks.size}）") },
-                        onClick = { selectedSubject = null; filterExpanded = false },
-                    )
-                    HomeworkSubject.entries.forEach { subject ->
-                        val count = allTasks.count { HomeworkSubject.fromTitle(it.title) == subject }
+                Box {
+                    TextButton(onClick = { subjectExpanded = true }) {
+                        Text(selectedSubject?.label ?: "全部类目")
+                        Icon(Icons.Outlined.ArrowDropDown, "筛选作业类目")
+                    }
+                    DropdownMenu(expanded = subjectExpanded, onDismissRequest = { subjectExpanded = false }) {
                         DropdownMenuItem(
-                            text = { Text("${subject.label}（$count）") },
-                            onClick = { selectedSubject = subject; filterExpanded = false },
+                            text = { Text("全部类目（${progressTasks.size}）") },
+                            onClick = { selectedSubject = null; subjectExpanded = false },
                         )
+                        HomeworkSubject.entries.forEach { subject ->
+                            val count = progressTasks.count { HomeworkSubject.fromTitle(it.title) == subject }
+                            DropdownMenuItem(
+                                text = { Text("${subject.label}（$count）") },
+                                onClick = { selectedSubject = subject; subjectExpanded = false },
+                            )
+                        }
                     }
                 }
             }
@@ -2085,7 +2114,8 @@ private fun formatStudyDuration(seconds: Long): String {
         Spacer(Modifier.height(6.dp))
         LazyColumn(Modifier.weight(1f), state = listState, verticalArrangement = Arrangement.spacedBy(6.dp)) {
             if (visibleTasks.isEmpty()) item {
-                Text("暂无${selectedSubject?.label.orEmpty()}作业", modifier = Modifier.padding(12.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                val progressLabel = selectedProgress.label.takeUnless { selectedProgress == TaskProgressFilter.ALL }.orEmpty()
+                Text("暂无${progressLabel}${selectedSubject?.label.orEmpty()}作业", modifier = Modifier.padding(12.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             items(visibleTasks, key = { it.id }) { task ->
                 val overdue = task.status == TaskStatus.OVERTIME
