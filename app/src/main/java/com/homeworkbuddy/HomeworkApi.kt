@@ -149,14 +149,21 @@ class HomeworkApi(private val context: Context) {
             .sortedWith(compareBy<HomeworkTask> { it.dueDate }.thenBy { it.deadline })
     }
 
-    suspend fun submit(taskId: String, attachments: List<Uri>, isOvertime: Boolean, submissionId: String, isCorrection: Boolean = false) = withContext(Dispatchers.IO) {
+    suspend fun submit(
+        taskId: String,
+        attachments: List<Uri>,
+        isOvertime: Boolean,
+        submissionId: String,
+        isCorrection: Boolean = false,
+        photoNamePrefix: String? = null,
+    ) = withContext(Dispatchers.IO) {
         // Trello is the durable record. Submission IDs make attachment retries
         // idempotent: a retry after a partial upload never adds another attachment.
         isOvertime.hashCode()
         val existingNames = attachmentNames(taskId)
         val uploadedAudioNames = mutableListOf<String>()
         attachments.take(MAX_PHOTOS).forEachIndexed { index, attachment ->
-            val (name, mimeType) = attachmentMetadata(attachment, submissionId, index)
+            val (name, mimeType) = attachmentMetadata(attachment, submissionId, index, photoNamePrefix)
             if (name !in existingNames) {
                 attachFile(taskId, attachment, name, mimeType)
                 if (mimeType.startsWith("audio/")) uploadedAudioNames += name
@@ -398,7 +405,7 @@ class HomeworkApi(private val context: Context) {
 
     private fun dateAt(epochSeconds: Long) = java.time.Instant.ofEpochSecond(epochSeconds).atZone(HOMEWORK_ZONE).toLocalDate()
 
-    private fun attachmentMetadata(uri: Uri, submissionId: String, index: Int): Pair<String, String> {
+    private fun attachmentMetadata(uri: Uri, submissionId: String, index: Int, photoNamePrefix: String?): Pair<String, String> {
         val suppliedMimeType = context.contentResolver.getType(uri)
         val pathExtension = uri.lastPathSegment?.substringAfterLast('.', "")?.lowercase().orEmpty()
         val audioExtension = pathExtension.takeIf { it in AUDIO_EXTENSIONS }
@@ -408,8 +415,13 @@ class HomeworkApi(private val context: Context) {
             ?: if (isAudio) "audio/mp4" else "image/jpeg"
         val extension = if (isAudio) audioExtension ?: MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType) ?: "m4a"
             else MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType) ?: "jpg"
-        val prefix = if (isAudio) "homework-audio" else "homework"
-        return "$prefix-$submissionId-${index + 1}.$extension" to mimeType
+        val number = index + 1
+        val name = when {
+            isAudio -> "homework-audio-$submissionId-$number.$extension"
+            photoNamePrefix != null && mimeType.startsWith("image/") -> "${photoNamePrefix}_第${number}张_$submissionId.$extension"
+            else -> "homework-$submissionId-$number.$extension"
+        }
+        return name to mimeType
     }
 
     private fun audioMimeType(extension: String): String = when (extension) {
@@ -430,10 +442,10 @@ class HomeworkApi(private val context: Context) {
         }
         DataOutputStream(connection.outputStream).use { out ->
             fun field(name: String, value: String) {
-                out.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"$name\"\r\n\r\n$value\r\n")
+                out.write("--$boundary\r\nContent-Disposition: form-data; name=\"$name\"\r\n\r\n$value\r\n".toByteArray(StandardCharsets.UTF_8))
             }
             field("name", name)
-            out.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"$name\"\r\nContent-Type: $mimeType\r\n\r\n")
+            out.write("--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"$name\"\r\nContent-Type: $mimeType\r\n\r\n".toByteArray(StandardCharsets.UTF_8))
             context.contentResolver.openInputStream(attachment)?.use { it.copyTo(out) } ?: error("无法读取作业附件")
             out.writeBytes("\r\n--$boundary--\r\n")
         }

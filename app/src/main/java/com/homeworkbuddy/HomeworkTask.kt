@@ -17,6 +17,16 @@ internal val HomeworkTask.submitsCorrection: Boolean
 internal fun HomeworkTask.afterSubmission(isCorrection: Boolean = this.submitsCorrection): HomeworkTask =
     copy(status = if (isCorrection) TaskStatus.CORRECTED else TaskStatus.COMPLETED, isCorrection = false)
 
+private val unsafeAttachmentNameChars = Regex("""[\p{Cc}\p{Cf}\\/:*?"<>|]+""")
+
+internal fun HomeworkTask.photoSubmissionNamePrefix(): String {
+    val safeTitle = title.replace(unsafeAttachmentNameChars, "-").trim(' ', '.', '-')
+        .take(48).trimEnd { it.isHighSurrogate() || it in " .-" }.ifBlank { "作业" }
+    val date = if (scheduledDueEpochSeconds != null) dueDate.toString() else "未设日期"
+    val kind = if (submitsCorrection) "提交改错" else "提交作业"
+    return "${date}_${safeTitle}_$kind"
+}
+
 /**
  * The task mode is intentionally separate from the card subject.  Parents can
  * set it explicitly; [HomeworkTaskDetails] only infers a mode for legacy

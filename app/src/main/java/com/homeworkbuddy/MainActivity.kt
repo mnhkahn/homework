@@ -690,6 +690,7 @@ private fun HomeworkBuddyApp() {
                                 pending.isOvertime,
                                 pending.submissionId,
                                 pending.isCorrection,
+                                pending.photoNamePrefix,
                             )
                         }.onSuccess {
                             pendingStore.remove(pending.taskId)
@@ -1156,8 +1157,11 @@ private fun HomeworkBuddyApp() {
                 } else if (submittingTaskId == null) {
                     submittingTaskId = current.id
                     val submissionId = java.util.UUID.randomUUID().toString()
+                    val photoNamePrefix = current.photoSubmissionNamePrefix()
                     scope.launch {
-                        runCatching { api.submit(current.id, attachments, current.status == TaskStatus.OVERTIME, submissionId, current.submitsCorrection) }
+                        runCatching {
+                            api.submit(current.id, attachments, current.status == TaskStatus.OVERTIME, submissionId, current.submitsCorrection, photoNamePrefix)
+                        }
                             .onSuccess {
                                 CompletionHistoryStore(context).noteTasks(listOf(current))
                                 CompletionHistoryStore(context).recordCompletion(current.id, System.currentTimeMillis() / 1_000, current.dueDate.atTime(current.deadline).atZone(ZoneId.systemDefault()).toEpochSecond(), current.startedAtEpochSeconds, if (recordedAudioUri != null) recordedAudioElapsedSeconds else elapsedSeconds, recordedAudioUri)
@@ -1167,7 +1171,17 @@ private fun HomeworkBuddyApp() {
                                 showCameraConfirm = false; pendingPhotos = emptyList(); deletePendingHomeworkRecording(context, pendingAudio); pendingAudio = null; recordedAudioUri = null
                             }
                             .onFailure { error ->
-                                pendingStore.add(PendingSubmission(current.id, attachments.map(Uri::toString), current.status == TaskStatus.OVERTIME, submissionId, isCorrection = current.submitsCorrection, taskTitle = current.title))
+                                pendingStore.add(
+                                    PendingSubmission(
+                                        taskId = current.id,
+                                        photoPaths = attachments.map(Uri::toString),
+                                        isOvertime = current.status == TaskStatus.OVERTIME,
+                                        submissionId = submissionId,
+                                        isCorrection = current.submitsCorrection,
+                                        taskTitle = current.title,
+                                        photoNamePrefix = photoNamePrefix,
+                                    )
+                                )
                                 showCameraConfirm = false; pendingPhotos = emptyList(); pendingAudio = null; recordedAudioUri = null
                                 if (error is AuthorizationExpiredException) reportSyncError(error, "")
                                 else connectionError = "作业附件和完成状态尚未同步到 Trello，任务保留原状态；联网后会自动重试。"
