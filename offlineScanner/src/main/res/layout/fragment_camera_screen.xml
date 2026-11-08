@@ -41,6 +41,25 @@
 
         </RelativeLayout>
 
+        <TextView
+            android:id="@+id/documentOrientationHint"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_below="@id/topBar"
+            android:layout_centerHorizontal="true"
+            android:layout_marginTop="@dimen/zdc_xx_small_padding"
+            android:layout_marginStart="@dimen/zdc_xx_small_padding"
+            android:layout_marginEnd="@dimen/zdc_xx_small_padding"
+            android:background="@drawable/zdc_orientation_hint_background"
+            android:drawableTop="@drawable/zdc_orientation_arrow"
+            android:gravity="center"
+            android:paddingHorizontal="@dimen/zdc_small_padding"
+            android:paddingVertical="@dimen/zdc_xx_small_padding"
+            android:text="@string/zdc_document_orientation_hint"
+            android:textColor="@android:color/white"
+            android:textSize="@dimen/zdc_text_size_big"
+            android:textStyle="bold" />
+
         <ImageView
             android:id="@+id/galleryButton"
             android:layout_width="@dimen/zdc_gallery_button_dimens"

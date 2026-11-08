@@ -25,7 +25,6 @@ import android.os.CountDownTimer
 import android.util.AttributeSet
 import android.util.Log
 import android.view.LayoutInflater
-import android.view.Surface
 import android.widget.FrameLayout
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -79,7 +78,6 @@ internal class ScanSurfaceView : FrameLayout {
     private var imageAnalysis: ImageAnalysis? = null
     private var camera: Camera? = null
     private var imageCapture: ImageCapture? = null
-    private var preview: Preview? = null
     private var cameraProvider: ProcessCameraProvider? = null
     private lateinit var previewSize: android.util.Size
 
@@ -90,11 +88,6 @@ internal class ScanSurfaceView : FrameLayout {
     init {
         LayoutInflater.from(context).inflate(R.layout.scan_surface_view, this, true)
     }
-
-    // Match the visible preview, including when system auto-rotate is locked.
-    // Gravity cannot reliably define page-up while the tablet points down at a desk.
-    private fun captureRotation(): Int = preview?.targetRotation
-        ?: viewFinder.display?.rotation ?: Surface.ROTATION_0
 
     fun start() {
         viewFinder.post {
@@ -130,14 +123,14 @@ internal class ScanSurfaceView : FrameLayout {
         setUseCases()
     }
 
-    private fun setImageCapture() {
+    private fun setImageCapture(displayRotation: Int) {
         if(imageCapture != null && cameraProvider?.isBound(imageCapture!!) == true) {
             cameraProvider?.unbind(imageCapture)
         }
 
         imageCapture = null
         imageCapture = ImageCapture.Builder()
-            .setTargetRotation(captureRotation())
+            .setTargetRotation(displayRotation)
             .setFlashMode(flashMode)
             .build()
     }
@@ -152,23 +145,24 @@ internal class ScanSurfaceView : FrameLayout {
     }
 
     private fun setUseCases() {
+        val displayRotation = viewFinder.display?.rotation ?: return
         viewFinder.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
-        preview = Preview.Builder()
-            .setTargetRotation(viewFinder.display?.rotation ?: Surface.ROTATION_0)
+        val preview = Preview.Builder()
+            .setTargetRotation(displayRotation)
             .setTargetResolution(previewSize)
             .build()
             .also {
                 it.setSurfaceProvider(viewFinder.surfaceProvider)
             }
 
-        setImageCapture()
+        setImageCapture(displayRotation)
 
         val aspectRatio: Float = previewSize.width / previewSize.height.toFloat()
         val width = IMAGE_ANALYSIS_SCALE_WIDTH
         val height = (width / aspectRatio).roundToInt()
 
         imageAnalysis = ImageAnalysis.Builder()
-            .setTargetRotation(viewFinder.display?.rotation ?: Surface.ROTATION_0)
+            .setTargetRotation(displayRotation)
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .setTargetResolution(android.util.Size(width, height))
             .build()
@@ -215,7 +209,7 @@ internal class ScanSurfaceView : FrameLayout {
             }
         }
 
-        val group = UseCaseGroup.Builder().addUseCase(preview!!).addUseCase(imageAnalysis!!).addUseCase(imageCapture!!)
+        val group = UseCaseGroup.Builder().addUseCase(preview).addUseCase(imageAnalysis!!).addUseCase(imageCapture!!)
         viewFinder.viewPort?.let { group.setViewPort(it) }
         camera = cameraProvider!!.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, group.build())
     }
@@ -287,17 +281,16 @@ internal class ScanSurfaceView : FrameLayout {
 
     fun takePicture() {
         if (isCapturing) return
+        val displayRotation = viewFinder.display?.rotation ?: return
+        val imageCapture = imageCapture ?: return
         // Detection only enables automatic cropping; manual capture must always work.
         cancelAutoCapture()
         Log.d(TAG, "ZDCtakePicture Starts ${System.currentTimeMillis()}")
         listener.scanSurfaceShowProgress()
         isCapturing = true
 
-        val imageCapture = imageCapture ?: run { listener.scanSurfaceHideProgress(); isCapturing = false; return }
-        // Use the same coordinate frame as the preview rather than a potentially
-        // stale gravity reading from before the child started aiming at the page.
-        // CameraScreenFragment bakes the JPEG's EXIF rotation into uploaded pixels.
-        imageCapture.targetRotation = captureRotation()
+        // PreviewView follows the display even if the preview use case was bound earlier.
+        imageCapture.targetRotation = displayRotation
         val outputOptions = ImageCapture.OutputFileOptions.Builder(originalImageFile).build()
 
         imageCapture.takePicture(outputOptions, ContextCompat.getMainExecutor(context),
@@ -342,6 +335,7 @@ internal class ScanSurfaceView : FrameLayout {
     }
 
     fun switchFlashState() {
+        val displayRotation = viewFinder.display?.rotation ?: return
         isFlashEnabled = !isFlashEnabled
         flashMode = if (isFlashEnabled) {
             listener.showFlashModeOn()
@@ -350,7 +344,7 @@ internal class ScanSurfaceView : FrameLayout {
             listener.showFlashModeOff()
             ImageCapture.FLASH_MODE_OFF
         }
-        setImageCapture()
+        setImageCapture(displayRotation)
         camera = cameraProvider!!.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, imageCapture)
     }
 }
