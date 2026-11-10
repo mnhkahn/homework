@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.IBinder
@@ -19,10 +20,11 @@ import okio.ByteString
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.time.Instant
+import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.CopyOnWriteArraySet
 
 data class XiaoliConnectionConfig(
     val deviceId: String,
@@ -40,6 +42,7 @@ object XiaoliDeviceStore {
     private const val WS_URL = "websocket_url"
     private const val TOKEN = "token"
     private const val SNAPSHOT_URL = "snapshot_url"
+    private const val NOTIFICATION = "latest_notification"
 
     fun defaultDeviceId(context: Context): String = "homework-tablet-" + android.provider.Settings.Secure.getString(context.contentResolver, android.provider.Settings.Secure.ANDROID_ID).takeLast(8)
 
@@ -56,8 +59,11 @@ object XiaoliDeviceStore {
         )
     }
 
-    fun save(context: Context, config: XiaoliConnectionConfig) {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+    @Synchronized fun save(context: Context, config: XiaoliConnectionConfig) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val editor = prefs.edit()
+        if (!matchesBinding(prefs, config)) editor.remove(NOTIFICATION)
+        editor
             .putString(DEVICE_ID, config.deviceId)
             .putString(DEVICE_NAME, config.deviceName)
             .putString(WS_URL, config.websocketUrl)
@@ -66,7 +72,54 @@ object XiaoliDeviceStore {
             .apply()
     }
 
-    fun clear(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply()
+    @Synchronized fun clear(context: Context) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .remove(DEVICE_ID)
+            .remove(DEVICE_NAME)
+            .remove(WS_URL)
+            .remove(TOKEN)
+            .remove(SNAPSHOT_URL)
+            .remove(NOTIFICATION)
+            .apply()
+    }
+
+    internal fun currentNotification(context: Context): XiaoliNotification? =
+        storedNotification(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE))
+            ?.takeIf { it.isActive(Instant.now()) }
+
+    internal fun observeNotification(context: Context, onChanged: () -> Unit): () -> Unit {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == NOTIFICATION) onChanged()
+        }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        return { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
+
+    @Synchronized internal fun recordNotification(
+        context: Context,
+        config: XiaoliConnectionConfig,
+        notification: XiaoliNotification,
+        payload: JSONObject,
+    ): Boolean {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (!matchesBinding(prefs, config) || !notification.isActive(Instant.now())) return false
+        val latest = storedNotification(prefs)
+        val editor = prefs.edit()
+        if (latest == null || notification.isNewerThan(latest)) editor.putString(NOTIFICATION, payload.toString())
+        // The server stops resending after ACK, so wait until local storage is durable.
+        return editor.commit()
+    }
+
+    private fun matchesBinding(prefs: SharedPreferences, config: XiaoliConnectionConfig): Boolean =
+        prefs.getString(DEVICE_ID, null) == config.deviceId &&
+            prefs.getString(WS_URL, null) == config.websocketUrl
+
+    private fun storedNotification(prefs: SharedPreferences): XiaoliNotification? {
+        val raw = prefs.getString(NOTIFICATION, null) ?: return null
+        val payload = runCatching { JSONObject(raw) }.getOrNull() ?: return null
+        return XiaoliNotification.parse(payload)
+    }
 }
 
 /** Runtime state is deliberately separate from the Trello "connected" state. */
@@ -253,6 +306,7 @@ class XiaoliConnectionService : Service() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 if (socket != null && socket !== webSocket) { webSocket.cancel(); return }
                 socket = webSocket
+                sessionId = null
                 reconnectAttempts = 0
                 reconnectFuture?.cancel(false)
                 reconnectFuture = null
@@ -262,13 +316,16 @@ class XiaoliConnectionService : Service() {
                     .put("version", 1)
                     .put("transport", "websocket")
                     .put("device_id", config.deviceId)
-                    .put("features", JSONObject().put("mcp", true).put("audio", true))
+                    .put("features", JSONObject()
+                        .put("mcp", true)
+                        .put("audio", true)
+                        .put("notifications", true))
                     .put("audio_params", JSONObject().put("format", "opus").put("sample_rate", 16_000).put("channels", 1).put("frame_duration", 60))
                     .put("client_info", JSONObject().put("name", "homework-buddy-android").put("version", "0.1.0"))
                     .toString())
             }
 
-            override fun onMessage(webSocket: WebSocket, text: String) = handleMessage(webSocket, text)
+            override fun onMessage(webSocket: WebSocket, text: String) = handleMessage(webSocket, config, text)
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
                 RemoteTtsStreamPlayer.offer(bytes.toByteArray())
@@ -294,11 +351,21 @@ class XiaoliConnectionService : Service() {
         })
     }
 
-    private fun handleMessage(webSocket: WebSocket, text: String) {
+    private fun handleMessage(webSocket: WebSocket, config: XiaoliConnectionConfig, text: String) {
         val message = runCatching { JSONObject(text) }.getOrNull() ?: return
         if (message.optString("type") == "hello") {
             sessionId = message.optString("session_id").ifBlank { null }
             XiaoliConnectionState.connected()
+            return
+        }
+        if (message.optString("type") == "notification") {
+            val activeSession = sessionId ?: return
+            if (webSocket !== socket || message.optString("session_id") != activeSession) return
+            val payload = message.optJSONObject("notification") ?: return
+            val notification = XiaoliNotification.parse(payload) ?: return
+            if (XiaoliDeviceStore.recordNotification(this, config, notification, payload)) {
+                webSocket.send(notification.acknowledgement(activeSession).toString())
+            }
             return
         }
         if (message.optString("type") == "tts") {

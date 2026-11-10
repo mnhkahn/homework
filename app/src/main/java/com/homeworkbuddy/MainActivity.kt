@@ -476,6 +476,7 @@ private fun HomeworkBuddyApp() {
     // Keep the header useful immediately; a network response only replaces this
     // default when it contains a non-blank slogan.
     var slogan by remember { mutableStateOf(DEFAULT_HOME_SLOGAN) }
+    var xiaoliNotification by remember(context) { mutableStateOf(XiaoliDeviceStore.currentNotification(context)) }
 
     LaunchedEffect(captureStatusStore) {
         captureStatusStore.clearInterruptedCapture()
@@ -484,6 +485,21 @@ private fun HomeworkBuddyApp() {
 
     LaunchedEffect(Unit) {
         runCatching { SloganApi.fetch() }.getOrNull()?.let { slogan = it }
+    }
+
+    DisposableEffect(context) {
+        val refresh = { xiaoliNotification = XiaoliDeviceStore.currentNotification(context) }
+        val removeListener = XiaoliDeviceStore.observeNotification(context, refresh)
+        refresh()
+        onDispose { removeListener() }
+    }
+
+    LaunchedEffect(xiaoliNotification?.expiresAt) {
+        val expiresAt = xiaoliNotification?.expiresAt ?: return@LaunchedEffect
+        while (Instant.now().isBefore(expiresAt)) {
+            delay((expiresAt.toEpochMilli() - System.currentTimeMillis()).coerceAtLeast(1L))
+        }
+        xiaoliNotification = XiaoliDeviceStore.currentNotification(context)
     }
 
     DisposableEffect(remoteNoticeStore) {
@@ -833,6 +849,7 @@ private fun HomeworkBuddyApp() {
             when (event) {
                 Lifecycle.Event.ON_START -> {
                     foreground = true
+                    xiaoliNotification = XiaoliDeviceStore.currentNotification(context)
                     captureStatus = captureStatusStore.current()
                     systemNonAllowedApps = kioskPolicy.todayNonAllowedAppUsage()
                     refreshRequest++
@@ -1049,7 +1066,7 @@ private fun HomeworkBuddyApp() {
             }
         }
         HomeworkHome(
-            slogan = slogan,
+            slogan = xiaoliNotification?.content ?: slogan,
             tasks = tasks,
             selected = activeTask,
             selectedDate = selectedDate,
