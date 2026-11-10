@@ -7,6 +7,10 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.webkit.MimeTypeMap
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.mapNotNull
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.Dispatchers
@@ -156,6 +160,8 @@ class HomeworkApi(private val context: Context) {
         submissionId: String,
         isCorrection: Boolean = false,
         photoNamePrefix: String? = null,
+        previewRequirements: String? = null,
+        retry: Boolean = false,
     ) = withContext(Dispatchers.IO) {
         // Trello is the durable record. Submission IDs make attachment retries
         // idempotent: a retry after a partial upload never adds another attachment.
@@ -176,20 +182,44 @@ class HomeworkApi(private val context: Context) {
         if (uploadedAudioNames.isNotEmpty()) runCatching {
             request("POST", "/cards/${segment(taskId)}/actions/comments", mapOf("text" to "已上传音频作业附件：${uploadedAudioNames.joinToString("、")}"))
         }
-        if (isCorrection) request("POST", "/cards/${segment(taskId)}/actions/comments", mapOf("text" to "作业订正提交：$submissionId"))
-        request("PUT", "/cards/${segment(taskId)}", mapOf("idList" to (if (isCorrection) correctedListId() else requiredDoneList()), "dueComplete" to "true"))
+        if (isCorrection) postSubmissionComment(taskId, "作业订正提交：$submissionId", retry)
+        finishSubmission(taskId, isCorrection, previewRequirements)
     }
 
     /** Stores a child's written answer in the card activity before completing it. */
-    suspend fun submitText(taskId: String, text: String, isCorrection: Boolean = false) = withContext(Dispatchers.IO) {
+    suspend fun submitText(
+        taskId: String,
+        text: String,
+        isCorrection: Boolean,
+        submissionId: String,
+        retry: Boolean = false,
+        previewRequirements: String? = null,
+    ) = withContext(Dispatchers.IO) {
         require(text.isNotBlank()) { "请先输入文字内容" }
-        request("POST", "/cards/${segment(taskId)}/actions/comments", mapOf("text" to "${if (isCorrection) "作业订正文字提交：" else "作业文字提交："}\n${text.trim()}"))
-        request("PUT", "/cards/${segment(taskId)}", mapOf("idList" to (if (isCorrection) correctedListId() else requiredDoneList()), "dueComplete" to "true"))
+        val heading = if (isCorrection) "作业订正文字提交：" else "作业文字提交："
+        val comment = "$heading\n${text.trim()}\n\n提交编号：$submissionId"
+        postSubmissionComment(taskId, comment, retry)
+        finishSubmission(taskId, isCorrection, previewRequirements)
     }
 
     /** Marks a task complete without uploading a local-only recording. */
     suspend fun completeWithoutAttachment(taskId: String, isCorrection: Boolean = false) = withContext(Dispatchers.IO) {
-        request("PUT", "/cards/${segment(taskId)}", mapOf("idList" to (if (isCorrection) correctedListId() else requiredDoneList()), "dueComplete" to "true"))
+        finishSubmission(taskId, isCorrection, previewRequirements = null)
+    }
+
+    private suspend fun finishSubmission(taskId: String, isCorrection: Boolean, previewRequirements: String?) {
+        val cardPath = "/cards/${segment(taskId)}"
+        val targetList = if (isCorrection) correctedListId() else requiredDoneList()
+        if (previewRequirements != null) {
+            val latest = request("GET", "$cardPath?fields=desc").getString("desc")
+            val updated = HomeworkTaskDetails.withPreviewRequirements(latest, previewRequirements)
+            if (updated != latest) {
+                val body = JSONObject().put("idList", targetList).put("dueComplete", true).put("desc", updated)
+                request("PUT", cardPath, body = body)
+                return
+            }
+        }
+        request("PUT", cardPath, mapOf("idList" to targetList, "dueComplete" to "true"))
     }
 
     /** Downloads a Trello attachment through its authenticated download endpoint. */
@@ -318,21 +348,29 @@ class HomeworkApi(private val context: Context) {
         }
     }
 
-    /** Page through comments so newer unrelated activity cannot hide a review. */
-    private suspend fun reviewComments(cardId: String): List<HomeworkReview> {
-        val reviews = mutableListOf<HomeworkReview>()
+    private fun commentActions(cardId: String) = flow {
         var before: String? = null
         do {
             val cursor = before?.let { "&before=${segment(it)}" }.orEmpty()
             val actions = requestArray("GET", "/cards/${segment(cardId)}/actions?filter=commentCard&limit=1000$cursor")
             for (index in 0 until actions.length()) {
-                val action = actions.getJSONObject(index)
-                HomeworkReview.parse(action.getString("id"), action.optString("date"), action.optJSONObject("data")?.optString("text").orEmpty())?.let(reviews::add)
+                emit(actions.getJSONObject(index))
             }
             before = if (actions.length() == 1000) actions.getJSONObject(actions.length() - 1).getString("id") else null
         } while (before != null)
-        return reviews.distinctBy { it.id }.sortedByDescending { it.date }
     }
+
+    private suspend fun postSubmissionComment(cardId: String, comment: String, retry: Boolean) {
+        if (retry && commentActions(cardId).firstOrNull { it.optJSONObject("data")?.optString("text") == comment } != null) return
+        request("POST", "/cards/${segment(cardId)}/actions/comments", mapOf("text" to comment))
+    }
+
+    /** Page through comments so newer unrelated activity cannot hide a review. */
+    private suspend fun reviewComments(cardId: String): List<HomeworkReview> = commentActions(cardId)
+        .mapNotNull { action ->
+            HomeworkReview.parse(action.getString("id"), action.optString("date"), action.optJSONObject("data")?.optString("text").orEmpty())
+        }
+        .toList().distinctBy { it.id }.sortedByDescending { it.date }
 
     /** Only protocol-valid review comments expose the review button. */
     suspend fun hasReviews(cardId: String): Boolean = reviewComments(cardId).isNotEmpty()
@@ -457,8 +495,23 @@ class HomeworkApi(private val context: Context) {
         return (0 until value.length()).map { value.getJSONObject(it).let { item -> TrelloOption(item.getString("id"), item.getString("name")) } }
     }
 
-    private suspend fun request(method: String, path: String, values: Map<String, String> = emptyMap()): JSONObject = withContext(Dispatchers.IO) {
-        JSONObject(read(connection(method, path, values)))
+    private suspend fun request(
+        method: String,
+        path: String,
+        values: Map<String, String> = emptyMap(),
+        body: JSONObject? = null,
+    ): JSONObject = withContext(Dispatchers.IO) {
+        val connection = connection(method, path, values)
+        try {
+            if (body != null) {
+                connection.doOutput = true
+                connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+            }
+            JSONObject(read(connection))
+        } finally {
+            connection.disconnect()
+        }
     }
 
     private suspend fun requestArray(method: String, path: String): JSONArray = withContext(Dispatchers.IO) {

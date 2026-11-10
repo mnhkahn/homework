@@ -14,8 +14,9 @@ data class HomeworkTaskDetails(
     companion object {
         private const val TRANSLATE_HOST = "www.cyeam.com"
         private const val TRANSLATE_PATH = "/ai/translate"
-        private val typeLine = Regex("(?im)^\\s*(?:type|类型|作业类型)\\s*[:：]\\s*(normal|word_memorization|english_reading|pdf_attachment|arithmetic|口算|普通作业|背单词|阅读英语|附件PDF)\\s*$")
+        private val typeLine = Regex("(?im)^\\s*(?:type|类型|作业类型)\\s*[:：]\\s*(normal|word_memorization|english_reading|pdf_attachment|arithmetic|preview|口算|普通作业|背单词|阅读英语|附件PDF|预习)\\s*$")
         private val taskLine = Regex("(?im)^\\s*(?:task|作业内容)\\s*[:：]\\s*(.+?)\\s*$")
+        private val previewRequirementsLine = Regex("(?im)^[\\t ]*(?:预习要求|preview_requirements)[\\t ]*[:：][\\t ]*")
         private val wordLine = Regex("(?im)^\\s*背单词\\s*[:：]\\s*(.+?)\\s*$")
         private val translationLinkLine = Regex("(?im)^\\s*翻译链接\\s*[:：]\\s*(https?://\\S+)\\s*$")
         private val homeworkLinkLine = Regex("(?im)^[\\t ]*(?:link|链接|作业链接)[\\t ]*[:：][\\t ]*(\\S+)[\\t ]*$")
@@ -61,6 +62,11 @@ data class HomeworkTaskDetails(
                 }
                 HomeworkTaskType.PDF_ATTACHMENT -> HomeworkTaskDetails(HomeworkTaskType.PDF_ATTACHMENT, rawTask)
                 HomeworkTaskType.ARITHMETIC -> HomeworkTaskDetails(HomeworkTaskType.ARITHMETIC, rawTask)
+                HomeworkTaskType.PREVIEW -> {
+                    val requirements = if (json != null) json.optString("preview_requirements").trim() else
+                        previewRequirementsLine.find(description)?.let { description.substring(it.range.last + 1).trim() }.orEmpty()
+                    HomeworkTaskDetails(HomeworkTaskType.PREVIEW, requirements.ifBlank { null })
+                }
                 HomeworkTaskType.NORMAL -> HomeworkTaskDetails(HomeworkTaskType.NORMAL, rawTask, homeworkLink(suppliedLink, rawTask))
                 null -> infer(rawTask).let { inferred ->
                     if (inferred.type == HomeworkTaskType.NORMAL) inferred.copy(link = homeworkLink(suppliedLink, rawTask))
@@ -74,7 +80,23 @@ data class HomeworkTaskDetails(
             val json = runCatching { JSONObject(description.trim()) }.getOrNull()
             return (if (json == null) description else listOf(
                 json.optString("task"), json.optString("link"),
+                json.optString("preview_requirements").takeIf(String::isNotBlank)?.let { "预习要求：\n$it" }.orEmpty(),
             ).filter(String::isNotBlank).distinct().joinToString("\n")).trim().ifBlank { null }
+        }
+
+        internal fun withPreviewRequirements(description: String, requirements: String): String {
+            val details = fromDescription(description)
+            check(details.type == HomeworkTaskType.PREVIEW) { "Trello 卡片已改为其他作业类型" }
+            val value = requirements.trim()
+            if (details.task.orEmpty() == value) return description
+
+            val json = runCatching { JSONObject(description.trim()) }.getOrNull()
+            if (json != null) return json.put("preview_requirements", value).toString()
+
+            val field = previewRequirementsLine.find(description)
+            val prefix = if (field == null) "${description.trimEnd()}\n\n"
+                else description.substring(0, field.range.first)
+            return "${prefix}预习要求：\n$value"
         }
 
         private fun homeworkLink(suppliedLink: String?, rawTask: String?): String? =
@@ -133,6 +155,7 @@ data class HomeworkTaskDetails(
 
         private fun String.toTaskType(): HomeworkTaskType? = when (lowercase()) {
             "arithmetic", "口算" -> HomeworkTaskType.ARITHMETIC
+            "preview", "预习" -> HomeworkTaskType.PREVIEW
             "normal" -> HomeworkTaskType.NORMAL
             "普通作业" -> HomeworkTaskType.NORMAL
             "word_memorization" -> HomeworkTaskType.WORD_MEMORIZATION

@@ -17,6 +17,7 @@ data class PendingSubmission(
     val taskTitle: String? = null,
     // Keep the first upload's name on retry. Older queued submissions use legacy names.
     val photoNamePrefix: String? = null,
+    val previewRequirements: String? = null,
 )
 
 class PendingSubmissionStore(context: Context) {
@@ -41,6 +42,7 @@ class PendingSubmissionStore(context: Context) {
                 isCorrection = it.optBoolean("is_correction"),
                 taskTitle = it.optString("task_title").ifBlank { null },
                 photoNamePrefix = it.optString("photo_name_prefix").ifBlank { null },
+                previewRequirements = if (it.isNull("preview_requirements")) null else it.getString("preview_requirements"),
             )
         } }
     }.getOrDefault(emptyList())
@@ -59,6 +61,7 @@ class PendingSubmissionStore(context: Context) {
                     .put("is_correction", item.isCorrection)
                     .put("task_title", item.taskTitle)
                     .put("photo_name_prefix", item.photoNamePrefix)
+                    .put("preview_requirements", item.previewRequirements)
             )
         }
         prefs.edit().putString("items", json.toString()).apply()

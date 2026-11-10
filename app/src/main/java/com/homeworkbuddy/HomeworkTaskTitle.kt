@@ -28,6 +28,7 @@ internal val HomeworkTask.titleMode: HomeworkTaskType?
         HomeworkTaskType.WORD_MEMORIZATION, HomeworkTaskType.ENGLISH_READING -> type.takeIf { !link.isNullOrBlank() }
         HomeworkTaskType.ARITHMETIC -> type.takeIf { arithmeticQuestions(task).isNotEmpty() }
         HomeworkTaskType.PDF_ATTACHMENT -> type.takeIf { attachments.any { it.isPdf } }
+        HomeworkTaskType.PREVIEW -> type
         HomeworkTaskType.NORMAL -> null
     }
 
@@ -60,6 +61,7 @@ internal fun HomeworkTaskTitle(
         HomeworkTaskType.ENGLISH_READING -> Icons.AutoMirrored.Outlined.MenuBook to "英语阅读"
         HomeworkTaskType.ARITHMETIC -> Icons.Outlined.Calculate to "口算"
         HomeworkTaskType.PDF_ATTACHMENT -> Icons.Outlined.PictureAsPdf to "PDF 作业"
+        HomeworkTaskType.PREVIEW -> Icons.AutoMirrored.Outlined.MenuBook to "预习"
         else -> null
     }
     Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -71,5 +73,6 @@ internal fun HomeworkTaskTitle(
         )
         Text(task.title, Modifier.weight(1f, fill = false), color = color, fontSize = fontSize, fontWeight = fontWeight,
             maxLines = maxLines, overflow = overflow)
+        if (task.type == HomeworkTaskType.PREVIEW) Text("预习", style = MaterialTheme.typography.labelMedium)
     }
 }

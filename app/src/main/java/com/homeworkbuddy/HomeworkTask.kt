@@ -32,7 +32,7 @@ internal fun HomeworkTask.photoSubmissionNamePrefix(): String {
  * set it explicitly; [HomeworkTaskDetails] only infers a mode for legacy
  * cards that do not carry one.
  */
-enum class HomeworkTaskType { NORMAL, WORD_MEMORIZATION, ENGLISH_READING, PDF_ATTACHMENT, ARITHMETIC }
+enum class HomeworkTaskType { NORMAL, WORD_MEMORIZATION, ENGLISH_READING, PDF_ATTACHMENT, ARITHMETIC, PREVIEW }
 
 data class HomeworkAttachment(val url: String, val name: String, val mimeType: String) {
     val isPdf: Boolean get() = mimeType.substringBefore(";").trim().equals("application/pdf", true) || name.endsWith(".pdf", true) || url.substringBefore("?").substringBefore("#").endsWith(".pdf", true)

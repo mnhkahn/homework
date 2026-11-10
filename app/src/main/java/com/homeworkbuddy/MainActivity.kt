@@ -454,6 +454,7 @@ private fun HomeworkBuddyApp() {
     var showCameraConfirm by remember { mutableStateOf(false) }
     var showTextSubmission by remember { mutableStateOf(false) }
     var submissionText by remember { mutableStateOf("") }
+    var previewRequirementsDraft by remember { mutableStateOf<String?>(null) }
     var capturePhoto by remember { mutableStateOf<Uri?>(null) }
     var pendingPhotos by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var retakePhotoIndex by remember { mutableStateOf<Int?>(null) }
@@ -656,8 +657,24 @@ private fun HomeworkBuddyApp() {
         )
     }
 
+    fun hasPendingSubmission(task: HomeworkTask): Boolean = pendingStore.items().any {
+        it.taskId == task.id &&
+            (task.type == HomeworkTaskType.PREVIEW || it.previewRequirements != null || it.textContent != null)
+    }
+
+    fun openSubmission(task: HomeworkTask) {
+        submissionTask = task
+        previewRequirementsDraft = if (task.type == HomeworkTaskType.PREVIEW) task.task.orEmpty() else null
+        showSubmissionChoice = true
+    }
+
+    fun previewRequirementsToSubmit(task: HomeworkTask): String? =
+        previewRequirementsDraft?.trim()?.takeIf {
+            task.type == HomeworkTaskType.PREVIEW && it != task.task.orEmpty()
+        }
+
     fun retryPendingSubmissions() {
-        if (!connected || retryingPendingSubmissions) return
+        if (!connected || retryingPendingSubmissions || submittingTaskId != null || submissionTask != null) return
         retryingPendingSubmissions = true
         // This deliberately uses the screen scope instead of the refresh
         // LaunchedEffect. Starting another refresh must never cancel an upload.
@@ -673,7 +690,10 @@ private fun HomeworkBuddyApp() {
                             uploadedAnything = true
                         }
                     } else if (pending.textContent != null) {
-                        runCatching { api.submitText(pending.taskId, pending.textContent, pending.isCorrection) }.onSuccess {
+                        runCatching {
+                            api.submitText(pending.taskId, pending.textContent, pending.isCorrection, pending.submissionId,
+                                retry = true, previewRequirements = pending.previewRequirements)
+                        }.onSuccess {
                             pendingStore.remove(pending.taskId)
                             celebrateRetriedSubmission(pending)
                             uploadedAnything = true
@@ -691,6 +711,8 @@ private fun HomeworkBuddyApp() {
                                 pending.submissionId,
                                 pending.isCorrection,
                                 pending.photoNamePrefix,
+                                previewRequirements = pending.previewRequirements,
+                                retry = true,
                             )
                         }.onSuccess {
                             pendingStore.remove(pending.taskId)
@@ -1081,8 +1103,15 @@ private fun HomeworkBuddyApp() {
                 activeTask?.takeIf { it.title.contains("钢琴") }?.let { pianoPractice = pianoPracticeStore.record(it.id) }
             },
             onFinish = {
-                submissionTask = activeTask?.takeIf { submittingTaskId == null }
-                showSubmissionChoice = submissionTask != null
+                val task = activeTask
+                if (task != null && submittingTaskId == null && !retryingPendingSubmissions) {
+                    if (hasPendingSubmission(task)) {
+                        connectionError = "上次提交尚未同步到 Trello，联网后会自动重试。"
+                        retryPendingSubmissions()
+                    } else {
+                        openSubmission(task)
+                    }
+                }
             },
             onResubmit = { cardId ->
                 if (submittingTaskId == null && !retryingPendingSubmissions) {
@@ -1091,12 +1120,12 @@ private fun HomeworkBuddyApp() {
                         try {
                             val correction = api.taskForCorrection(cardId)
                             check(correction.canCorrect) { "这份作业已获 100 分，无需改错" }
+                            check(!hasPendingSubmission(correction)) { "上次提交尚未同步到 Trello，联网后会自动重试。" }
                             tasks = listOf(correction) + tasks.filterNot { it.id == cardId }
                             taskCache.saveToday(tasks)
                             selectedDate = LocalDate.now()
                             selectTask(correction)
-                            submissionTask = correction
-                            showSubmissionChoice = true
+                            openSubmission(correction)
                         } catch (cancelled: kotlinx.coroutines.CancellationException) {
                             throw cancelled
                         } catch (error: Exception) {
@@ -1156,13 +1185,23 @@ private fun HomeworkBuddyApp() {
                     connectionError = "请先关联 Trello 后再提交作业。"
                 } else if (submittingTaskId == null) {
                     submittingTaskId = current.id
-                    val submissionId = java.util.UUID.randomUUID().toString()
-                    val photoNamePrefix = current.photoSubmissionNamePrefix()
+                    val pending = PendingSubmission(
+                        taskId = current.id,
+                        photoPaths = attachments.map(Uri::toString),
+                        isOvertime = current.status == TaskStatus.OVERTIME,
+                        isCorrection = current.submitsCorrection,
+                        taskTitle = current.title,
+                        photoNamePrefix = current.photoSubmissionNamePrefix(),
+                        previewRequirements = previewRequirementsToSubmit(current),
+                    )
+                    pendingStore.add(pending)
                     scope.launch {
                         runCatching {
-                            api.submit(current.id, attachments, current.status == TaskStatus.OVERTIME, submissionId, current.submitsCorrection, photoNamePrefix)
+                            api.submit(current.id, attachments, pending.isOvertime, pending.submissionId, pending.isCorrection,
+                                pending.photoNamePrefix, previewRequirements = pending.previewRequirements)
                         }
                             .onSuccess {
+                                pendingStore.remove(current.id)
                                 CompletionHistoryStore(context).noteTasks(listOf(current))
                                 CompletionHistoryStore(context).recordCompletion(current.id, System.currentTimeMillis() / 1_000, current.dueDate.atTime(current.deadline).atZone(ZoneId.systemDefault()).toEpochSecond(), current.startedAtEpochSeconds, if (recordedAudioUri != null) recordedAudioElapsedSeconds else elapsedSeconds, recordedAudioUri)
                                 advanceAfterCompletion(current.id, recordedAudioUri ?: attachments.first().toString())
@@ -1171,17 +1210,6 @@ private fun HomeworkBuddyApp() {
                                 showCameraConfirm = false; pendingPhotos = emptyList(); deletePendingHomeworkRecording(context, pendingAudio); pendingAudio = null; recordedAudioUri = null
                             }
                             .onFailure { error ->
-                                pendingStore.add(
-                                    PendingSubmission(
-                                        taskId = current.id,
-                                        photoPaths = attachments.map(Uri::toString),
-                                        isOvertime = current.status == TaskStatus.OVERTIME,
-                                        submissionId = submissionId,
-                                        isCorrection = current.submitsCorrection,
-                                        taskTitle = current.title,
-                                        photoNamePrefix = photoNamePrefix,
-                                    )
-                                )
                                 showCameraConfirm = false; pendingPhotos = emptyList(); pendingAudio = null; recordedAudioUri = null
                                 if (error is AuthorizationExpiredException) reportSyncError(error, "")
                                 else connectionError = "作业附件和完成状态尚未同步到 Trello，任务保留原状态；联网后会自动重试。"
@@ -1193,6 +1221,8 @@ private fun HomeworkBuddyApp() {
             },
             showTextSubmission = showTextSubmission,
             submissionText = submissionText,
+            previewRequirements = previewRequirementsDraft,
+            onPreviewRequirementsChange = { previewRequirementsDraft = it },
             onSubmissionTextChange = { submissionText = it },
             onSubmitText = {
                 val current = selected
@@ -1204,9 +1234,23 @@ private fun HomeworkBuddyApp() {
                     connectionError = "请输入要提交的文字内容。"
                 } else if (submittingTaskId == null) {
                     submittingTaskId = current.id
+                    val pending = PendingSubmission(
+                        taskId = current.id,
+                        photoPaths = emptyList(),
+                        isOvertime = current.status == TaskStatus.OVERTIME,
+                        textContent = text,
+                        isCorrection = current.submitsCorrection,
+                        taskTitle = current.title,
+                        previewRequirements = previewRequirementsToSubmit(current),
+                    )
+                    pendingStore.add(pending)
                     scope.launch {
-                        runCatching { api.submitText(current.id, text, current.submitsCorrection) }
+                        runCatching {
+                            api.submitText(current.id, text, current.submitsCorrection, pending.submissionId,
+                                previewRequirements = pending.previewRequirements)
+                        }
                             .onSuccess {
+                                pendingStore.remove(current.id)
                                 CompletionHistoryStore(context).noteTasks(listOf(current))
                                 CompletionHistoryStore(context).recordCompletion(current.id, System.currentTimeMillis() / 1_000, current.dueDate.atTime(current.deadline).atZone(ZoneId.systemDefault()).toEpochSecond(), current.startedAtEpochSeconds, elapsedSeconds)
                                 advanceAfterCompletion(current.id)
@@ -1215,7 +1259,6 @@ private fun HomeworkBuddyApp() {
                                 showTextSubmission = false; submissionText = ""
                             }
                             .onFailure { error ->
-                                pendingStore.add(PendingSubmission(current.id, emptyList(), current.status == TaskStatus.OVERTIME, textContent = text, isCorrection = current.submitsCorrection, taskTitle = current.title))
                                 showTextSubmission = false; submissionText = ""
                                 if (error is AuthorizationExpiredException) reportSyncError(error, "")
                                 else connectionError = "文字作业和完成状态尚未同步到 Trello，任务保留原状态；联网后会自动重试。"
@@ -1360,7 +1403,7 @@ private fun CelebrationDialog(taskTitle: String, allTasksComplete: Boolean, comp
 }
 
 @Composable
-private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, selectedDate: LocalDate, onSelectDate: (LocalDate) -> Unit, remainingSeconds: Int, running: Boolean, taskElapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, calendarLoading: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, xiaoliConnection: XiaoliConnectionSnapshot, kioskMode: KioskMode, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onResubmit: (String) -> Unit, onChoosePhoto: () -> Unit, onChooseAudio: () -> Unit, onChooseText: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photos: List<Uri>, initialPhotoPreviewIndex: Int, audioAttached: Boolean, showSubmissionChoice: Boolean, showTextSubmission: Boolean, submissionText: String, onSubmissionTextChange: (String) -> Unit, onSubmitText: () -> Unit, onAddPhoto: () -> Unit, onRetakePhoto: (Int) -> Unit, onRemovePhoto: (Int) -> Unit, onDismissSubmissionChoice: () -> Unit, onRetake: () -> Unit, onDismissTextSubmission: () -> Unit) {
+private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, selectedDate: LocalDate, onSelectDate: (LocalDate) -> Unit, remainingSeconds: Int, running: Boolean, taskElapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, calendarLoading: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, xiaoliConnection: XiaoliConnectionSnapshot, kioskMode: KioskMode, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onResubmit: (String) -> Unit, onChoosePhoto: () -> Unit, onChooseAudio: () -> Unit, onChooseText: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photos: List<Uri>, initialPhotoPreviewIndex: Int, audioAttached: Boolean, showSubmissionChoice: Boolean, showTextSubmission: Boolean, submissionText: String, previewRequirements: String?, onPreviewRequirementsChange: (String) -> Unit, onSubmissionTextChange: (String) -> Unit, onSubmitText: () -> Unit, onAddPhoto: () -> Unit, onRetakePhoto: (Int) -> Unit, onRemovePhoto: (Int) -> Unit, onDismissSubmissionChoice: () -> Unit, onRetake: () -> Unit, onDismissTextSubmission: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val reviewApi = remember(context) { HomeworkApi(context) }
     var reviewedTaskIds by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -1480,10 +1523,20 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
     }
     if (showSubmissionChoice) AlertDialog(
         onDismissRequest = onDismissSubmissionChoice,
-        title = { Text("怎么提交作业？") },
+        title = { Text(if (previewRequirements != null) "提交预习成果" else "怎么提交作业？") },
         text = {
-            Column {
-                Text("拍摄作业照片；也可以录音或直接提交文字。确认后上传到 Trello。")
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (previewRequirements != null) OutlinedTextField(
+                    value = previewRequirements,
+                    onValueChange = onPreviewRequirementsChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("预习要求") },
+                    placeholder = { Text("请家长填写预习要求") },
+                    supportingText = { Text("随本次成果保存到 Trello 卡片描述") },
+                    minLines = 2,
+                    maxLines = 4,
+                )
+                Text("可以拍照、录音或直接提交文字。确认后上传到 Trello。")
                 TextButton(onClick = onChooseText) { Text("✏️ 提交文字") }
             }
         },
@@ -1519,7 +1572,7 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
     )
     if (showTextSubmission) AlertDialog(
         onDismissRequest = onDismissTextSubmission,
-        title = { Text("提交文字作业") },
+        title = { Text(if (previewRequirements != null) "提交预习记录" else "提交文字作业") },
         text = { OutlinedTextField(value = submissionText, onValueChange = onSubmissionTextChange, modifier = Modifier.fillMaxWidth(), label = { Text("文字内容") }, placeholder = { Text("写下你的答案或完成情况") }, minLines = 4, enabled = !submitting) },
         confirmButton = { Button(onClick = onSubmitText, enabled = !submitting && submissionText.isNotBlank()) { Text(if (submitting) "正在提交…" else "提交并完成") } },
         dismissButton = { TextButton(onClick = onDismissTextSubmission, enabled = !submitting) { Text("取消") } },
@@ -2058,7 +2111,11 @@ private fun formatStudyDuration(seconds: Long): String {
             if (!task.isCorrection || task.canCorrect) FilledTonalButton(onClick = onFinish, enabled = !submitting) {
                 Icon(Icons.Outlined.CameraAlt, null)
                 Spacer(Modifier.width(8.dp))
-                Text(if (task.canCorrect) "提交修改后的内容" else "完成并提交")
+                Text(when {
+                    task.canCorrect -> "提交修改后的内容"
+                    task.type == HomeworkTaskType.PREVIEW -> "提交预习成果"
+                    else -> "完成并提交"
+                })
             }
         }
     }
