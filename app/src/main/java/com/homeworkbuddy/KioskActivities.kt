@@ -301,6 +301,7 @@ private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
             }
         }
         item { ParentTotpSettings(onChanged = { ParentPinStore(activity).clearSession() }) }
+        item { PreviewRequirementsSettings(activity) }
         item { AppUpdateSettingsCard(activity) }
         item { HeadPoseHistoryCard() }
         item { HeadPoseSettingsCard() }
@@ -419,6 +420,32 @@ private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
         }
     }
     if (showAppSelection) StudyAppSelectionDialog(policy) { showAppSelection = false }
+}
+
+@Composable
+private fun PreviewRequirementsSettings(activity: KioskSettingsActivity) {
+    val store = remember(activity) { PreviewRequirementsStore(activity) }
+    var saved by remember { mutableStateOf(store.read().orEmpty()) }
+    var draft by remember { mutableStateOf(saved) }
+    Card {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("预习要求", style = MaterialTheme.typography.titleLarge)
+            Text("要求保存在本机，提交预习作业时会自动写入 Trello。清空后保存可停止同步要求。")
+            OutlinedTextField(
+                value = draft,
+                onValueChange = { draft = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("预习要求") },
+                minLines = 2,
+                maxLines = 5,
+            )
+            Button(enabled = draft.trim() != saved, onClick = {
+                store.save(draft)
+                saved = store.read().orEmpty()
+                draft = saved
+            }) { Text("保存到本机") }
+        }
+    }
 }
 
 @Composable

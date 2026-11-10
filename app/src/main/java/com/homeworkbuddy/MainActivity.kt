@@ -417,6 +417,7 @@ private fun HomeworkBuddyApp() {
     val api = remember(context) { HomeworkApi(context) }
     val kioskPolicy = remember(context) { KioskPolicy(context) }
     val pendingStore = remember(context) { PendingSubmissionStore(context) }
+    val previewRequirementsStore = remember(context) { PreviewRequirementsStore(context) }
     val remoteNoticeStore = remember(context) { RemoteNoticeStore(context) }
     val captureStatusStore = remember(context) { CaptureStatusStore(context) }
     val studyActivityStore = remember(context) { StudyActivityStore(context) }
@@ -454,7 +455,6 @@ private fun HomeworkBuddyApp() {
     var showCameraConfirm by remember { mutableStateOf(false) }
     var showTextSubmission by remember { mutableStateOf(false) }
     var submissionText by remember { mutableStateOf("") }
-    var previewRequirementsDraft by remember { mutableStateOf<String?>(null) }
     var capturePhoto by remember { mutableStateOf<Uri?>(null) }
     var pendingPhotos by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var retakePhotoIndex by remember { mutableStateOf<Int?>(null) }
@@ -664,14 +664,11 @@ private fun HomeworkBuddyApp() {
 
     fun openSubmission(task: HomeworkTask) {
         submissionTask = task
-        previewRequirementsDraft = if (task.type == HomeworkTaskType.PREVIEW) task.task.orEmpty() else null
         showSubmissionChoice = true
     }
 
     fun previewRequirementsToSubmit(task: HomeworkTask): String? =
-        previewRequirementsDraft?.trim()?.takeIf {
-            task.type == HomeworkTaskType.PREVIEW && it != task.task.orEmpty()
-        }
+        if (task.type == HomeworkTaskType.PREVIEW) previewRequirementsStore.read() else null
 
     fun retryPendingSubmissions() {
         if (!connected || retryingPendingSubmissions || submittingTaskId != null || submissionTask != null) return
@@ -1221,8 +1218,6 @@ private fun HomeworkBuddyApp() {
             },
             showTextSubmission = showTextSubmission,
             submissionText = submissionText,
-            previewRequirements = previewRequirementsDraft,
-            onPreviewRequirementsChange = { previewRequirementsDraft = it },
             onSubmissionTextChange = { submissionText = it },
             onSubmitText = {
                 val current = selected
@@ -1403,7 +1398,7 @@ private fun CelebrationDialog(taskTitle: String, allTasksComplete: Boolean, comp
 }
 
 @Composable
-private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, selectedDate: LocalDate, onSelectDate: (LocalDate) -> Unit, remainingSeconds: Int, running: Boolean, taskElapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, calendarLoading: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, xiaoliConnection: XiaoliConnectionSnapshot, kioskMode: KioskMode, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onResubmit: (String) -> Unit, onChoosePhoto: () -> Unit, onChooseAudio: () -> Unit, onChooseText: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photos: List<Uri>, initialPhotoPreviewIndex: Int, audioAttached: Boolean, showSubmissionChoice: Boolean, showTextSubmission: Boolean, submissionText: String, previewRequirements: String?, onPreviewRequirementsChange: (String) -> Unit, onSubmissionTextChange: (String) -> Unit, onSubmitText: () -> Unit, onAddPhoto: () -> Unit, onRetakePhoto: (Int) -> Unit, onRemovePhoto: (Int) -> Unit, onDismissSubmissionChoice: () -> Unit, onRetake: () -> Unit, onDismissTextSubmission: () -> Unit) {
+private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, selectedDate: LocalDate, onSelectDate: (LocalDate) -> Unit, remainingSeconds: Int, running: Boolean, taskElapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, calendarLoading: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, xiaoliConnection: XiaoliConnectionSnapshot, kioskMode: KioskMode, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onResubmit: (String) -> Unit, onChoosePhoto: () -> Unit, onChooseAudio: () -> Unit, onChooseText: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photos: List<Uri>, initialPhotoPreviewIndex: Int, audioAttached: Boolean, showSubmissionChoice: Boolean, showTextSubmission: Boolean, submissionText: String, onSubmissionTextChange: (String) -> Unit, onSubmitText: () -> Unit, onAddPhoto: () -> Unit, onRetakePhoto: (Int) -> Unit, onRemovePhoto: (Int) -> Unit, onDismissSubmissionChoice: () -> Unit, onRetake: () -> Unit, onDismissTextSubmission: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val reviewApi = remember(context) { HomeworkApi(context) }
     var reviewedTaskIds by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -1523,19 +1518,9 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
     }
     if (showSubmissionChoice) AlertDialog(
         onDismissRequest = onDismissSubmissionChoice,
-        title = { Text(if (previewRequirements != null) "提交预习成果" else "怎么提交作业？") },
+        title = { Text(if (selected?.type == HomeworkTaskType.PREVIEW) "提交预习成果" else "怎么提交作业？") },
         text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (previewRequirements != null) OutlinedTextField(
-                    value = previewRequirements,
-                    onValueChange = onPreviewRequirementsChange,
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("预习要求") },
-                    placeholder = { Text("请家长填写预习要求") },
-                    supportingText = { Text("随本次成果保存到 Trello 卡片描述") },
-                    minLines = 2,
-                    maxLines = 4,
-                )
+            Column {
                 Text("可以拍照、录音或直接提交文字。确认后上传到 Trello。")
                 TextButton(onClick = onChooseText) { Text("✏️ 提交文字") }
             }
@@ -1572,7 +1557,7 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
     )
     if (showTextSubmission) AlertDialog(
         onDismissRequest = onDismissTextSubmission,
-        title = { Text(if (previewRequirements != null) "提交预习记录" else "提交文字作业") },
+        title = { Text(if (selected?.type == HomeworkTaskType.PREVIEW) "提交预习记录" else "提交文字作业") },
         text = { OutlinedTextField(value = submissionText, onValueChange = onSubmissionTextChange, modifier = Modifier.fillMaxWidth(), label = { Text("文字内容") }, placeholder = { Text("写下你的答案或完成情况") }, minLines = 4, enabled = !submitting) },
         confirmButton = { Button(onClick = onSubmitText, enabled = !submitting && submissionText.isNotBlank()) { Text(if (submitting) "正在提交…" else "提交并完成") } },
         dismissButton = { TextButton(onClick = onDismissTextSubmission, enabled = !submitting) { Text("取消") } },
