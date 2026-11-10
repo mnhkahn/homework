@@ -21,7 +21,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 enum class UpdateStage { IDLE, CHECKING, DOWNLOADING, READY, FAILED }
-data class UpdateState(val stage: UpdateStage = UpdateStage.IDLE, val version: String = "", val notes: String = "", val progress: Float = 0f, val message: String = "", val id: Long = -1)
+data class UpdateState(val stage: UpdateStage = UpdateStage.IDLE, val version: String = "", val progress: Float = 0f, val message: String = "", val id: Long = -1)
 
 class AppUpdateViewModel private constructor(application: Application) : AndroidViewModel(application) {
     // Main and settings activities share one download monitor for this process.
@@ -40,7 +40,12 @@ class AppUpdateViewModel private constructor(application: Application) : Android
     private var running = false
     private val apk: File get() = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "updates/app-update.apk")
 
-    init { checkForUpdate() }
+    init {
+        if (prefs.getLong("id", -1) >= 0) {
+            if (prefs.getLong("versionCode", 0) > BuildConfig.VERSION_CODE) checkForUpdate()
+            else clearDownload()
+        }
+    }
 
     fun checkForUpdate() {
         if (running) return
@@ -70,11 +75,11 @@ class AppUpdateViewModel private constructor(application: Application) : Android
                         .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, "updates/app-update.apk")
                     id = downloads.enqueue(request)
                     prefs.edit().putLong("id", id).putLong("versionCode", update.versionCode)
-                        .putString("versionName", update.versionName).putString("notes", update.notes)
+                        .putString("versionName", update.versionName)
                         .putLong("size", update.sizeBytes).apply()
                 }
                 operation = "下载更新"
-                val current = UpdateState(UpdateStage.DOWNLOADING, prefs.getString("versionName", "")!!, prefs.getString("notes", "")!!, id = id)
+                val current = UpdateState(UpdateStage.DOWNLOADING, prefs.getString("versionName", "").orEmpty(), id = id)
                 while (true) {
                     val snapshot = withContext(Dispatchers.IO) {
                         downloads.query(DownloadManager.Query().setFilterById(id)).use { c ->

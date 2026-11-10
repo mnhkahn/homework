@@ -2,8 +2,7 @@ package com.homeworkbuddy
 
 import android.net.Uri
 import org.json.JSONObject
-import java.net.URLEncoder
-import java.nio.charset.StandardCharsets
+import java.net.URI
 
 /** Normalized type-specific content extracted from one Trello card description. */
 data class HomeworkTaskDetails(
@@ -18,7 +17,7 @@ data class HomeworkTaskDetails(
         private val taskLine = Regex("(?im)^\\s*(?:task|作业内容)\\s*[:：]\\s*(.+?)\\s*$")
         private val previewRequirementsLine = Regex("(?im)^[\\t ]*(?:预习要求|preview_requirements)[\\t ]*[:：][\\t ]*")
         private val wordLine = Regex("(?im)^\\s*背单词\\s*[:：]\\s*(.+?)\\s*$")
-        private val translationLinkLine = Regex("(?im)^\\s*翻译链接\\s*[:：]\\s*(https?://\\S+)\\s*$")
+        private val translationLinkLine = Regex("(?im)^[\\t ]*翻译链接[\\t ]*[:：][\\t ]*(\\S+)[\\t ]*$")
         private val homeworkLinkLine = Regex("(?im)^[\\t ]*(?:link|链接|作业链接)[\\t ]*[:：][\\t ]*(\\S+)[\\t ]*$")
         private val durationLine = Regex("(?im)^\\s*预计用时\\s*[:：].*$")
         private val vocabulary = Regex("^[A-Za-z]+(?:['’-][A-Za-z]+)*(?: +[A-Za-z]+(?:['’-][A-Za-z]+)*)*$")
@@ -50,11 +49,11 @@ data class HomeworkTaskDetails(
                 ?: translationLinkLine.find(description)?.groupValues?.getOrNull(1)?.trim()
 
             return when (explicit) {
-                HomeworkTaskType.WORD_MEMORIZATION -> (words(rawTask)
-                    ?: suppliedLink?.wordsFromLink()
-                    ?: rawTask?.wordsFromLink()).let { normalized ->
-                    HomeworkTaskDetails(HomeworkTaskType.WORD_MEMORIZATION, normalized ?: rawTask, normalized?.wordLink())
-                }
+                HomeworkTaskType.WORD_MEMORIZATION -> HomeworkTaskDetails(
+                    HomeworkTaskType.WORD_MEMORIZATION,
+                    words(rawTask) ?: rawTask,
+                    vocabularyLink(suppliedLink) ?: vocabularyLink(rawTask),
+                )
                 HomeworkTaskType.ENGLISH_READING -> {
                     val readingLink = suppliedLink?.takeIf(::isEnglishReadingLink)
                         ?: rawTask?.takeIf(::isEnglishReadingLink)
@@ -69,8 +68,11 @@ data class HomeworkTaskDetails(
                 }
                 HomeworkTaskType.NORMAL -> HomeworkTaskDetails(HomeworkTaskType.NORMAL, rawTask, homeworkLink(suppliedLink, rawTask))
                 null -> infer(rawTask).let { inferred ->
-                    if (inferred.type == HomeworkTaskType.NORMAL) inferred.copy(link = homeworkLink(suppliedLink, rawTask))
-                    else inferred
+                    when (inferred.type) {
+                        HomeworkTaskType.NORMAL -> inferred.copy(link = homeworkLink(suppliedLink, rawTask))
+                        HomeworkTaskType.WORD_MEMORIZATION -> inferred.copy(link = vocabularyLink(suppliedLink) ?: inferred.link)
+                        else -> inferred
+                    }
                 }
             }
         }
@@ -105,8 +107,9 @@ data class HomeworkTaskDetails(
         private fun infer(rawTask: String?): HomeworkTaskDetails {
             val value = rawTask?.trim().orEmpty()
             if (isEnglishReadingLink(value)) return HomeworkTaskDetails(HomeworkTaskType.ENGLISH_READING, value, value)
-            val normalizedWords = value.wordsFromLink() ?: words(value)
-            return if (normalizedWords != null) HomeworkTaskDetails(HomeworkTaskType.WORD_MEMORIZATION, normalizedWords, normalizedWords.wordLink())
+            if (isVocabularyPage(value)) return HomeworkTaskDetails(HomeworkTaskType.WORD_MEMORIZATION, link = value)
+            val normalizedWords = words(value)
+            return if (normalizedWords != null) HomeworkTaskDetails(HomeworkTaskType.WORD_MEMORIZATION, normalizedWords)
             else HomeworkTaskDetails(HomeworkTaskType.NORMAL, rawTask, homeworkLink(null, rawTask))
         }
 
@@ -136,15 +139,34 @@ data class HomeworkTaskDetails(
             return entries.takeIf { it.isNotEmpty() && it.all(vocabulary::matches) }?.joinToString(",")
         }
 
-        private fun String.wordLink(): String = "https://$TRANSLATE_HOST$TRANSLATE_PATH?words=" +
-            URLEncoder.encode(this, StandardCharsets.UTF_8.name()).replace("%2C", ",")
+        internal fun vocabularyWords(task: HomeworkTask): List<String> {
+            if (task.type != HomeworkTaskType.WORD_MEMORIZATION || vocabularyLink(task.link) != null) return emptyList()
+            return words(task.task)?.split(',')?.map { it.lowercase() }?.distinct().orEmpty()
+        }
 
-        /** Accepts the word-learning URL saved in a Trello description. */
-        private fun String.wordsFromLink(): String? = runCatching {
-            val uri = Uri.parse(this)
-            if (uri.scheme != "https" || uri.host != TRANSLATE_HOST || uri.path != TRANSLATE_PATH) null
-            else words(uri.getQueryParameter("words"))
-        }.getOrNull()
+        // Older tablet versions cached a generated URL even when the card contained only words.
+        internal fun restoreVocabularyLink(task: HomeworkTask): String? {
+            val stored = vocabularyLink(task.link) ?: vocabularyLink(task.task)
+            val description = task.description ?: return stored
+            if (stored == null) return fromDescription(description).link
+            if (!isVocabularyPage(stored) || words(task.task) == null) return stored
+            return fromDescription(description).link ?: description.lineSequence()
+                .map(String::trim)
+                .firstOrNull(HomeworkLinks::isWebUrl)
+        }
+
+        private fun vocabularyLink(value: String?): String? {
+            val text = value?.trim() ?: return null
+            val url = if (text.startsWith('[') && text.endsWith(')')) text.substringAfter("](", "").dropLast(1) else text
+            return url.takeIf(HomeworkLinks::isWebUrl)
+        }
+
+        private fun isVocabularyPage(value: String): Boolean {
+            if (!HomeworkLinks.isWebUrl(value)) return false
+            val uri = URI(value)
+            return uri.host.equals(TRANSLATE_HOST, true) && uri.path == TRANSLATE_PATH &&
+                uri.rawQuery.orEmpty().split('&').any { it.startsWith("word=") || it.startsWith("words=") }
+        }
 
         private fun isEnglishReadingLink(value: String): Boolean = runCatching {
             val uri = Uri.parse(value)

@@ -25,7 +25,10 @@ import androidx.compose.ui.unit.dp
 /** Show a mode only when the task has content usable by its built-in screen. */
 internal val HomeworkTask.titleMode: HomeworkTaskType?
     get() = when (type) {
-        HomeworkTaskType.WORD_MEMORIZATION, HomeworkTaskType.ENGLISH_READING -> type.takeIf { !link.isNullOrBlank() }
+        HomeworkTaskType.WORD_MEMORIZATION -> type.takeIf {
+            link?.let(HomeworkLinks::isWebUrl) == true || HomeworkTaskDetails.vocabularyWords(this).isNotEmpty()
+        }
+        HomeworkTaskType.ENGLISH_READING -> type.takeIf { !link.isNullOrBlank() }
         HomeworkTaskType.ARITHMETIC -> type.takeIf { arithmeticQuestions(task).isNotEmpty() }
         HomeworkTaskType.PDF_ATTACHMENT -> type.takeIf { attachments.any { it.isPdf } }
         HomeworkTaskType.PREVIEW -> type

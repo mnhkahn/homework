@@ -180,7 +180,7 @@ JSON 描述也支持 `{"type":"arithmetic","task":"26 + 17 = ___\n54 − 28 = __
 
 ## 发布与自动升级
 
-推送 `v*` 或 `x.y.z` 形式的 tag 会触发 `.github/workflows/android-release.yml`：CI 用 GitHub Secrets 里的 keystore 签名 release APK（版本号取自 tag，`versionCode` 取 workflow run number），同时发布到蒲公英和 GitHub Release。发布时会用 `git-chglog` 按版本号生成变更说明，并同时写入 GitHub Release 与蒲公英更新说明。App 启动时调用 `https://www.cyeam.com/api/apps/homework/update`，按 APK `versionCode` 检查更新；使用 DownloadManager 在非计费网络后台下载，重启后恢复任务。安装前校验大小、包名、versionCode 和签名，前台调起系统安装界面（首次需允许安装未知应用，最后仍需系统确认）。设置页保留手动检查、失败重试和安装入口；学习锁定模式下临时暂停 15 分钟以打开系统界面。蒲公英 API Key 仅保存在服务端，后端 `conf/app_updates.json` 的 homework 配置需部署后生效。
+推送 `v*` 或 `x.y.z` 形式的 tag 会触发 `.github/workflows/android-release.yml`：CI 用 GitHub Secrets 里的 keystore 签名 release APK（版本号取自 tag，`versionCode` 取 workflow run number），同时发布到蒲公英和 GitHub Release。发布时会用 `git-chglog` 按版本号生成变更说明，并同时写入 GitHub Release 与蒲公英更新说明。在家长验证页点「版本更新」后，App 调用 `https://www.cyeam.com/api/apps/homework/update`，按 APK `versionCode` 检查更新。有新版本时使用 DownloadManager 在非计费网络后台下载，当前页面显示进度，再次进入时恢复任务状态。下载完成后校验大小、包名、versionCode 和签名。点「安装更新」才打开系统安装流程，首次需允许本应用安装更新，最后由系统确认。学习锁定模式下临时允许所需的系统页面。蒲公英 API Key 仅保存在服务端，后端 `conf/app_updates.json` 的 homework 配置需部署后生效。
 
 首次配置需要：
 

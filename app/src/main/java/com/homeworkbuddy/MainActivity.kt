@@ -451,6 +451,17 @@ private fun HomeworkBuddyApp() {
     var foreground by remember { mutableStateOf(true) }
     var refreshRequest by remember { mutableIntStateOf(0) }
     var refreshing by remember { mutableStateOf(false) }
+    val dictationPhotoPrefs = remember(context) {
+        context.getSharedPreferences("dictation_photo", android.content.Context.MODE_PRIVATE)
+    }
+    var dictationAwaitingPhoto by remember(dictationPhotoPrefs) {
+        mutableStateOf(dictationPhotoPrefs.getStringSet("task_ids", null).orEmpty().toSet())
+    }
+    fun setDictationAwaitingPhoto(taskIds: Set<String>) {
+        if (dictationAwaitingPhoto == taskIds) return
+        dictationAwaitingPhoto = taskIds
+        dictationPhotoPrefs.edit().putStringSet("task_ids", taskIds).apply()
+    }
     var showSubmissionChoice by remember { mutableStateOf(false) }
     var showCameraConfirm by remember { mutableStateOf(false) }
     var showTextSubmission by remember { mutableStateOf(false) }
@@ -634,6 +645,7 @@ private fun HomeworkBuddyApp() {
     }
 
     fun advanceAfterCompletion(taskId: String, photoPath: String? = null, isCorrection: Boolean? = null) {
+        setDictationAwaitingPhoto(dictationAwaitingPhoto - taskId)
         HomeworkReminderScheduler.taskCompleted(context, taskId)
         val scheduled = weekTasks.firstOrNull { it.id == taskId }
         if (scheduled != null) {
@@ -743,6 +755,16 @@ private fun HomeworkBuddyApp() {
         }
     }
 
+    fun recoverPhotoCapture() {
+        if (pendingPhotos.isNotEmpty()) {
+            showCameraConfirm = true
+        } else if (submissionTask?.let { it.id in dictationAwaitingPhoto } == true) {
+            submissionTask = null
+        } else {
+            showSubmissionChoice = true
+        }
+    }
+
     val scanPhoto = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val photo = capturePhoto
         val scannedPath = result.data?.getStringExtra(HomeworkScanActivity.EXTRA_RESULT_PATH)
@@ -768,7 +790,7 @@ private fun HomeworkBuddyApp() {
         } else {
             if (result.resultCode == Activity.RESULT_OK) connectionError = "扫描照片保存失败，请重新拍摄。"
             photo?.let { runCatching { context.contentResolver.delete(it, null, null) } }
-            if (pendingPhotos.isNotEmpty()) showCameraConfirm = true else showSubmissionChoice = true
+            recoverPhotoCapture()
         }
         capturePhoto = null
         retakePhotoIndex = null
@@ -805,14 +827,14 @@ private fun HomeworkBuddyApp() {
                 capturePhoto?.let { deletePendingHomeworkPhoto(context, it) }
                 capturePhoto = null
                 retakePhotoIndex = null
-                if (pendingPhotos.isNotEmpty()) showCameraConfirm = true else showSubmissionChoice = true
+                recoverPhotoCapture()
                 connectionError = "无法打开自动扫描，请重试。"
             }
         } else {
             photo?.let { deletePendingHomeworkPhoto(context, it) }
             capturePhoto = null
             retakePhotoIndex = null
-            if (pendingPhotos.isNotEmpty()) showCameraConfirm = true else showSubmissionChoice = true
+            recoverPhotoCapture()
             connectionError = "需要相机权限才能拍照记录作业。"
         }
     }
@@ -831,10 +853,32 @@ private fun HomeworkBuddyApp() {
                 capturePhoto?.let { deletePendingHomeworkPhoto(context, it) }
                 capturePhoto = null
                 retakePhotoIndex = null
-                if (pendingPhotos.isNotEmpty()) showCameraConfirm = true else showSubmissionChoice = true
+                recoverPhotoCapture()
                 connectionError = "无法打开自动扫描，请重试。"
             }
         } else requestCameraPermission.launch(Manifest.permission.CAMERA)
+    }
+    fun openDictationPhoto(task: HomeworkTask) {
+        if (submittingTaskId != null || retryingPendingSubmissions || capturePhoto != null) return
+        if (pendingStore.items().any { it.taskId == task.id }) {
+            connectionError = "上次提交尚未同步到 Trello，联网后会自动重试。"
+            retryPendingSubmissions()
+            return
+        }
+        submissionTask = task
+        showSubmissionChoice = false
+        launchPhotoCapture(task)
+    }
+
+    val vocabulary = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val taskId = result.data?.getStringExtra(VocabularyActivity.EXTRA_TASK_ID)
+            val task = (tasks + weekTasks).firstOrNull { it.id == taskId && it.type == HomeworkTaskType.WORD_MEMORIZATION }
+            if (task != null && !task.status.isSubmitted) {
+                setDictationAwaitingPhoto(dictationAwaitingPhoto + task.id)
+                openDictationPhoto(task)
+            }
+        }
     }
     val requestNotificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     LaunchedEffect(Unit) {
@@ -1102,6 +1146,17 @@ private fun HomeworkBuddyApp() {
             systemNonAllowedApps = systemNonAllowedApps,
             onBlockedApps = { systemNonAllowedApps = kioskPolicy.todayNonAllowedAppUsage(); showBlockedApps = true },
             onSelect = { task -> selectTask(task) },
+            vocabularyPhotoRequired = activeTask?.let {
+                it.id in dictationAwaitingPhoto && !it.status.isSubmitted && HomeworkTaskDetails.vocabularyWords(it).isNotEmpty()
+            } == true,
+            onOpenVocabulary = { task, words ->
+                if (task.id in dictationAwaitingPhoto && !task.status.isSubmitted) {
+                    openDictationPhoto(task)
+                } else {
+                    (activity as? MainActivity)?.allowManagedActivityLaunch()
+                    vocabulary.launch(VocabularyActivity.intent(context, task, words))
+                }
+            },
             onStart = {
                 val startedAt = System.currentTimeMillis()
                 taskStartedAtMillis = startedAt
@@ -1122,6 +1177,8 @@ private fun HomeworkBuddyApp() {
                     if (hasPendingSubmission(task)) {
                         connectionError = "上次提交尚未同步到 Trello，联网后会自动重试。"
                         retryPendingSubmissions()
+                    } else if (task.id in dictationAwaitingPhoto && !task.status.isSubmitted && HomeworkTaskDetails.vocabularyWords(task).isNotEmpty()) {
+                        openDictationPhoto(task)
                     } else {
                         openSubmission(task)
                     }
@@ -1305,7 +1362,7 @@ private fun HomeworkBuddyApp() {
                         deletePendingHomeworkPhoto(context, photo)
                         if (pendingPhotos.isEmpty()) {
                             showCameraConfirm = false
-                            showSubmissionChoice = true
+                            recoverPhotoCapture()
                         }
                     }
                 }
@@ -1326,7 +1383,6 @@ private fun HomeworkBuddyApp() {
             onDismissTextSubmission = { if (submittingTaskId == null) { showTextSubmission = false; submissionText = ""; submissionTask = null } },
         )
         celebration?.let { event -> CelebrationDialog(event.taskTitle, event.allTasksComplete, event.completedEarly, event.isCorrection) { celebration = null } }
-        AppUpdatePanel()
         if (showBlockedApps) BlockedAppsDialog(systemNonAllowedApps) { showBlockedApps = false }
     }
 }
@@ -1415,7 +1471,7 @@ private fun CelebrationDialog(taskTitle: String, allTasksComplete: Boolean, comp
 }
 
 @Composable
-private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, selectedDate: LocalDate, onSelectDate: (LocalDate) -> Unit, remainingSeconds: Int, running: Boolean, taskElapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, calendarLoading: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, xiaoliConnection: XiaoliConnectionSnapshot, kioskMode: KioskMode, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onResubmit: (String) -> Unit, onChoosePhoto: () -> Unit, onChooseAudio: () -> Unit, onChooseText: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photos: List<Uri>, initialPhotoPreviewIndex: Int, audioAttached: Boolean, showSubmissionChoice: Boolean, showTextSubmission: Boolean, submissionText: String, onSubmissionTextChange: (String) -> Unit, onSubmitText: () -> Unit, onAddPhoto: () -> Unit, onRetakePhoto: (Int) -> Unit, onRemovePhoto: (Int) -> Unit, onDismissSubmissionChoice: () -> Unit, onRetake: () -> Unit, onDismissTextSubmission: () -> Unit) {
+private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: HomeworkTask?, selectedDate: LocalDate, onSelectDate: (LocalDate) -> Unit, remainingSeconds: Int, running: Boolean, taskElapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, calendarLoading: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, xiaoliConnection: XiaoliConnectionSnapshot, kioskMode: KioskMode, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, vocabularyPhotoRequired: Boolean, onOpenVocabulary: (HomeworkTask, List<String>) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onResubmit: (String) -> Unit, onChoosePhoto: () -> Unit, onChooseAudio: () -> Unit, onChooseText: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photos: List<Uri>, initialPhotoPreviewIndex: Int, audioAttached: Boolean, showSubmissionChoice: Boolean, showTextSubmission: Boolean, submissionText: String, onSubmissionTextChange: (String) -> Unit, onSubmitText: () -> Unit, onAddPhoto: () -> Unit, onRetakePhoto: (Int) -> Unit, onRemovePhoto: (Int) -> Unit, onDismissSubmissionChoice: () -> Unit, onRetake: () -> Unit, onDismissTextSubmission: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val reviewApi = remember(context) { HomeworkApi(context) }
     var reviewedTaskIds by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -1498,12 +1554,12 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, selected: Ho
             } else if (dayTasks.isEmpty()) {
                 EmptyTaskState(Modifier.fillMaxSize())
             } else if (this@BoxWithConstraints.maxWidth >= 700.dp) Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(22.dp)) {
-                if (selected != null) CurrentTask(Modifier.weight(1.45f).fillMaxHeight(), selected, running, taskElapsedSeconds, pianoPractice, submitting, { onStart(); if (selected.isCorrection) showReview(selected) }, onPianoRecord, onFinish, selected.id in reviewedTaskIds, { showReview(selected) })
+                if (selected != null) CurrentTask(Modifier.weight(1.45f).fillMaxHeight(), selected, running, taskElapsedSeconds, pianoPractice, submitting, { onStart(); if (selected.isCorrection) showReview(selected) }, onPianoRecord, onFinish, selected.id in reviewedTaskIds, { showReview(selected) }, vocabularyPhotoRequired, onOpenVocabulary)
                 else AllDoneState(Modifier.weight(1.45f).fillMaxHeight())
                 TaskQueue(Modifier.weight(.8f).fillMaxHeight(), waiting, completedTasks, onSelect, reviewedTaskIds, showReview, onResubmit, submitting)
             } else {
                 Column(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    if (selected != null) CurrentTask(Modifier.fillMaxWidth().weight(1.4f), selected, running, taskElapsedSeconds, pianoPractice, submitting, { onStart(); if (selected.isCorrection) showReview(selected) }, onPianoRecord, onFinish, selected.id in reviewedTaskIds, { showReview(selected) })
+                    if (selected != null) CurrentTask(Modifier.fillMaxWidth().weight(1.4f), selected, running, taskElapsedSeconds, pianoPractice, submitting, { onStart(); if (selected.isCorrection) showReview(selected) }, onPianoRecord, onFinish, selected.id in reviewedTaskIds, { showReview(selected) }, vocabularyPhotoRequired, onOpenVocabulary)
                     else AllDoneState(Modifier.fillMaxWidth().weight(1.4f))
                     TaskQueue(Modifier.fillMaxWidth().weight(1f), waiting, completedTasks, onSelect, reviewedTaskIds, showReview, onResubmit, submitting)
                 }
@@ -1993,7 +2049,7 @@ private fun formatStudyDuration(seconds: Long): String {
     }
 }
 
-@Composable private fun CompletedTask(modifier: Modifier, task: HomeworkTask, hasReview: Boolean, onReview: () -> Unit, submitting: Boolean, onSubmitAgain: () -> Unit) {
+@Composable private fun CompletedTask(modifier: Modifier, task: HomeworkTask, hasReview: Boolean, onReview: () -> Unit, submitting: Boolean, onSubmitAgain: () -> Unit, onOpenVocabulary: (HomeworkTask, List<String>) -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val record = remember(task) { CompletionHistoryStore(context).day(task.dueDate).firstOrNull { it.taskId == task.id } }
     val completedAt = task.completedAtEpochSeconds ?: record?.completedAtEpochSeconds
@@ -2034,16 +2090,28 @@ private fun formatStudyDuration(seconds: Long): String {
             Spacer(Modifier.width(8.dp))
             Text("再次提交")
         }
-        HomeworkLinkButton(task)
+        HomeworkLinkButton(task, onOpenVocabulary)
         PdfAttachmentButtons(task)
         audio?.let { LocalRecordingButton(it) }
     }
     if (showPhotos) PhotoViewer(photos, HomeworkApi(context)) { showPhotos = false }
 }
 
-@Composable private fun HomeworkLinkButton(task: HomeworkTask, enabled: Boolean = true) {
+@Composable private fun HomeworkLinkButton(
+    task: HomeworkTask,
+    onOpenVocabulary: (HomeworkTask, List<String>) -> Unit,
+    enabled: Boolean = true,
+    vocabularyPhotoRequired: Boolean = false,
+) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    task.link?.let { link ->
+    val words = remember(task.type, task.task, task.link) { HomeworkTaskDetails.vocabularyWords(task) }
+    if (words.isNotEmpty()) {
+        FilledTonalButton(onClick = { onOpenVocabulary(task, words) }, enabled = enabled) {
+            Text(if (vocabularyPhotoRequired) "拍照提交听写" else "打开背单词")
+        }
+        return
+    }
+    task.link?.takeIf(HomeworkLinks::isWebUrl)?.let { link ->
         FilledTonalButton(onClick = {
             GameActivity.openHomeworkLink(context, link)
         }, enabled = enabled) {
@@ -2058,9 +2126,9 @@ private fun formatStudyDuration(seconds: Long): String {
 }
 
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
-@Composable private fun CurrentTask(modifier: Modifier, task: HomeworkTask, running: Boolean, elapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, hasReview: Boolean, onReview: () -> Unit) {
+@Composable private fun CurrentTask(modifier: Modifier, task: HomeworkTask, running: Boolean, elapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, hasReview: Boolean, onReview: () -> Unit, vocabularyPhotoRequired: Boolean, onOpenVocabulary: (HomeworkTask, List<String>) -> Unit) {
     if (task.status.isSubmitted) {
-        CompletedTask(modifier, task, hasReview, onReview, submitting, onFinish)
+        CompletedTask(modifier, task, hasReview, onReview, submitting, onFinish, onOpenVocabulary)
         return
     }
     val overdue = task.status == TaskStatus.OVERTIME
@@ -2102,7 +2170,7 @@ private fun formatStudyDuration(seconds: Long): String {
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             if (!task.isCorrection || task.canCorrect) Button(onClick = onStart, enabled = !task.status.isSubmitted && !submitting && !running) { Text(if (running) "正在做" else if (task.canCorrect) "开始改错" else "开始做") }
-            HomeworkLinkButton(task, enabled = !submitting)
+            HomeworkLinkButton(task, onOpenVocabulary, enabled = !submitting, vocabularyPhotoRequired = vocabularyPhotoRequired)
             PdfAttachmentButtons(task)
             if (pianoPractice != null) {
                 FilledTonalButton(onClick = onPianoRecord, enabled = pianoPractice.cooldownSeconds == 0 && !task.status.isSubmitted && !submitting) {
@@ -2110,7 +2178,7 @@ private fun formatStudyDuration(seconds: Long): String {
                 }
             }
             if (hasReview) OutlinedButton(onClick = onReview) { Text("查看批改结果") }
-            if (!task.isCorrection || task.canCorrect) FilledTonalButton(onClick = onFinish, enabled = !submitting) {
+            if (!vocabularyPhotoRequired && (!task.isCorrection || task.canCorrect)) FilledTonalButton(onClick = onFinish, enabled = !submitting) {
                 Icon(Icons.Outlined.CameraAlt, null)
                 Spacer(Modifier.width(8.dp))
                 Text(when {

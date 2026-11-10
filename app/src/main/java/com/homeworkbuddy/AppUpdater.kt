@@ -1,33 +1,86 @@
 package com.homeworkbuddy
 
 import android.app.Activity
-import androidx.compose.foundation.layout.Column
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 @Composable
-fun AppUpdateSettingsCard(activity: Activity) {
-    val updater = AppUpdateViewModel.get(activity)
+fun AppUpdateActions(activity: Activity) {
+    val updater = remember(activity) { AppUpdateViewModel.get(activity) }
     val state by updater.state.collectAsStateWithLifecycle()
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp)) {
-            Text("版本更新", fontSize = 21.sp)
-            Text("当前版本 ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
-            Button(
-                enabled = state.stage != UpdateStage.CHECKING && state.stage != UpdateStage.DOWNLOADING,
-                onClick = { updater.checkForUpdate() },
-            ) { Text(if (state.stage == UpdateStage.CHECKING) "正在检查…" else "检查更新") }
-            if (state.message.isNotBlank()) Text(state.message)
+    val policy = remember(activity) { KioskPolicy(activity) }
+    var installError by remember(state.id) { mutableStateOf<String?>(null) }
+
+    DisposableEffect(policy) {
+        policy.revokeAppUpdateScreen()
+        onDispose { }
+    }
+    val installer = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        policy.revokeAppUpdateScreen()
+    }
+    fun install() {
+        runCatching {
+            val intent = updater.installIntent()
+            policy.allowAppUpdateScreen(intent)
+            installer.launch(intent)
+        }.onFailure {
+            policy.revokeAppUpdateScreen()
+            installError = it.message ?: "无法打开系统安装器，请稍后重试"
         }
     }
-    AppUpdatePanel(updater)
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        policy.revokeAppUpdateScreen()
+        if (activity.packageManager.canRequestPackageInstalls() && updater.state.value.stage == UpdateStage.READY) install()
+    }
+    Button(
+        enabled = state.stage != UpdateStage.CHECKING && state.stage != UpdateStage.DOWNLOADING,
+        onClick = {
+            installError = null
+            if (state.stage != UpdateStage.READY) {
+                updater.checkForUpdate()
+            } else if (activity.packageManager.canRequestPackageInstalls()) {
+                install()
+            } else {
+                runCatching {
+                    val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${activity.packageName}"))
+                    policy.allowAppUpdateScreen(intent)
+                    permission.launch(intent)
+                }.onFailure {
+                    policy.revokeAppUpdateScreen()
+                    installError = it.message ?: "无法打开安装权限设置，请稍后重试"
+                }
+            }
+        },
+    ) {
+        Text(when (state.stage) {
+            UpdateStage.CHECKING -> "正在检查…"
+            UpdateStage.DOWNLOADING -> "正在下载…"
+            UpdateStage.READY -> "安装更新"
+            UpdateStage.FAILED -> "重试更新"
+            UpdateStage.IDLE -> "版本更新"
+        })
+    }
+    if (state.stage == UpdateStage.DOWNLOADING) {
+        LinearProgressIndicator(progress = { state.progress }, modifier = Modifier.fillMaxWidth())
+    }
+    if (state.message.isNotBlank()) {
+        Text(if (state.version.isBlank()) state.message else "${state.version} · ${state.message}")
+    }
+    installError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
 }

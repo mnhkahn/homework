@@ -23,6 +23,9 @@
 
     <queries>
         <package android:name="com.android.chrome" />
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
         <!-- Resolve and temporarily allow only the system screens used for self-updates. -->
         <intent>
             <action android:name="android.intent.action.VIEW" />
@@ -97,6 +100,11 @@
             android:exported="false"
             android:lockTaskMode="if_whitelisted"
             android:resizeableActivity="false"
+            android:screenOrientation="unspecified" />
+        <activity
+            android:name=".VocabularyActivity"
+            android:exported="false"
+            android:lockTaskMode="if_whitelisted"
             android:screenOrientation="unspecified" />
         <activity
             android:name=".KioskSettingsActivity"

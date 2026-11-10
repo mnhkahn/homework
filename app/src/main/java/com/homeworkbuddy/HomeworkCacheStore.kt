@@ -88,5 +88,8 @@ class HomeworkCacheStore(context: Context) {
         scheduledStartEpochSeconds = value.optLong("scheduled_start").takeIf { it > 0 },
         scheduledDueEpochSeconds = value.optLong("scheduled_due").takeIf { it > 0 },
         explicitEstimatedMinutes = value.optInt("explicit_estimated_minutes").takeIf { it in 1..180 },
-    )
+    ).let { task ->
+        if (task.type == HomeworkTaskType.WORD_MEMORIZATION) task.copy(link = HomeworkTaskDetails.restoreVocabularyLink(task))
+        else task
+    }
 }

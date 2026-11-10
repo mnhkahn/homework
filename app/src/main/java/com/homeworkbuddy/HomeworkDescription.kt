@@ -16,6 +16,16 @@ import androidx.compose.ui.text.style.TextDecoration
 
 @Composable
 internal fun HomeworkDescription(task: HomeworkTask) {
+    val isVocabulary = remember(task.type, task.task, task.link) {
+        HomeworkTaskDetails.vocabularyWords(task).isNotEmpty()
+    }
+    if (isVocabulary) {
+        Text(
+            if (task.status.isSubmitted) "可打开背单词复习词卡。" else "请在背单词页面完成听写，再拍照提交。",
+            style = MaterialTheme.typography.bodyLarge,
+        )
+        return
+    }
     val content = task.description ?: task.task ?: return
     HomeworkLinkedText(content)
 }
