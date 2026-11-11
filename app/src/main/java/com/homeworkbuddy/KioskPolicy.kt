@@ -868,3 +868,7 @@ internal fun studySuspensionPlan(previous: Set<String>, launchable: Set<String>,
     val toSuspend = (previous + launchable + browsers) - allowed + browsers
     return StudySuspensionPlan(toSuspend, previous - toSuspend)
 }
+
+/** A persistent study allowlist entry remains valid after launch flags expire. */
+internal fun isAllowedExternalStudyApp(foreground: ForegroundApp?, managedPackage: String): Boolean =
+    foreground != null && foreground.packageName != managedPackage && foreground.allowed && foreground.launchable

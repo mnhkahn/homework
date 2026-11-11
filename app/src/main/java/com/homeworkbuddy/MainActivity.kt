@@ -387,7 +387,9 @@ class MainActivity : ComponentActivity() {
             // MIUI's tablet window menu can issue a Home-like leave even while
             // Lock Task is active. Reassert the managed activity immediately.
             Handler(Looper.getMainLooper()).postDelayed({
-                policy.applyForCurrentTime(this, navigate = true)
+                if (!isAllowedExternalStudyApp(policy.foregroundApp(), packageName)) {
+                    policy.applyForCurrentTime(this, navigate = true)
+                }
             }, 200)
         }
     }

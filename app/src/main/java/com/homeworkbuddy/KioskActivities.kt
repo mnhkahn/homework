@@ -510,7 +510,9 @@ class ChildLauncherActivity : ComponentActivity() {
             // Some tablet window managers expose a Home-like close command
             // even during Lock Task. Reclaim the managed task immediately.
             Handler(Looper.getMainLooper()).postDelayed({
-                policy.applyForCurrentTime(this, navigate = true)
+                if (!isAllowedExternalStudyApp(policy.foregroundApp(), packageName)) {
+                    policy.applyForCurrentTime(this, navigate = true)
+                }
             }, 200)
         }
     }

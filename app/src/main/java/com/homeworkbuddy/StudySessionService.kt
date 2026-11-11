@@ -37,9 +37,14 @@ class StudySessionService : Service() {
                 .runningAppProcesses
                 ?.firstOrNull { it.pid == Process.myPid() }
                 ?.importance
+            // Resolve the actual foreground before restoring our task. An
+            // allowlisted recorder/player remains valid after a transient launch
+            // flag has been cleared by an activity or recording-result callback.
+            val foreground = policy.foregroundApp()
             val isInteractive = getSystemService(PowerManager::class.java).isInteractive
             if (isInteractive && importance != null && importance > ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND &&
-                !policy.isExternalForegroundAllowed && !RemotePhotoCoordinator.isCaptureInProgress) {
+                !policy.isExternalForegroundAllowed && !RemotePhotoCoordinator.isCaptureInProgress &&
+                !isAllowedExternalStudyApp(foreground, packageName)) {
                 // HyperOS can close a locked task from its tablet window menu
                 // while ActivityManager still reports LOCK_TASK_MODE_LOCKED.
                 // The foreground service drops below foreground importance even
@@ -49,7 +54,6 @@ class StudySessionService : Service() {
             // Track study-time app usage for the home-screen counters, and
             // cover any blocked app that Lock Task failed to contain (vendor
             // window-menu escapes). One UsageStats query feeds both.
-            val foreground = policy.foregroundApp()
             if (foreground?.launchable == true) {
                 val store = StudyActivityStore(this@StudySessionService)
                 if (foreground.packageName != lastForegroundPackage) {
