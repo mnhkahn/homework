@@ -49,6 +49,7 @@ class HomeworkCacheStore(context: Context) {
         put("due_date", task.dueDate.toString())
         put("started_at", task.startedAtEpochSeconds)
         put("completed_at", task.completedAtEpochSeconds)
+        put("updated_at", task.updatedAtEpochSeconds)
         put("type", task.type.name)
         put("task", task.task)
         put("link", task.link)
@@ -79,6 +80,7 @@ class HomeworkCacheStore(context: Context) {
         dueDate = value.optString("due_date").let { runCatching { LocalDate.parse(it) }.getOrDefault(LocalDate.now()) },
         startedAtEpochSeconds = value.optLong("started_at").takeIf { it > 0 },
         completedAtEpochSeconds = value.optLong("completed_at").takeIf { it > 0 },
+        updatedAtEpochSeconds = value.optLong("updated_at").takeIf { it > 0 },
         type = value.optString("type").let { runCatching { HomeworkTaskType.valueOf(it) }.getOrDefault(HomeworkTaskType.NORMAL) },
         task = value.optString("task").ifBlank { null },
         link = value.optString("link").ifBlank { null },

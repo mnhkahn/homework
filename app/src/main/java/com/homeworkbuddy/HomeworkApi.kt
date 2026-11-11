@@ -323,11 +323,8 @@ class HomeworkApi(private val context: Context) {
                     }
                 }
             } ?: emptyList()
-            val activityAt = if (status.isSubmitted) {
-                completionTime(item.getString("id"), listId)
-                    ?: item.optString("dateLastActivity").takeIf { it.isNotBlank() }
-                        ?.let { runCatching { OffsetDateTime.parse(it).toEpochSecond() }.getOrNull() }
-            } else null
+            val updatedAt = parseTrelloDate(item.optString("dateLastActivity"))
+            val completedAt = if (status.isSubmitted) completionTime(item.getString("id"), listId) ?: updatedAt else null
             val details = HomeworkTaskDetails.fromDescription(item.optString("desc"))
             val plannedStart = parseTrelloDate(item.optString("start"))
             val plannedDue = parseTrelloDate(item.optString("due"))
@@ -336,7 +333,8 @@ class HomeworkApi(private val context: Context) {
                 deadline.toLocalTime(), taskStatus,
                 photoUrls = attachments.filterNot { it.isAudio || it.isPdf }.map(HomeworkAttachment::url),
                 attachments = attachments,
-                dueDate = deadline.toLocalDate(), completedAtEpochSeconds = activityAt,
+                dueDate = deadline.toLocalDate(), completedAtEpochSeconds = completedAt,
+                updatedAtEpochSeconds = updatedAt,
                 type = details.type, task = details.task, link = details.link,
                 description = HomeworkTaskDetails.displayText(item.optString("desc")),
                 isCorrection = status == TaskStatus.NEEDS_CORRECTION,

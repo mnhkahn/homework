@@ -23,29 +23,33 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 @Composable
-internal fun HomeworkGradeBadge(result: HomeworkGradeResult, label: String = "最近评分") {
+internal fun HomeworkGradeBadge(result: HomeworkGradeResult, label: String = "最近评分", compact: Boolean = false) {
     if (result.grade == HomeworkGrade.PERFECT) {
-        val shape = RoundedCornerShape(16.dp)
+        val shape = RoundedCornerShape(if (compact) 10.dp else 16.dp)
+        val frame = if (compact) Modifier else Modifier.widthIn(min = 194.dp).shadow(5.dp, shape)
         Row(
-            modifier = Modifier
-                .widthIn(min = 194.dp)
-                .shadow(5.dp, shape)
+            modifier = frame
                 .background(Brush.horizontalGradient(listOf(Color(0xFFFFF7DB), Color(0xFFFFE28A), Color(0xFFFFCD52))), shape)
                 .border(1.dp, Color(0xFFCA9223), shape)
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                .padding(horizontal = if (compact) 6.dp else 12.dp, vertical = if (compact) 4.dp else 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(Modifier.size(38.dp).background(Color(0xFF9B610A), CircleShape), contentAlignment = Alignment.Center) {
-                Icon(Icons.Filled.EmojiEvents, contentDescription = "满分奖杯", tint = Color.White, modifier = Modifier.size(25.dp))
+            Box(Modifier.size(if (compact) 18.dp else 38.dp).background(Color(0xFF9B610A), CircleShape), contentAlignment = Alignment.Center) {
+                Icon(Icons.Filled.EmojiEvents, contentDescription = "满分奖杯", tint = Color.White, modifier = Modifier.size(if (compact) 12.dp else 25.dp))
             }
-            Column {
-                Text("$label · 满分", color = Color(0xFF6C4300), fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                Text("100 分", color = Color(0xFF503000), fontSize = 25.sp, fontWeight = FontWeight.Black, lineHeight = 28.sp)
+            if (compact) {
+                Text(result.grade.label, color = Color(0xFF503000), fontSize = 14.sp, fontWeight = FontWeight.Black, lineHeight = 18.sp)
+            } else {
+                Column {
+                    Text("$label · 满分", color = Color(0xFF6C4300), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                    Text("100 分", color = Color(0xFF503000), fontSize = 25.sp, fontWeight = FontWeight.Black, lineHeight = 28.sp)
+                }
             }
         }
         return
@@ -58,6 +62,12 @@ internal fun HomeworkGradeBadge(result: HomeworkGradeResult, label: String = "�
         HomeworkGrade.NEEDS_PRACTICE -> Color(0xFFFFDAD6) to Color(0xFF8C2824)
     }
     Surface(color = background, contentColor = foreground, shape = RoundedCornerShape(if (result.grade == HomeworkGrade.EXCELLENT) 8.dp else 18.dp)) {
-        Text("${result.grade.symbol} $label · ${result.fieldValue}", Modifier.padding(horizontal = 12.dp, vertical = 6.dp), fontWeight = FontWeight.Bold)
+        Text(
+            text = if (compact) "${result.grade.symbol} ${result.fieldValue}" else "${result.grade.symbol} $label · ${result.fieldValue}",
+            modifier = Modifier.padding(horizontal = if (compact) 7.dp else 12.dp, vertical = if (compact) 4.dp else 6.dp),
+            fontSize = if (compact) 12.sp else TextUnit.Unspecified,
+            lineHeight = if (compact) 16.sp else TextUnit.Unspecified,
+            fontWeight = FontWeight.Bold,
+        )
     }
 }
