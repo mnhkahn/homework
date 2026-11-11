@@ -17,11 +17,13 @@ data class HomeworkTaskDetails(
         private val taskLine = Regex("(?im)^\\s*(?:task|作业内容)\\s*[:：]\\s*(.+?)\\s*$")
         private val previewRequirementsLine = Regex("(?im)^[\\t ]*(?:预习要求|preview_requirements)[\\t ]*[:：][\\t ]*")
         private val wordLine = Regex("(?im)^\\s*背单词\\s*[:：]\\s*(.+?)\\s*$")
+        private val readingWordLine = Regex("""(?im)^[ \t]*读单词[ \t]*[:：][ \t]*(.+)$""")
+        private val readingLinkLine = Regex("""(?im)^[ \t]*阅读英语链接[ \t]*[:：][ \t]*(\S+)[ \t]*$""")
         private val translationLinkLine = Regex("(?im)^[\\t ]*翻译链接[\\t ]*[:：][\\t ]*(\\S+)[\\t ]*$")
         private val homeworkLinkLine = Regex("(?im)^[\\t ]*(?:link|链接|作业链接)[\\t ]*[:：][\\t ]*(\\S+)[\\t ]*$")
         private val durationLine = Regex("(?im)^\\s*预计用时\\s*[:：].*$")
         private val requirementsBlock = Regex(
-            """(?im)^[ \t]*作业要求[ \t]*[:：][ \t]*(.*(?:\r?\n(?![ \t]*(?:$|(?:作业类型|类型|作业内容|背单词|(?:作业|翻译|阅读英语|背单词)?链接|预计用时|打分结果|预习要求|type|task|link|preview_requirements)[ \t]*[:：])).*)*)""",
+            """(?im)^[ \t]*作业要求[ \t]*[:：][ \t]*(.*(?:\r?\n(?![ \t]*(?:$|(?:作业类型|类型|作业内容|背单词|读单词|(?:作业|翻译|阅读英语|背单词)?链接|预计用时|打分结果|预习要求|type|task|link|preview_requirements)[ \t]*[:：])).*)*)""",
         )
         private val vocabulary = Regex("^[A-Za-z]+(?:['’-][A-Za-z]+)*(?: +[A-Za-z]+(?:['’-][A-Za-z]+)*)*$")
         private val vocabularyAnnotation = Regex("\\(([^()]*)\\)|（([^（）]*)）")
@@ -62,9 +64,11 @@ data class HomeworkTaskDetails(
                     vocabularyLink(suppliedLink) ?: vocabularyLink(rawTask),
                 )
                 HomeworkTaskType.ENGLISH_READING -> {
-                    val readingLink = suppliedLink?.takeIf(::isEnglishReadingLink)
-                        ?: rawTask?.takeIf(::isEnglishReadingLink)
-                    HomeworkTaskDetails(HomeworkTaskType.ENGLISH_READING, rawTask, readingLink)
+                    val readingLink = readingLink(readingLinkLine.find(contentDescription)?.groupValues?.get(1))
+                        ?: readingLink(suppliedLink)
+                        ?: readingLink(rawTask)
+                    val readAloudWords = words(json?.optString("words") ?: readingWordLine.find(contentDescription)?.groupValues?.get(1))
+                    HomeworkTaskDetails(HomeworkTaskType.ENGLISH_READING, readAloudWords ?: readingLink ?: rawTask, readingLink)
                 }
                 HomeworkTaskType.PDF_ATTACHMENT -> HomeworkTaskDetails(HomeworkTaskType.PDF_ATTACHMENT, rawTask)
                 HomeworkTaskType.ARITHMETIC -> HomeworkTaskDetails(HomeworkTaskType.ARITHMETIC, rawTask)
@@ -159,8 +163,19 @@ data class HomeworkTaskDetails(
         }
 
         internal fun vocabularyWords(task: HomeworkTask): List<String> {
-            if (task.type != HomeworkTaskType.WORD_MEMORIZATION || vocabularyLink(task.link) != null) return emptyList()
+            val hasLink = vocabularyLink(task.link) != null
+            val usesNativeWords = when (task.type) {
+                HomeworkTaskType.WORD_MEMORIZATION -> !hasLink
+                HomeworkTaskType.ENGLISH_READING -> hasLink
+                else -> false
+            }
+            if (!usesNativeWords) return emptyList()
             return words(task.task)?.split(',')?.map { it.lowercase() }?.distinct().orEmpty()
+        }
+
+        private fun readingLink(value: String?): String? {
+            val text = value?.trim() ?: return null
+            return vocabularyLink(if (text.startsWith("$TRANSLATE_PATH?")) "https://$TRANSLATE_HOST$text" else text)
         }
 
         // Older tablet versions cached a generated URL even when the card contained only words.

@@ -94,7 +94,14 @@ class HomeworkCacheStore(context: Context) {
         scheduledDueEpochSeconds = value.optLong("scheduled_due").takeIf { it > 0 },
         explicitEstimatedMinutes = value.optInt("explicit_estimated_minutes").takeIf { it in 1..180 },
     ).let { task ->
-        if (task.type == HomeworkTaskType.WORD_MEMORIZATION) task.copy(link = HomeworkTaskDetails.restoreVocabularyLink(task))
-        else task
+        when (task.type) {
+            HomeworkTaskType.WORD_MEMORIZATION -> task.copy(link = HomeworkTaskDetails.restoreVocabularyLink(task))
+            HomeworkTaskType.ENGLISH_READING -> if (task.link == null && task.description != null) {
+                val details = HomeworkTaskDetails.fromDescription(task.description)
+                if (details.type == task.type && details.link != null) task.copy(task = details.task, link = details.link)
+                else task
+            } else task
+            else -> task
+        }
     }
 }

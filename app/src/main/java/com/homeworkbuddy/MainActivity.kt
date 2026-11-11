@@ -856,6 +856,10 @@ private fun HomeworkBuddyApp() {
             }
         } else requestCameraPermission.launch(Manifest.permission.CAMERA)
     }
+    fun vocabularyPhotoRequiredFor(task: HomeworkTask): Boolean =
+        task.type == HomeworkTaskType.WORD_MEMORIZATION && task.id in dictationAwaitingPhoto &&
+            !task.status.isSubmitted && HomeworkTaskDetails.vocabularyWords(task).isNotEmpty()
+
     fun openDictationPhoto(task: HomeworkTask) {
         if (submittingTaskId != null || retryingPendingSubmissions || capturePhoto != null) return
         if (pendingStore.items().any { it.taskId == task.id }) {
@@ -871,10 +875,16 @@ private fun HomeworkBuddyApp() {
     val vocabulary = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             val taskId = result.data?.getStringExtra(VocabularyActivity.EXTRA_TASK_ID)
-            val task = (tasks + weekTasks).firstOrNull { it.id == taskId && it.type == HomeworkTaskType.WORD_MEMORIZATION }
-            if (task != null && !task.status.isSubmitted) {
-                setDictationAwaitingPhoto(dictationAwaitingPhoto + task.id)
-                openDictationPhoto(task)
+            val task = (tasks + weekTasks).firstOrNull { it.id == taskId }
+            when (task?.type) {
+                HomeworkTaskType.ENGLISH_READING -> task.link?.takeIf(HomeworkLinks::isWebUrl)?.let {
+                    GameActivity.openHomeworkLink(context, it)
+                }
+                HomeworkTaskType.WORD_MEMORIZATION -> if (!task.status.isSubmitted) {
+                    setDictationAwaitingPhoto(dictationAwaitingPhoto + task.id)
+                    openDictationPhoto(task)
+                }
+                else -> Unit
             }
         }
     }
@@ -1150,11 +1160,9 @@ private fun HomeworkBuddyApp() {
             systemNonAllowedApps = systemNonAllowedApps,
             onBlockedApps = { systemNonAllowedApps = kioskPolicy.todayNonAllowedAppUsage(); showBlockedApps = true },
             onSelect = { task -> detailTaskId = task.id },
-            vocabularyPhotoRequired = detailTask?.let {
-                it.id in dictationAwaitingPhoto && !it.status.isSubmitted && HomeworkTaskDetails.vocabularyWords(it).isNotEmpty()
-            } == true,
+            vocabularyPhotoRequired = detailTask?.let(::vocabularyPhotoRequiredFor) == true,
             onOpenVocabulary = { task, words ->
-                if (task.id in dictationAwaitingPhoto && !task.status.isSubmitted) {
+                if (vocabularyPhotoRequiredFor(task)) {
                     openDictationPhoto(task)
                 } else {
                     (activity as? MainActivity)?.allowManagedActivityLaunch()
@@ -1183,7 +1191,7 @@ private fun HomeworkBuddyApp() {
                     if (hasPendingSubmission(task)) {
                         connectionError = "上次提交尚未同步到 Trello，联网后会自动重试。"
                         retryPendingSubmissions()
-                    } else if (task.id in dictationAwaitingPhoto && !task.status.isSubmitted && HomeworkTaskDetails.vocabularyWords(task).isNotEmpty()) {
+                    } else if (vocabularyPhotoRequiredFor(task)) {
                         openDictationPhoto(task)
                     } else {
                         openSubmission(task)
@@ -2122,7 +2130,11 @@ private fun formatStudyDuration(seconds: Long): String {
     val vocabularyLabel = if (task.status.isSubmitted) "重新背单词" else "打开背单词"
     if (words.isNotEmpty()) {
         FilledTonalButton(onClick = { onOpenVocabulary(task, words) }, enabled = enabled) {
-            Text(if (vocabularyPhotoRequired) "拍照提交听写" else vocabularyLabel)
+            Text(when {
+                task.type == HomeworkTaskType.ENGLISH_READING -> "读单词"
+                vocabularyPhotoRequired -> "拍照提交听写"
+                else -> vocabularyLabel
+            })
         }
         return
     }

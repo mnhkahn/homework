@@ -5,6 +5,26 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class HomeworkWordTaskTest {
+    @Test fun englishReadingRecognizesTheArticleAndTheReadAloudWordsSeparately() {
+        val description = """
+            作业类型：阅读英语
+            阅读英语链接：/ai/translate?textbook=0&article=4
+            读单词：Robotics, build our own, robotics
+        """.trimIndent()
+        val details = HomeworkTaskDetails.fromDescription(description)
+        assertEquals(HomeworkTaskType.ENGLISH_READING, details.type)
+        assertEquals("https://www.cyeam.com/ai/translate?textbook=0&article=4", details.link)
+        val task = HomeworkTask(
+            id = "reading", subject = "英语", title = "阅读", estimatedMinutes = 10,
+            deadline = LocalTime.NOON, type = details.type, task = details.task, link = details.link,
+        )
+        assertEquals(listOf("robotics", "build our own"), HomeworkTaskDetails.vocabularyWords(task))
+
+        val legacy = HomeworkTaskDetails.fromDescription(description.substringBefore("\n读单词"))
+        assertEquals(details.link, legacy.link)
+        assertTrue(HomeworkTaskDetails.vocabularyWords(task.copy(task = legacy.task)).isEmpty())
+    }
+
     @Test fun nativeStudyKeepsWholePhrasesAndDeduplicatesLikeTheWebPage() {
         val task = HomeworkTask(
             id = "vocabulary",
