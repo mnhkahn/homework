@@ -20,6 +20,9 @@ data class HomeworkTaskDetails(
         private val translationLinkLine = Regex("(?im)^[\\t ]*翻译链接[\\t ]*[:：][\\t ]*(\\S+)[\\t ]*$")
         private val homeworkLinkLine = Regex("(?im)^[\\t ]*(?:link|链接|作业链接)[\\t ]*[:：][\\t ]*(\\S+)[\\t ]*$")
         private val durationLine = Regex("(?im)^\\s*预计用时\\s*[:：].*$")
+        private val requirementsBlock = Regex(
+            """(?im)^[ \t]*作业要求[ \t]*[:：][ \t]*(.*(?:\r?\n(?![ \t]*(?:$|(?:作业类型|类型|作业内容|背单词|(?:作业|翻译|阅读英语|背单词)?链接|预计用时|打分结果|预习要求|type|task|link|preview_requirements)[ \t]*[:：])).*)*)""",
+        )
         private val vocabulary = Regex("^[A-Za-z]+(?:['’-][A-Za-z]+)*(?: +[A-Za-z]+(?:['’-][A-Za-z]+)*)*$")
         private val vocabularyAnnotation = Regex("\\(([^()]*)\\)|（([^（）]*)）")
 
@@ -29,24 +32,28 @@ data class HomeworkTaskDetails(
          */
         fun fromDescription(description: String): HomeworkTaskDetails {
             val json = description.trim().takeIf(String::isNotBlank)?.let { value -> runCatching { JSONObject(value) }.getOrNull() }
+            val contentDescription = if (json == null) withoutRequirements(description) else description
             val explicit = json?.optString("type")?.toTaskType()
-                ?: typeLine.find(description)?.groupValues?.getOrNull(1)?.toTaskType()
+                ?: typeLine.find(contentDescription)?.groupValues?.getOrNull(1)?.toTaskType()
             if (explicit == HomeworkTaskType.ARITHMETIC) {
                 // Arithmetic is multiline; the legacy taskLine only captures one line.
                 val content = if (json != null) json.optString("task") else {
-                    val body = description.withoutMetadata()
+                    val body = contentDescription.withoutMetadata()
                     val marker = Regex("(?im)^[\\t ]*(?:task|作业内容)[\\t ]*[:：][\\t ]*").find(body)
                     (if (marker != null) body.substring(marker.range.last + 1) else body).trim()
                 }
                 return HomeworkTaskDetails(HomeworkTaskType.ARITHMETIC, content)
             }
-            val rawTask = json?.optString("task")?.ifBlank { null }
-                ?: wordLine.find(description)?.groupValues?.getOrNull(1)?.trim()
-                ?: taskLine.find(description)?.groupValues?.getOrNull(1)?.trim()
-                ?: description.withoutMetadata().ifBlank { null }
+            val rawTask = if (json != null) {
+                json.optString("task").ifBlank { null }
+            } else {
+                wordLine.find(contentDescription)?.groupValues?.getOrNull(1)?.trim()
+                    ?: taskLine.find(contentDescription)?.groupValues?.getOrNull(1)?.trim()
+                    ?: contentDescription.withoutMetadata().ifBlank { null }
+            }
             val suppliedLink = json?.optString("link")?.ifBlank { null }
-                ?: homeworkLinkLine.find(description)?.groupValues?.getOrNull(1)?.trim()
-                ?: translationLinkLine.find(description)?.groupValues?.getOrNull(1)?.trim()
+                ?: homeworkLinkLine.find(contentDescription)?.groupValues?.getOrNull(1)?.trim()
+                ?: translationLinkLine.find(contentDescription)?.groupValues?.getOrNull(1)?.trim()
 
             return when (explicit) {
                 HomeworkTaskType.WORD_MEMORIZATION -> HomeworkTaskDetails(
@@ -63,7 +70,7 @@ data class HomeworkTaskDetails(
                 HomeworkTaskType.ARITHMETIC -> HomeworkTaskDetails(HomeworkTaskType.ARITHMETIC, rawTask)
                 HomeworkTaskType.PREVIEW -> {
                     val requirements = if (json != null) json.optString("preview_requirements").trim() else
-                        previewRequirementsLine.find(description)?.let { description.substring(it.range.last + 1).trim() }.orEmpty()
+                        previewRequirementsLine.find(contentDescription)?.let { contentDescription.substring(it.range.last + 1).trim() }.orEmpty()
                     HomeworkTaskDetails(HomeworkTaskType.PREVIEW, requirements.ifBlank { null })
                 }
                 HomeworkTaskType.NORMAL -> HomeworkTaskDetails(HomeworkTaskType.NORMAL, rawTask, homeworkLink(suppliedLink, rawTask))
@@ -76,6 +83,16 @@ data class HomeworkTaskDetails(
                 }
             }
         }
+
+        internal fun requirements(description: String): String? {
+            val json = runCatching { JSONObject(description.trim()) }.getOrNull()
+            val value = if (json != null) json.opt("requirements") as? String
+            else requirementsBlock.find(description)?.groupValues?.get(1)
+            return value?.trim()?.ifBlank { null }
+        }
+
+        internal fun withoutRequirements(description: String): String =
+            requirementsBlock.replace(description, "").trim()
 
         /** Keep every detail line; structured JSON is rendered as readable content. */
         fun displayText(description: String): String? {
@@ -98,7 +115,9 @@ data class HomeworkTaskDetails(
             val field = previewRequirementsLine.find(description)
             val prefix = if (field == null) "${description.trimEnd()}\n\n"
                 else description.substring(0, field.range.first)
-            return "${prefix}预习要求：\n$value"
+            val followingRequirement = field?.let { requirementsBlock.find(description, it.range.last + 1) }
+            val suffix = followingRequirement?.let { "\n\n${it.value}" }.orEmpty()
+            return "${prefix}预习要求：\n$value$suffix"
         }
 
         private fun homeworkLink(suppliedLink: String?, rawTask: String?): String? =

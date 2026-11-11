@@ -1578,6 +1578,9 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, detailTask: 
             ) {
                 Column(Modifier.padding(12.dp)) {
                     TextButton(onClick = onCloseDetail, modifier = Modifier.align(Alignment.End)) { Text("关闭") }
+                    task.requirements?.let { requirements ->
+                        HomeworkRequirement(task.id, requirements, modifier = Modifier.padding(bottom = 10.dp))
+                    }
                     CurrentTask(
                         modifier = Modifier.fillMaxWidth().weight(1f),
                         task = task,
@@ -2116,9 +2119,10 @@ private fun formatStudyDuration(seconds: Long): String {
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val words = remember(task.type, task.task, task.link) { HomeworkTaskDetails.vocabularyWords(task) }
+    val vocabularyLabel = if (task.status.isSubmitted) "重新背单词" else "打开背单词"
     if (words.isNotEmpty()) {
         FilledTonalButton(onClick = { onOpenVocabulary(task, words) }, enabled = enabled) {
-            Text(if (vocabularyPhotoRequired) "拍照提交听写" else "打开背单词")
+            Text(if (vocabularyPhotoRequired) "拍照提交听写" else vocabularyLabel)
         }
         return
     }
@@ -2127,7 +2131,7 @@ private fun formatStudyDuration(seconds: Long): String {
             GameActivity.openHomeworkLink(context, link)
         }, enabled = enabled) {
             Text(when (task.type) {
-                HomeworkTaskType.WORD_MEMORIZATION -> "打开背单词"
+                HomeworkTaskType.WORD_MEMORIZATION -> vocabularyLabel
                 HomeworkTaskType.ENGLISH_READING -> "打开英语阅读"
                 HomeworkTaskType.PDF_ATTACHMENT -> "预览 PDF"
                 else -> "打开作业链接"

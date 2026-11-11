@@ -54,6 +54,7 @@ class HomeworkCacheStore(context: Context) {
         put("task", task.task)
         put("link", task.link)
         put("description", task.description)
+        put("requirements", task.requirements)
         put("is_correction", task.isCorrection)
         put("grade_result", task.gradeResult?.fieldValue)
         put("scheduled_start", task.scheduledStartEpochSeconds)
@@ -85,6 +86,8 @@ class HomeworkCacheStore(context: Context) {
         task = value.optString("task").ifBlank { null },
         link = value.optString("link").ifBlank { null },
         description = value.optString("description").ifBlank { null },
+        requirements = value.optString("requirements").ifBlank { null }
+            ?: value.optString("description").takeIf(String::isNotBlank)?.let(HomeworkTaskDetails::requirements),
         isCorrection = value.optBoolean("is_correction"),
         gradeResult = HomeworkGradeResult.parse(value.optString("grade_result")),
         scheduledStartEpochSeconds = value.optLong("scheduled_start").takeIf { it > 0 },

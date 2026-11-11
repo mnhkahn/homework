@@ -21,13 +21,14 @@ internal fun HomeworkDescription(task: HomeworkTask) {
     }
     if (isVocabulary) {
         Text(
-            if (task.status.isSubmitted) "可打开背单词复习词卡。" else "请在背单词页面完成听写，再拍照提交。",
+            if (task.status.isSubmitted) "可以复习词卡和再听写。" else "请在背单词页面完成听写，再拍照提交。",
             style = MaterialTheme.typography.bodyLarge,
         )
         return
     }
     val content = task.description ?: task.task ?: return
-    HomeworkLinkedText(content)
+    val description = remember(content) { HomeworkTaskDetails.withoutRequirements(content) }
+    if (description.isNotBlank()) HomeworkLinkedText(description)
 }
 
 /** Assignment and review links share the built-in learning browser. */

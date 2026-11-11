@@ -43,9 +43,10 @@ class VocabularyActivity : ComponentActivity() {
             finish()
             return
         }
+        val submissionRequired = intent.getBooleanExtra(EXTRA_SUBMISSION_REQUIRED, true)
         setContent {
             HomeTheme {
-                VocabularyScreen(words, onExit = ::finish, onComplete = {
+                VocabularyScreen(words, submissionRequired, onExit = ::finish, onComplete = {
                     setResult(Activity.RESULT_OK, Intent().putExtra(EXTRA_TASK_ID, intent.getStringExtra(EXTRA_TASK_ID)))
                     finish()
                 })
@@ -64,18 +65,22 @@ class VocabularyActivity : ComponentActivity() {
     companion object {
         internal const val EXTRA_TASK_ID = "vocabulary_task_id"
         private const val EXTRA_WORDS = "vocabulary_words"
+        private const val EXTRA_SUBMISSION_REQUIRED = "vocabulary_submission_required"
 
         internal fun intent(context: Context, task: HomeworkTask, words: List<String>) =
             Intent(context, VocabularyActivity::class.java)
                 .putExtra(EXTRA_TASK_ID, task.id)
+                .putExtra(EXTRA_SUBMISSION_REQUIRED, !task.status.isSubmitted)
                 .putStringArrayListExtra(EXTRA_WORDS, ArrayList(words))
     }
 }
 
 private enum class DictationSetup { SELECTED, RANDOM }
 
+private val ChineseCharacter = Regex("\\p{IsHan}")
+
 @Composable
-private fun VocabularyScreen(words: List<String>, onExit: () -> Unit, onComplete: () -> Unit) {
+private fun VocabularyScreen(words: List<String>, submissionRequired: Boolean, onExit: () -> Unit, onComplete: () -> Unit) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val dictionary = remember(context) { VocabularyDictionary(context.applicationContext) }
@@ -126,11 +131,12 @@ private fun VocabularyScreen(words: List<String>, onExit: () -> Unit, onComplete
             if (played || playbackError) return@repeatOnLifecycle
             if (!audio.dictate(entry)) {
                 playbackError = true
-            } else if (position == queue.lastIndex) {
-                played = true
-                onComplete()
             } else {
                 played = true
+                if (position == queue.lastIndex) {
+                    if (submissionRequired) onComplete()
+                    else queue = intArrayOf()
+                }
             }
         }
     }
@@ -155,6 +161,13 @@ private fun VocabularyScreen(words: List<String>, onExit: () -> Unit, onComplete
 
             if (dictating) {
                 Text("听写 ${position + 1} / ${queue.size}", style = MaterialTheme.typography.headlineSmall)
+                current?.let { entry ->
+                    entry.translations.firstOrNull {
+                        ChineseCharacter.containsMatchIn(it) && !it.contains(entry.word, ignoreCase = true)
+                    }?.let { hint ->
+                        Text(hint, style = MaterialTheme.typography.headlineMedium)
+                    }
+                }
                 Text(
                     when {
                         loading -> "正在加载词卡…"
@@ -227,6 +240,7 @@ private fun VocabularyCard(entry: VocabularyEntry, canPlay: Boolean, onPlay: (Fl
     Card(onClick = { onPlay(1f) }, enabled = canPlay, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(entry.word, style = MaterialTheme.typography.headlineMedium)
+            entry.translations.forEach { Text(it, style = MaterialTheme.typography.titleLarge) }
             if (entry.phonetic.isNotEmpty()) Text(entry.phonetic, style = MaterialTheme.typography.titleMedium)
             if (entry.chunks.isNotEmpty()) {
                 Text(buildAnnotatedString {
@@ -242,10 +256,6 @@ private fun VocabularyCard(entry: VocabularyEntry, canPlay: Boolean, onPlay: (Fl
                 OutlinedButton(enabled = canPlay, onClick = { onPlay(0.75f) }) { Text("0.75×") }
             }
             if (!entry.hasMeanings) Text("暂时无法获取释义")
-            if (entry.translations.isNotEmpty()) {
-                Text("中文释义", style = MaterialTheme.typography.labelMedium)
-                entry.translations.forEach { Text(it) }
-            }
             if (entry.definitions.isNotEmpty()) {
                 Text("英文释义", style = MaterialTheme.typography.labelMedium)
                 entry.definitions.forEach { Text(it) }
