@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -14,6 +15,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
@@ -50,7 +52,7 @@ internal fun ParentTotpSettings(onChanged: () -> Unit) {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("请用家长手机的 Google Authenticator 扫码，再输入手机显示的 6 位验证码。不要让孩子扫描。")
                 Image(qr, "验证器绑定二维码", Modifier.size(220.dp))
-                OutlinedTextField(code, { code = it.filter(Char::isDigit).take(6) }, label = { Text("6 位验证码") }, singleLine = true)
+                OutlinedTextField(code, { code = it.filter(Char::isDigit).take(6) }, label = { Text("6 位验证码") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true)
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
         }, confirmButton = { Button(onClick = {
@@ -79,7 +81,7 @@ internal fun ParentCodeDialog(onDismiss: () -> Unit, onVerified: () -> Unit) {
     AlertDialog(onDismissRequest = onDismiss, title = { Text("验证后临时开放") }, text = {
         Column {
             Text("请输入 Google Authenticator 当前的 6 位验证码。已使用的验证码不能再次使用，请等待新的验证码。")
-            OutlinedTextField(value, { value = it.filter(Char::isDigit).take(6) }, label = { Text("动态验证码") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
+            OutlinedTextField(value, { value = it.filter(Char::isDigit).take(6) }, label = { Text("动态验证码") }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), singleLine = true)
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         }
     }, confirmButton = { Button(onClick = {

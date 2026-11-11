@@ -33,6 +33,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -63,6 +64,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -220,11 +222,11 @@ private fun ParentGate(activity: KioskSettingsActivity) {
                     Text("也可以使用锁屏验证或家长 PIN", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp))
                 }
                 Spacer(Modifier.height(18.dp))
-                OutlinedTextField(pin, { pin = if (totp.configured && useRecovery) it.filter(Char::isLetterOrDigit).uppercase().take(16) else it.filter(Char::isDigit).take(if (totp.configured) 6 else 8) }, label = { Text(if (totp.configured) { if (useRecovery) "一次性恢复码" else "6 位动态验证码" } else "4–8 位数字 PIN") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
+                OutlinedTextField(pin, { pin = if (totp.configured && useRecovery) it.filter(Char::isLetterOrDigit).uppercase().take(16) else it.filter(Char::isDigit).take(if (totp.configured) 6 else 8) }, label = { Text(if (totp.configured) { if (useRecovery) "一次性恢复码" else "6 位动态验证码" } else "4–8 位数字 PIN") }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = if (totp.configured && useRecovery) KeyboardType.Password else KeyboardType.NumberPassword), singleLine = true)
                 if (totp.configured) TextButton(onClick = { useRecovery = !useRecovery; pin = ""; error = null }) { Text(if (useRecovery) "使用动态验证码" else "使用恢复码") }
                 if (!hasPin && !totp.configured) {
                     Spacer(Modifier.height(10.dp))
-                    OutlinedTextField(confirm, { confirm = it.filter(Char::isDigit).take(8) }, label = { Text("再次输入 PIN") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
+                    OutlinedTextField(confirm, { confirm = it.filter(Char::isDigit).take(8) }, label = { Text("再次输入 PIN") }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), singleLine = true)
                 }
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 10.dp)) }
                 Spacer(Modifier.height(18.dp))
