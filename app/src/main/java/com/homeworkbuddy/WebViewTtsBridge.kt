@@ -1,6 +1,9 @@
 package com.homeworkbuddy
 
 import android.content.Context
+import android.media.AudioAttributes
+import android.media.MediaPlayer
+import android.media.PlaybackParams
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -8,6 +11,7 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
+import java.io.File
 import java.util.Locale
 
 /**
@@ -16,6 +20,10 @@ import java.util.Locale
  * device TTS engine; the page itself stays unchanged.
  */
 class WebViewTtsBridge(context: Context) : TextToSpeech.OnInitListener {
+    private val cacheDir = context.cacheDir
+    private var audioFile: File? = null
+    private var player: MediaPlayer? = null
+    private var playbackRate = 1f
     private val mainHandler = Handler(Looper.getMainLooper())
     private var tts: TextToSpeech? = TextToSpeech(context.applicationContext, this)
     private var webView: WebView? = null
@@ -27,9 +35,6 @@ class WebViewTtsBridge(context: Context) : TextToSpeech.OnInitListener {
 
     private var utteranceCounter = 0
     private var currentUtteranceId: String? = null
-    // Flush/stop still reports interrupted utterances as done; drop those callbacks
-    // so the page does not mistake an interruption for a finished reading.
-    private val interruptedUtteranceIds = mutableSetOf<String>()
 
     fun attach(view: WebView) {
         webView = view
@@ -47,7 +52,7 @@ class WebViewTtsBridge(context: Context) : TextToSpeech.OnInitListener {
             }
             tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) {
-                    mainHandler.post { if (utteranceId == currentUtteranceId) notifyJs(JS_ON_START) }
+                    // Synthesis is silent; report start only when the audio is playing.
                 }
 
                 override fun onDone(utteranceId: String?) = onUtteranceFinished(utteranceId, error = false)
@@ -88,6 +93,7 @@ class WebViewTtsBridge(context: Context) : TextToSpeech.OnInitListener {
     fun shutdown() {
         shutdown = true
         pendingAction = null
+        interruptCurrent()
         tts?.stop()
         tts?.shutdown()
         tts = null
@@ -110,24 +116,79 @@ class WebViewTtsBridge(context: Context) : TextToSpeech.OnInitListener {
             notifyJs(JS_ON_ERROR)
             return
         }
-        engine.setSpeechRate(rate.coerceIn(0.5f, 3f))
         interruptCurrent()
+        engine.stop()
+        // Some device engines ignore speech rate. Synthesize at normal speed and
+        // apply the requested rate to playback, including the page's 0.1x option.
+        engine.setSpeechRate(1f)
+        playbackRate = if (rate.isFinite()) rate.coerceIn(0.1f, 3f) else 1f
         val id = "utterance-${++utteranceCounter}"
         currentUtteranceId = id
-        engine.speak(text, TextToSpeech.QUEUE_FLUSH, Bundle(), id)
+        try {
+            val file = File.createTempFile("web-reading-", ".wav", cacheDir)
+            audioFile = file
+            if (engine.synthesizeToFile(text, Bundle(), file, id) != TextToSpeech.SUCCESS) {
+                interruptCurrent()
+                notifyJs(JS_ON_ERROR)
+            }
+        } catch (_: Exception) {
+            interruptCurrent()
+            notifyJs(JS_ON_ERROR)
+        }
     }
 
     private fun interruptCurrent() {
-        currentUtteranceId?.let { interruptedUtteranceIds += it }
         currentUtteranceId = null
+        player?.release()
+        player = null
+        audioFile?.delete()
+        audioFile = null
     }
 
     private fun onUtteranceFinished(utteranceId: String?, error: Boolean) {
         mainHandler.post {
-            if (shutdown) return@post
-            if (utteranceId != null && interruptedUtteranceIds.remove(utteranceId)) return@post
-            if (utteranceId == currentUtteranceId) currentUtteranceId = null
-            notifyJs(if (error) JS_ON_ERROR else JS_ON_DONE)
+            if (shutdown || utteranceId == null || utteranceId != currentUtteranceId) return@post
+            if (error) {
+                interruptCurrent()
+                notifyJs(JS_ON_ERROR)
+                return@post
+            }
+            try {
+                val audio = MediaPlayer()
+                player = audio
+                audio.setAudioAttributes(AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+                audio.setDataSource(requireNotNull(audioFile).absolutePath)
+                audio.setOnPreparedListener {
+                    if (player !== audio || utteranceId != currentUtteranceId) return@setOnPreparedListener
+                    try {
+                        audio.playbackParams = PlaybackParams().setSpeed(playbackRate).setPitch(1f)
+                        audio.start()
+                        notifyJs(JS_ON_START)
+                    } catch (_: Exception) {
+                        interruptCurrent()
+                        notifyJs(JS_ON_ERROR)
+                    }
+                }
+                audio.setOnCompletionListener {
+                    if (player === audio && utteranceId == currentUtteranceId) {
+                        interruptCurrent()
+                        notifyJs(JS_ON_DONE)
+                    }
+                }
+                audio.setOnErrorListener { _, _, _ ->
+                    if (player === audio && utteranceId == currentUtteranceId) {
+                        interruptCurrent()
+                        notifyJs(JS_ON_ERROR)
+                    }
+                    true
+                }
+                audio.prepareAsync()
+            } catch (_: Exception) {
+                interruptCurrent()
+                notifyJs(JS_ON_ERROR)
+            }
         }
     }
 

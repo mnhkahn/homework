@@ -1,12 +1,16 @@
 package com.homeworkbuddy
 
+import android.Manifest
 import android.annotation.SuppressLint
+import android.content.pm.PackageManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.webkit.PermissionRequest
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
@@ -15,6 +19,8 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -45,6 +51,48 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 
 class GameActivity : ComponentActivity() {
+    private var microphoneRequest: PermissionRequest? = null
+    private var microphonePromptActive = false
+    private val microphonePermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        microphonePromptActive = false
+        val request = microphoneRequest
+        microphoneRequest = null
+        if (request != null) {
+            if (granted) request.grant(arrayOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE))
+            else {
+                request.deny()
+                Toast.makeText(this, "跟读需要麦克风权限，请在应用设置中允许后重试", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun requestMicrophone(request: PermissionRequest, pageUrl: String?) {
+        if (!WebMicrophonePolicy.allows(request.origin.toString(), pageUrl) ||
+            PermissionRequest.RESOURCE_AUDIO_CAPTURE !in request.resources || microphonePromptActive
+        ) {
+            request.deny()
+            return
+        }
+        cancelMicrophoneRequest()
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            request.grant(arrayOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE))
+        } else {
+            microphoneRequest = request
+            microphonePromptActive = true
+            microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    private fun cancelMicrophoneRequest() {
+        microphoneRequest?.deny()
+        microphoneRequest = null
+    }
+
+    override fun onDestroy() {
+        cancelMicrophoneRequest()
+        super.onDestroy()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val homework = intent.getBooleanExtra(EXTRA_HOMEWORK, false)
@@ -52,7 +100,10 @@ class GameActivity : ComponentActivity() {
             if (homework) HomeworkLinks.isWebUrl(it) else isAllowedCyeamToolUrl(it)
         } ?: run { finish(); return }
         hideNavigationBar()
-        setContent { MaterialTheme { GameScreen(url, ::finish, homework) } }
+        setContent { MaterialTheme { GameScreen(url, ::finish, homework, ::requestMicrophone, ::cancelMicrophoneRequest) { canceled ->
+            // A canceled WebView request is no longer valid: just forget it.
+            if (microphoneRequest === canceled) microphoneRequest = null
+        } } }
     }
 
     override fun onResume() {
@@ -132,7 +183,14 @@ class GameActivity : ComponentActivity() {
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-private fun GameScreen(initialUrl: String, finish: () -> Unit, homework: Boolean = false) {
+private fun GameScreen(
+    initialUrl: String,
+    finish: () -> Unit,
+    homework: Boolean = false,
+    requestMicrophone: (PermissionRequest, String?) -> Unit,
+    cancelMicrophoneRequest: () -> Unit,
+    onMicrophoneRequestCanceled: (PermissionRequest) -> Unit,
+) {
     var webView by remember { mutableStateOf<WebView?>(null) }
     var ttsBridge by remember { mutableStateOf<WebViewTtsBridge?>(null) }
     val goBack = {
@@ -184,7 +242,21 @@ private fun GameScreen(initialUrl: String, finish: () -> Unit, homework: Boolean
                         }
                         settings.javaScriptCanOpenWindowsAutomatically = false
                         settings.setSupportMultipleWindows(false)
+                        webChromeClient = object : WebChromeClient() {
+                            override fun onPermissionRequest(request: PermissionRequest) {
+                                requestMicrophone(request, url)
+                            }
+
+                            override fun onPermissionRequestCanceled(request: PermissionRequest) {
+                                onMicrophoneRequestCanceled(request)
+                            }
+                        }
                         webViewClient = object : WebViewClient() {
+                            override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
+                                cancelMicrophoneRequest()
+                                bridge.cancel()
+                            }
+
                             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                                 val blocked = if (homework) !HomeworkLinks.allowsNavigation(request.url.toString())
                                     else !request.url.isCyeamUrl()
@@ -211,6 +283,7 @@ private fun GameScreen(initialUrl: String, finish: () -> Unit, homework: Boolean
 
     DisposableEffect(Unit) {
         onDispose {
+            cancelMicrophoneRequest()
             ttsBridge?.shutdown()
             ttsBridge = null
             webView?.apply {
