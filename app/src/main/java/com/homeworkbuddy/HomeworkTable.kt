@@ -195,7 +195,6 @@ private fun HomeworkTask.tableCells(): List<String> = listOf(
         HomeworkTaskType.NORMAL -> "—"
         HomeworkTaskType.WORD_MEMORIZATION -> "背单词"
         HomeworkTaskType.ENGLISH_READING -> "阅读英语"
-        HomeworkTaskType.PDF_ATTACHMENT -> "附件 PDF"
         HomeworkTaskType.ARITHMETIC -> "口算"
         HomeworkTaskType.PREVIEW -> "预习"
     },

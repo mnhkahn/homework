@@ -4,24 +4,37 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class HomeworkPdfTest {
-    @Test fun readsPdfMarkerFromTextAndKeepsTaskContent() {
+    @Test fun legacyPdfTextBecomesOrdinaryHomeworkAndKeepsTaskContent() {
         val details = HomeworkTaskDetails.fromDescription("类型: pdf_attachment\n作业内容: 完成数学练习\n预计用时: 20")
-        assertEquals(HomeworkTaskType.PDF_ATTACHMENT, details.type)
+        assertEquals(HomeworkTaskType.NORMAL, details.type)
         assertEquals("完成数学练习", details.task)
         assertNull(details.link)
     }
 
-    @Test fun readsPdfMarkerFromJsonWithoutRequiringALink() {
+    @Test fun legacyPdfJsonBecomesOrdinaryHomeworkWithoutRequiringALink() {
         val details = HomeworkTaskDetails.fromDescription("""{"type":"pdf_attachment","task":"完成附件"}""")
-        assertEquals(HomeworkTaskType.PDF_ATTACHMENT, details.type)
+        assertEquals(HomeworkTaskType.NORMAL, details.type)
         assertEquals("完成附件", details.task)
         assertNull(details.link)
     }
 
     @Test fun acceptsChineseAndCaseInsensitiveMarkers() {
         listOf("作业类型：附件PDF", "type: PDF_ATTACHMENT").forEach {
-            assertEquals(HomeworkTaskType.PDF_ATTACHMENT, HomeworkTaskDetails.fromDescription(it).type)
+            assertEquals(HomeworkTaskType.NORMAL, HomeworkTaskDetails.fromDescription(it).type)
         }
+    }
+
+    @Test fun legacyPdfMarkerDoesNotInferVocabularyFromEnglishContent() {
+        val details = HomeworkTaskDetails.fromDescription("作业类型：附件PDF\n作业内容：games, friends")
+        assertEquals(HomeworkTaskType.NORMAL, details.type)
+        assertEquals("games, friends", details.task)
+    }
+
+    @Test fun homeworkTypesContainOnlyTheFiveLearningModes() {
+        assertEquals(
+            setOf("NORMAL", "WORD_MEMORIZATION", "ENGLISH_READING", "ARITHMETIC", "PREVIEW"),
+            HomeworkTaskType.entries.map { it.name }.toSet(),
+        )
     }
 
     @Test fun explicitNormalTypeStillWins() {

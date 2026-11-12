@@ -7,7 +7,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Calculate
 import androidx.compose.material.icons.outlined.DirectionsRun
 import androidx.compose.material.icons.automirrored.outlined.MenuBook
-import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material.icons.outlined.Translate
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -30,7 +29,6 @@ internal val HomeworkTask.titleMode: HomeworkTaskType?
         }
         HomeworkTaskType.ENGLISH_READING -> type.takeIf { !link.isNullOrBlank() }
         HomeworkTaskType.ARITHMETIC -> type.takeIf { arithmeticQuestions(task).isNotEmpty() }
-        HomeworkTaskType.PDF_ATTACHMENT -> type.takeIf { attachments.any { it.isPdf } }
         HomeworkTaskType.PREVIEW -> type
         HomeworkTaskType.NORMAL -> null
     }
@@ -63,7 +61,6 @@ internal fun HomeworkTaskTitle(
         HomeworkTaskType.WORD_MEMORIZATION -> Icons.Outlined.Translate to "背单词"
         HomeworkTaskType.ENGLISH_READING -> Icons.AutoMirrored.Outlined.MenuBook to "英语阅读"
         HomeworkTaskType.ARITHMETIC -> Icons.Outlined.Calculate to "口算"
-        HomeworkTaskType.PDF_ATTACHMENT -> Icons.Outlined.PictureAsPdf to "PDF 作业"
         HomeworkTaskType.PREVIEW -> Icons.AutoMirrored.Outlined.MenuBook to "预习"
         else -> null
     }

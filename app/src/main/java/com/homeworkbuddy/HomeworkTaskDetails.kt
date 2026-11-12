@@ -70,7 +70,6 @@ data class HomeworkTaskDetails(
                     val readAloudWords = words(json?.optString("words") ?: readingWordLine.find(contentDescription)?.groupValues?.get(1))
                     HomeworkTaskDetails(HomeworkTaskType.ENGLISH_READING, readAloudWords ?: readingLink ?: rawTask, readingLink)
                 }
-                HomeworkTaskType.PDF_ATTACHMENT -> HomeworkTaskDetails(HomeworkTaskType.PDF_ATTACHMENT, rawTask)
                 HomeworkTaskType.ARITHMETIC -> HomeworkTaskDetails(HomeworkTaskType.ARITHMETIC, rawTask)
                 HomeworkTaskType.PREVIEW -> {
                     val requirements = if (json != null) json.optString("preview_requirements").trim() else
@@ -165,7 +164,8 @@ data class HomeworkTaskDetails(
         internal fun vocabularyWords(task: HomeworkTask): List<String> {
             val hasLink = vocabularyLink(task.link) != null
             val usesNativeWords = when (task.type) {
-                HomeworkTaskType.WORD_MEMORIZATION -> !hasLink
+                // An explicit word list takes precedence over any supplemental link.
+                HomeworkTaskType.WORD_MEMORIZATION -> true
                 HomeworkTaskType.ENGLISH_READING -> hasLink
                 else -> false
             }
@@ -216,7 +216,8 @@ data class HomeworkTaskDetails(
             "普通作业" -> HomeworkTaskType.NORMAL
             "word_memorization" -> HomeworkTaskType.WORD_MEMORIZATION
             "背单词" -> HomeworkTaskType.WORD_MEMORIZATION
-            "pdf_attachment", "附件pdf" -> HomeworkTaskType.PDF_ATTACHMENT
+            // Legacy PDF cards are ordinary homework with attachments.
+            "pdf_attachment", "附件pdf" -> HomeworkTaskType.NORMAL
             "english_reading" -> HomeworkTaskType.ENGLISH_READING
             "阅读英语" -> HomeworkTaskType.ENGLISH_READING
             else -> null

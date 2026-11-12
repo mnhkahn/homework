@@ -5,6 +5,42 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class HomeworkWordTaskTest {
+    @Test fun wordListWinsOverPlainMarkdownAndJsonLinks() {
+        val assignment = "games, friends, biscuit, breakfast, cafeteria, cereal, chilli, chocolate, curry, delicious, dessert, grilled"
+        // Deliberately different words: the link must not become the study source.
+        val link = "https://www.cyeam.com/ai/translate?words=other,words"
+        listOf(
+            "作业类型：背单词\n背单词：$assignment\n翻译链接：$link",
+            "作业类型：背单词\n背单词：$assignment\n翻译链接：[$link]($link)",
+            """{"type":"word_memorization","task":"$assignment","link":"$link"}""",
+        ).forEach { description ->
+            val details = HomeworkTaskDetails.fromDescription(description)
+            val task = HomeworkTask(
+                id = "words-with-link", subject = "英语", title = "背单词", estimatedMinutes = 10,
+                deadline = LocalTime.NOON, type = details.type, task = details.task,
+                link = details.link, description = description,
+            )
+            assertEquals(link, details.link)
+            assertEquals(assignment.split(", "), HomeworkTaskDetails.vocabularyWords(task))
+            assertEquals(assignment.split(", "), HomeworkTaskDetails.vocabularyWords(
+                task.copy(link = HomeworkTaskDetails.restoreVocabularyLink(task)),
+            ))
+        }
+    }
+
+    @Test fun missingOrInvalidWordListFallsBackToSuppliedLink() {
+        val link = "https://www.cyeam.com/ai/translate?words=games,friends"
+        listOf(null, "", link, "camera(相机").forEach { content ->
+            val task = HomeworkTask(
+                id = "link-only", subject = "英语", title = "背单词", estimatedMinutes = 10,
+                deadline = LocalTime.NOON, type = HomeworkTaskType.WORD_MEMORIZATION,
+                task = content, link = link,
+            )
+            assertTrue(HomeworkTaskDetails.vocabularyWords(task).isEmpty())
+            assertEquals(link, task.link)
+        }
+    }
+
     @Test fun englishReadingRecognizesTheArticleAndTheReadAloudWordsSeparately() {
         val description = """
             作业类型：阅读英语
@@ -37,7 +73,8 @@ class HomeworkWordTaskTest {
         )
         assertEquals(listOf("post office", "cell phone", "don't"), HomeworkTaskDetails.vocabularyWords(task))
         assertTrue(HomeworkTaskDetails.vocabularyWords(task.copy(type = HomeworkTaskType.NORMAL)).isEmpty())
-        assertTrue(HomeworkTaskDetails.vocabularyWords(task.copy(link = "http://example.com/words")).isEmpty())
+        assertEquals(listOf("post office", "cell phone", "don't"),
+            HomeworkTaskDetails.vocabularyWords(task.copy(link = "http://example.com/words")))
 
         val oldGeneratedLink = "https://www.cyeam.com/ai/translate?words=post+office"
         val cached = task.copy(link = oldGeneratedLink, description = "作业类型：背单词\n背单词：post office")
@@ -88,7 +125,7 @@ class HomeworkWordTaskTest {
         }
     }
 
-    @Test fun typedHttpContentAndBareLegacyVocabularyUrlRemainWebTasks() {
+    @Test fun typedHttpContentAndBareLegacyVocabularyUrlRetainTheirLinks() {
         val http = "http://example.com/study?unit=4"
         assertEquals(http, HomeworkTaskDetails.fromDescription("作业类型：背单词\n背单词：$http").link)
         assertEquals(http, HomeworkTaskDetails.fromDescription(

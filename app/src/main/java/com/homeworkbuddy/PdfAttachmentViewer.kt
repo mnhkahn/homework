@@ -29,12 +29,9 @@ import java.io.File
 
 @Composable
 fun PdfAttachmentButtons(task: HomeworkTask) {
-    if (task.type != HomeworkTaskType.PDF_ATTACHMENT) return
     val attachments = task.attachments.filter { it.isPdf }
+    if (attachments.isEmpty()) return
     var selected by remember(task.id) { mutableStateOf<HomeworkAttachment?>(null) }
-    if (attachments.isEmpty()) {
-        Text("尚未上传 PDF 附件，请在 Trello 卡片中添加 PDF")
-    }
     attachments.forEach { attachment ->
         FilledTonalButton(onClick = { selected = attachment }) {
             Text(if (attachments.size == 1) "预览 PDF" else "预览 PDF · ${attachment.name}")
@@ -115,7 +112,7 @@ private fun PdfAttachmentViewer(attachment: HomeworkAttachment, onDismiss: () ->
         Surface(Modifier.fillMaxSize().padding(16.dp)) {
             Column(Modifier.fillMaxSize().padding(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(attachment.name.ifBlank { "PDF 作业" }, Modifier.weight(1f))
+                    Text(attachment.name.ifBlank { "PDF 附件" }, Modifier.weight(1f))
                     TextButton(onClick = onDismiss) { Text("关闭") }
                 }
                 Box(Modifier.weight(1f).fillMaxWidth().clipToBounds(), contentAlignment = Alignment.Center) {

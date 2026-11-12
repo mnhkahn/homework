@@ -2147,7 +2147,6 @@ private fun formatStudyDuration(seconds: Long): String {
             Text(when (task.type) {
                 HomeworkTaskType.WORD_MEMORIZATION -> vocabularyLabel
                 HomeworkTaskType.ENGLISH_READING -> "打开英语阅读"
-                HomeworkTaskType.PDF_ATTACHMENT -> "预览 PDF"
                 else -> "打开作业链接"
             })
         }

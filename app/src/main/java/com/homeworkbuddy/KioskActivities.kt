@@ -420,7 +420,7 @@ private fun PreviewRequirementsSettings(activity: KioskSettingsActivity) {
     Card {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("预习要求", style = MaterialTheme.typography.titleLarge)
-            Text("要求保存在本机，提交预习作业时会自动写入 Trello。清空后保存可停止同步要求。")
+            Text("未设置时使用默认预习要求，可修改后保存。提交预习作业时会自动写入 Trello；清空后保存可停止同步要求。")
             OutlinedTextField(
                 value = draft,
                 onValueChange = { draft = it },
