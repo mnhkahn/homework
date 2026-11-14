@@ -170,7 +170,10 @@ data class HomeworkTaskDetails(
                 else -> false
             }
             if (!usesNativeWords) return emptyList()
-            return words(task.task)?.split(',')?.map { it.lowercase() }?.distinct().orEmpty()
+            val assignedWords = words(task.task) ?: if (task.type == HomeworkTaskType.WORD_MEMORIZATION) {
+                task.description?.let(::fromDescription)?.takeIf { it.type == task.type }?.task?.let(::words)
+            } else null
+            return assignedWords?.split(',')?.map { it.lowercase() }?.distinct().orEmpty()
         }
 
         private fun readingLink(value: String?): String? {

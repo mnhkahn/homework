@@ -2128,7 +2128,7 @@ private fun formatStudyDuration(seconds: Long): String {
     vocabularyPhotoRequired: Boolean = false,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val words = remember(task.type, task.task, task.link) { HomeworkTaskDetails.vocabularyWords(task) }
+    val words = remember(task.type, task.task, task.link, task.description) { HomeworkTaskDetails.vocabularyWords(task) }
     val vocabularyLabel = if (task.status.isSubmitted) "重新背单词" else "打开背单词"
     if (words.isNotEmpty()) {
         FilledTonalButton(onClick = { onOpenVocabulary(task, words) }, enabled = enabled) {
@@ -2138,6 +2138,10 @@ private fun formatStudyDuration(seconds: Long): String {
                 else -> vocabularyLabel
             })
         }
+        return
+    }
+    if (task.type == HomeworkTaskType.WORD_MEMORIZATION) {
+        Text("未找到背单词词表，请刷新作业后重试。", color = MaterialTheme.colorScheme.error)
         return
     }
     task.link?.takeIf(HomeworkLinks::isWebUrl)?.let { link ->
