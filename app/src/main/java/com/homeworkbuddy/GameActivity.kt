@@ -12,6 +12,10 @@ import android.os.Looper
 import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceError
+import android.webkit.WebResourceResponse
+import android.webkit.SslErrorHandler
+import android.net.http.SslError
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -31,6 +35,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -96,9 +102,20 @@ class GameActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val homework = intent.getBooleanExtra(EXTRA_HOMEWORK, false)
-        val url = intent.getStringExtra(EXTRA_URL)?.takeIf {
+        val requestedUrl = intent.getStringExtra(EXTRA_URL)
+        val url = requestedUrl?.takeIf {
             if (homework) HomeworkLinks.isWebUrl(it) else isAllowedCyeamToolUrl(it)
-        } ?: run { finish(); return }
+        } ?: run {
+            android.app.AlertDialog.Builder(this)
+                .setTitle("无法打开学习链接")
+                .setMessage(learningPageErrorMessage(requestedUrl,
+                    if (homework) "作业链接格式无效，仅支持 HTTP 或 HTTPS 网页。"
+                    else "该地址不在内置学习工具允许范围内。"))
+                .setPositiveButton("返回作业") { _, _ -> finish() }
+                .setOnCancelListener { finish() }
+                .show()
+            return
+        }
         hideNavigationBar()
         setContent { MaterialTheme { GameScreen(url, ::finish, homework, ::requestMicrophone, ::cancelMicrophoneRequest) { canceled ->
             // A canceled WebView request is no longer valid: just forget it.
@@ -193,6 +210,7 @@ private fun GameScreen(
 ) {
     var webView by remember { mutableStateOf<WebView?>(null) }
     var ttsBridge by remember { mutableStateOf<WebViewTtsBridge?>(null) }
+    var pageError by remember { mutableStateOf<String?>(null) }
     val goBack = {
         webView?.takeIf(WebView::canGoBack)?.goBack() ?: finish()
     }
@@ -260,10 +278,33 @@ private fun GameScreen(
                             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                                 val blocked = if (homework) !HomeworkLinks.allowsNavigation(request.url.toString())
                                     else !request.url.isCyeamUrl()
-                                if (homework && blocked && request.isForMainFrame) {
-                                    Toast.makeText(view.context, "该链接不在学习网站白名单中", Toast.LENGTH_LONG).show()
+                                if (blocked && request.isForMainFrame) {
+                                    pageError = learningPageErrorMessage(request.url.toString(),
+                                        if (homework && !HomeworkLinks.isWebUrl(request.url.toString())) "跳转地址无效或使用了不支持的协议，仅支持 HTTP 或 HTTPS 网页。"
+                                        else if (homework) "该跳转不在学习网站白名单中。允许的域名：${HomeworkLinks.studyAllowedHosts.joinToString("、")}（含子域名）。"
+                                        else "内置学习工具仅允许 HTTPS 的 cyeam.com 及其子域名。")
                                 }
                                 return blocked
+                            }
+
+                            override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
+                                if (request.isForMainFrame) {
+                                    pageError = learningPageErrorMessage(request.url.toString(), "网页加载失败（错误码 ${error.errorCode}）：${error.description}")
+                                }
+                            }
+
+                            override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, response: WebResourceResponse) {
+                                if (request.isForMainFrame) {
+                                    pageError = learningPageErrorMessage(request.url.toString(), "网站返回 HTTP ${response.statusCode}。")
+                                }
+                            }
+
+                            override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
+                                handler.cancel()
+                                // SSL callbacks include subresources; report only a page destination.
+                                if (error.url == view.url || error.url == view.originalUrl || error.url == initialUrl) {
+                                    pageError = learningPageErrorMessage(error.url, "HTTPS 证书验证失败（错误码 ${error.primaryError}）。")
+                                }
                             }
 
                             override fun onPageFinished(view: WebView, url: String?) {
@@ -279,6 +320,16 @@ private fun GameScreen(
                 },
             )
         }
+    }
+
+    pageError?.let { message ->
+        AlertDialog(
+            onDismissRequest = { pageError = null },
+            title = { Text("无法打开学习链接") },
+            text = { Text(message) },
+            confirmButton = { TextButton(onClick = { pageError = null }) { Text("知道了") } },
+            dismissButton = { TextButton(onClick = finish) { Text("返回作业") } },
+        )
     }
 
     DisposableEffect(Unit) {

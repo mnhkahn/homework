@@ -4,6 +4,13 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class HomeworkLinksTest {
+    @Test fun pageErrorsIdentifyTheBlockedDomainWithoutCredentialsOrQueryParameters() {
+        val message = learningPageErrorMessage("https://user:password@outside.example/login?token=secret#private", "不在白名单中")
+        assertEquals("域名：outside.example\n原因：不在白名单中", message)
+        assertEquals("域名：无法识别\n原因：链接无效", learningPageErrorMessage(null, "链接无效"))
+        assertEquals("域名：无法识别\n原因：链接无效", learningPageErrorMessage("not a URL", "链接无效"))
+    }
+
     @Test fun detailTextKeepsLinksOutsideTheFirstTaskLine() {
         val description = "作业内容：先阅读课文\n参考：http://example.com/first\n阅读英语链接：https://example.com/second?q=1&part=2"
         assertEquals(description, HomeworkTaskDetails.displayText(description))

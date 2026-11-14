@@ -21,3 +21,9 @@ object HomeworkLinks {
         }
     }.getOrNull()
 }
+
+/** Show the destination without exposing query parameters or embedded credentials. */
+internal fun learningPageErrorMessage(url: String?, reason: String): String {
+    val host = runCatching { URI(url.orEmpty()).host }.getOrNull()?.takeIf(String::isNotBlank)
+    return "域名：${host ?: "无法识别"}\n原因：$reason"
+}
