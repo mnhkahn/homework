@@ -50,9 +50,13 @@ class ReadingActivity : ComponentActivity() {
     companion object {
         internal fun open(context: Context, task: HomeworkTask) {
             val text = HomeworkTaskDetails.readingText(task.description)
-            if (text != null) context.startActivity(Intent(context, ReadingActivity::class.java)
-                .putExtra("title", task.title).putExtra("text", text))
-            else task.link?.takeIf(HomeworkLinks::isWebUrl)?.let { GameActivity.openHomeworkLink(context, it) }
+            if (text != null) {
+                // Internal navigation also triggers MainActivity.onUserLeaveHint;
+                // permit it before study mode schedules a return to the main screen.
+                (context as? MainActivity)?.allowManagedActivityLaunch()
+                context.startActivity(Intent(context, ReadingActivity::class.java)
+                    .putExtra("title", task.title).putExtra("text", text))
+            } else task.link?.takeIf(HomeworkLinks::isWebUrl)?.let { GameActivity.openHomeworkLink(context, it) }
         }
     }
 }
