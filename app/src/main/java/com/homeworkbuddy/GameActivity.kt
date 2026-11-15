@@ -151,7 +151,9 @@ class GameActivity : ComponentActivity() {
         val policy = KioskPolicy(this)
         if (policy.isDeviceOwner && policy.mode() == KioskMode.STUDY) {
             Handler(Looper.getMainLooper()).postDelayed({
-                policy.applyForCurrentTime(this, navigate = true)
+                if (policy.shouldRestoreStudyTask()) {
+                    policy.applyForCurrentTime(this, navigate = true)
+                }
             }, 200)
         }
     }
@@ -173,7 +175,6 @@ class GameActivity : ComponentActivity() {
         /** All assignment and review web links stay in the app-owned WebView. */
         fun openHomeworkLink(context: Context, url: String) {
             require(HomeworkLinks.isWebUrl(url)) { "无效的作业链接" }
-            (context as? MainActivity)?.allowManagedActivityLaunch()
             context.startActivity(homeworkIntent(context, url))
         }
 

@@ -17,4 +17,23 @@ class StudyForegroundGuardTest {
         assertFalse(isAllowedExternalStudyApp(ForegroundApp(managed, true, true), managed))
         assertFalse(isAllowedExternalStudyApp(null, managed))
     }
+
+    @Test fun internalPagesNeverNeedLaunchFlags() {
+        assertFalse(shouldRestoreStudyTask(true, false, ForegroundApp(managed, true, true), managed))
+        assertFalse(shouldRestoreStudyTask(true, false, null, managed))
+        assertFalse(shouldRestoreStudyTask(true, false, ForegroundApp("system.home", false, true), managed))
+    }
+
+    @Test fun homeAndBlockedAppsAreRestoredEvenWithStaleOwnPackageEvent() {
+        assertTrue(shouldRestoreStudyTask(false, false, ForegroundApp(managed, true, true), managed))
+        assertTrue(shouldRestoreStudyTask(false, false, ForegroundApp("system.home", false, true), managed))
+        assertTrue(shouldRestoreStudyTask(false, false, ForegroundApp("blocked.app", true, false), managed))
+        assertTrue(shouldRestoreStudyTask(false, false, null, managed))
+    }
+
+    @Test fun authorizedExternalSessionsAndAllowlistedAppsRemainOpen() {
+        assertFalse(shouldRestoreStudyTask(false, true, null, managed))
+        assertFalse(shouldRestoreStudyTask(false, false, ForegroundApp("com.android.soundrecorder", true, true), managed))
+    }
+
 }

@@ -221,7 +221,6 @@ class MainActivity : ComponentActivity() {
     fun finishRecordingScreenProtection() = recordingScreenLock.release()
 
     private val screenTimeoutHandler = Handler(Looper.getMainLooper())
-    private var allowNextUserLeaveHint = false
     private var homeworkInProgress = false
     private val clearKeepScreenOn = Runnable {
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -242,10 +241,6 @@ class MainActivity : ComponentActivity() {
 
     private fun restoreStudyBrightness() {
         window.attributes = window.attributes.apply { screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE }
-    }
-
-    fun allowManagedActivityLaunch() {
-        allowNextUserLeaveHint = true
     }
 
     /** Keep assignments visible, with dimming after inactivity. */
@@ -378,16 +373,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (allowNextUserLeaveHint) {
-            allowNextUserLeaveHint = false
-            return
-        }
         val policy = KioskPolicy(this)
         if (policy.isDeviceOwner && policy.mode() == KioskMode.STUDY) {
             // MIUI's tablet window menu can issue a Home-like leave even while
             // Lock Task is active. Reassert the managed activity immediately.
             Handler(Looper.getMainLooper()).postDelayed({
-                if (!isAllowedExternalStudyApp(policy.foregroundApp(), packageName)) {
+                if (policy.shouldRestoreStudyTask()) {
                     policy.applyForCurrentTime(this, navigate = true)
                 }
             }, 200)
@@ -820,7 +811,6 @@ private fun HomeworkBuddyApp() {
     val requestCameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         val photo = capturePhoto
         if (granted && photo != null) {
-            (activity as? MainActivity)?.allowManagedActivityLaunch()
             runCatching {
                 scanPhoto.launch(Intent(context, HomeworkScanActivity::class.java))
             }.onFailure {
@@ -846,7 +836,6 @@ private fun HomeworkBuddyApp() {
         val file = File(context.cacheDir, "photos/${task.id}-${System.currentTimeMillis()}.jpg").also { it.parentFile?.mkdirs() }
         capturePhoto = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-            (activity as? MainActivity)?.allowManagedActivityLaunch()
             runCatching {
                 scanPhoto.launch(Intent(context, HomeworkScanActivity::class.java))
             }.onFailure {
@@ -1071,7 +1060,6 @@ private fun HomeworkBuddyApp() {
             kioskPolicy.pause(15, activity, source = "Trello 授权", parentVerified = parentVerified)
             connectionError = "已临时开放 15 分钟，请在浏览器中完成授权。"
         }
-        (activity as? MainActivity)?.allowManagedActivityLaunch()
         api.openAuthorization()
     }
 
@@ -1150,11 +1138,9 @@ private fun HomeworkBuddyApp() {
             syncError = if (connected) connectionError else null,
             onRefresh = { refreshRequest++ },
             onParent = {
-                (activity as? MainActivity)?.allowManagedActivityLaunch()
                 context.startActivity(Intent(context, KioskSettingsActivity::class.java))
             },
             onStudyApps = {
-                (activity as? MainActivity)?.allowManagedActivityLaunch()
                 kioskPolicy.openStudyLauncher()
             },
             systemNonAllowedApps = systemNonAllowedApps,
@@ -1165,7 +1151,6 @@ private fun HomeworkBuddyApp() {
                 if (vocabularyPhotoRequiredFor(task)) {
                     openDictationPhoto(task)
                 } else {
-                    (activity as? MainActivity)?.allowManagedActivityLaunch()
                     vocabulary.launch(VocabularyActivity.intent(context, task, words))
                 }
             },
@@ -1242,7 +1227,6 @@ private fun HomeworkBuddyApp() {
                     recordedAudioUri = null
                     pendingAudio = null
                     KioskPolicy(context).allowSystemRecorderForCapture()
-                    (activity as? MainActivity)?.allowManagedActivityLaunch()
                     runCatching {
                         // Acquire synchronously before the external Activity takes over.
                         (activity as? MainActivity)?.keepScreenOnForRecording()
@@ -1824,7 +1808,6 @@ private fun LocalRecordingButton(localUri: String) {
             // Opening the recorder rather than ACTION_VIEW avoids an app picker.
             // localUri identifies the recording retained by the system recorder.
             KioskPolicy(context).allowSystemRecorderForCapture()
-            (context as? MainActivity)?.allowManagedActivityLaunch()
             runCatching {
                 val recorderPackage = context.packageManager.resolveActivity(
                     Intent(MediaStore.Audio.Media.RECORD_SOUND_ACTION),

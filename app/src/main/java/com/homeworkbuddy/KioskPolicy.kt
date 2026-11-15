@@ -472,6 +472,16 @@ class KioskPolicy(private val context: Context) {
         }
     }
 
+    /** Activity changes inside this app are not study-mode escapes. */
+    fun shouldRestoreStudyTask(): Boolean {
+        val state = ActivityManager.RunningAppProcessInfo()
+        ActivityManager.getMyMemoryState(state)
+        return shouldRestoreStudyTask(
+            state.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND,
+            isExternalForegroundAllowed, foregroundApp(), context.packageName,
+        )
+    }
+
     fun restoreManagedTask() {
         if (!isDeviceOwner || mode() != KioskMode.STUDY) return
         applyAllowlist(KioskMode.STUDY)
@@ -872,3 +882,11 @@ internal fun studySuspensionPlan(previous: Set<String>, launchable: Set<String>,
 /** A persistent study allowlist entry remains valid after launch flags expire. */
 internal fun isAllowedExternalStudyApp(foreground: ForegroundApp?, managedPackage: String): Boolean =
     foreground != null && foreground.packageName != managedPackage && foreground.allowed && foreground.launchable
+
+/** Use current process state; UsageStats may still name our app after Home. */
+internal fun shouldRestoreStudyTask(
+    appInForeground: Boolean,
+    externalForegroundAllowed: Boolean,
+    foreground: ForegroundApp?,
+    managedPackage: String,
+): Boolean = !appInForeground && !externalForegroundAllowed && !isAllowedExternalStudyApp(foreground, managedPackage)
