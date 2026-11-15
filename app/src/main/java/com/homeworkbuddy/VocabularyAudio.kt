@@ -7,16 +7,92 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.util.Locale
+import java.io.File
+import java.io.IOException
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.util.concurrent.TimeUnit
 
 internal class VocabularyAudio(context: Context) {
     private val ready = CompletableDeferred<Boolean>()
     private val tts = TextToSpeech(context.applicationContext) { ready.complete(it == TextToSpeech.SUCCESS) }
     private var utteranceNumber = 0
+    private val readingCache = ReadingAudioCache(File(context.filesDir, "reading_audio"))
+
+    suspend fun playSentence(text: String, rate: Float, onSource: (ReadingAudioSource) -> Unit = {}): Boolean {
+        val cached = readingCache.getOrCreate("en-US:v1:$text") { output ->
+            when {
+                synthesizeSentence(text, output) -> ReadingAudioSource.SYSTEM
+                downloadSentence(text, output) -> ReadingAudioSource.ONLINE
+                else -> null
+            }
+        } ?: return false
+        onSource(cached.source)
+        if (playRecording(cached.file.absolutePath, rate, 60_000)) return true
+        // A damaged or unsupported file must not become a permanently cached failure.
+        cached.file.delete()
+        return false
+    }
+
+    private suspend fun synthesizeSentence(text: String, output: File): Boolean {
+        if (withTimeoutOrNull(5_000) { ready.await() } != true) return false
+        if (tts.setLanguage(Locale.US) < TextToSpeech.LANG_AVAILABLE) return false
+        val id = "reading-${++utteranceNumber}"
+        val complete = CompletableDeferred<Boolean>()
+        tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) = Unit
+            override fun onDone(utteranceId: String?) { if (utteranceId == id) complete.complete(true) }
+            @Deprecated("Legacy Android TTS error callback")
+            override fun onError(utteranceId: String?) { if (utteranceId == id) complete.complete(false) }
+        })
+        return try {
+            tts.setSpeechRate(1f)
+            if (tts.synthesizeToFile(text, null, output, id) != TextToSpeech.SUCCESS) false
+            else withTimeoutOrNull(30_000) { complete.await() } == true
+        } finally {
+            tts.stop()
+        }
+    }
+
+    private suspend fun downloadSentence(text: String, output: File): Boolean = withContext(Dispatchers.IO) {
+        val url = "https://www.cyeam.com/api/tts".toHttpUrl().newBuilder().addQueryParameter("text", text).build()
+        try {
+            sentenceClient.newCall(Request.Builder().url(url).build()).execute().use { response ->
+                val body = response.body ?: return@withContext false
+                val contentType = body.contentType()?.toString().orEmpty()
+                if (!response.isSuccessful || (!contentType.startsWith("audio/") && !contentType.startsWith("application/octet-stream"))) return@withContext false
+                body.byteStream().use { input ->
+                    output.outputStream().use { target ->
+                        val buffer = ByteArray(8192)
+                        var total = 0L
+                        while (true) {
+                            coroutineContext.ensureActive()
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            total += count
+                            if (total > 10L * 1024 * 1024) return@withContext false
+                            target.write(buffer, 0, count)
+                        }
+                    }
+                }
+                coroutineContext.ensureActive()
+                output.length() > 0
+            }
+        } catch (_: IOException) { false }
+    }
+
+    companion object {
+        private val sentenceClient = OkHttpClient.Builder().callTimeout(35, TimeUnit.SECONDS).build()
+    }
+
 
     suspend fun playWord(entry: VocabularyEntry, rate: Float): Boolean {
         val recording = entry.audioUrl.toHttpUrlOrNull()?.takeIf { it.isHttps }
@@ -49,7 +125,7 @@ internal class VocabularyAudio(context: Context) {
         return true
     }
 
-    private suspend fun playRecording(url: String, rate: Float): Boolean {
+    private suspend fun playRecording(url: String, rate: Float, timeoutMillis: Long = 12_000): Boolean {
         val player = MediaPlayer()
         val complete = CompletableDeferred<Boolean>()
         return try {
@@ -65,7 +141,7 @@ internal class VocabularyAudio(context: Context) {
             }
             player.setDataSource(url)
             player.prepareAsync()
-            withTimeoutOrNull(12_000) { complete.await() } == true
+            withTimeoutOrNull(timeoutMillis) { complete.await() } == true
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {

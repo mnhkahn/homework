@@ -879,9 +879,7 @@ private fun HomeworkBuddyApp() {
             val taskId = result.data?.getStringExtra(VocabularyActivity.EXTRA_TASK_ID)
             val task = (tasks + weekTasks).firstOrNull { it.id == taskId }
             when (task?.type) {
-                HomeworkTaskType.ENGLISH_READING -> task.link?.takeIf(HomeworkLinks::isWebUrl)?.let {
-                    GameActivity.openHomeworkLink(context, it)
-                }
+                HomeworkTaskType.ENGLISH_READING -> ReadingActivity.open(context, task)
                 HomeworkTaskType.WORD_MEMORIZATION -> if (!task.status.isSubmitted) {
                     setDictationAwaitingPhoto(dictationAwaitingPhoto + task.id)
                     openDictationPhoto(task)
@@ -2142,6 +2140,12 @@ private fun formatStudyDuration(seconds: Long): String {
     }
     if (task.type == HomeworkTaskType.WORD_MEMORIZATION) {
         Text("未找到背单词词表，请刷新作业后重试。", color = MaterialTheme.colorScheme.error)
+        return
+    }
+    if (task.type == HomeworkTaskType.ENGLISH_READING && HomeworkTaskDetails.readingText(task.description) != null) {
+        FilledTonalButton(onClick = { ReadingActivity.open(context, task) }, enabled = enabled) {
+            Text("打开英语阅读")
+        }
         return
     }
     task.link?.takeIf(HomeworkLinks::isWebUrl)?.let { link ->

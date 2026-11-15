@@ -34,7 +34,8 @@ data class HomeworkTaskDetails(
          */
         fun fromDescription(description: String): HomeworkTaskDetails {
             val json = description.trim().takeIf(String::isNotBlank)?.let { value -> runCatching { JSONObject(value) }.getOrNull() }
-            val contentDescription = if (json == null) withoutRequirements(description) else description
+            val metadata = description.substringBefore("英语原文：").substringBefore("英语原文:")
+            val contentDescription = if (json == null) withoutRequirements(metadata) else description
             val explicit = json?.optString("type")?.toTaskType()
                 ?: typeLine.find(contentDescription)?.groupValues?.getOrNull(1)?.toTaskType()
             if (explicit == HomeworkTaskType.ARITHMETIC) {
@@ -87,10 +88,20 @@ data class HomeworkTaskDetails(
             }
         }
 
+        internal fun readingText(description: String?): String? {
+            if (description.isNullOrBlank()) return null
+            val json = runCatching { JSONObject(description.trim()) }.getOrNull()
+            val text = if (json != null) json.optString("reading_text") else {
+                val marker = Regex("(?m)^[ \t]*英语原文[:：][ \t]*").find(description) ?: return null
+                description.substring(marker.range.last + 1).substringBefore("英语译文：").substringBefore("英语译文:")
+            }
+            return text.trim().ifBlank { null }
+        }
+
         internal fun requirements(description: String): String? {
             val json = runCatching { JSONObject(description.trim()) }.getOrNull()
             val value = if (json != null) json.opt("requirements") as? String
-            else requirementsBlock.find(description)?.groupValues?.get(1)
+            else requirementsBlock.find(description.substringBefore("英语原文：").substringBefore("英语原文:"))?.groupValues?.get(1)
             return value?.trim()?.ifBlank { null }
         }
 
@@ -102,6 +113,7 @@ data class HomeworkTaskDetails(
             val json = runCatching { JSONObject(description.trim()) }.getOrNull()
             return (if (json == null) description else listOf(
                 json.optString("task"), json.optString("link"),
+                json.optString("reading_text").takeIf(String::isNotBlank)?.let { "英语原文：\n$it" }.orEmpty(),
                 json.optString("preview_requirements").takeIf(String::isNotBlank)?.let { "预习要求：\n$it" }.orEmpty(),
             ).filter(String::isNotBlank).distinct().joinToString("\n")).trim().ifBlank { null }
         }
@@ -166,7 +178,7 @@ data class HomeworkTaskDetails(
             val usesNativeWords = when (task.type) {
                 // An explicit word list takes precedence over any supplemental link.
                 HomeworkTaskType.WORD_MEMORIZATION -> true
-                HomeworkTaskType.ENGLISH_READING -> hasLink
+                HomeworkTaskType.ENGLISH_READING -> hasLink || readingText(task.description) != null
                 else -> false
             }
             if (!usesNativeWords) return emptyList()

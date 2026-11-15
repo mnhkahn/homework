@@ -159,3 +159,17 @@ Study time is defined by `KioskPolicy` (SharedPreferences `kiosk_policy`, defaul
    granted from `Settings.ACTION_USAGE_ACCESS_SETTINGS` or
    `adb shell appops set com.homeworkbuddy android:get_usage_stats allow`; the parent
    settings screen links there while the permission is missing.
+
+### 本地英语阅读
+
+阅读卡片支持在描述末尾保存 `英语原文：` 和多行正文；正文后不再追加其他字段。
+原文可无链接；有跟读词表时，`读单词：` 放在原文字段之前。平板先跟读词表，再进入本地阅读。
+本地页面按换行和句末标点拆分编号，标题与问卷选项保留独立行。每句提供翻译和朗读按钮。
+翻译使用现有 `/ai/translate/api` 并缓存成功结果；朗读复用系统 TTS 和现有网络兜底。
+未保存原文的旧卡片继续打开原阅读链接。正文离线可看，翻译首次获取需要网络，离线朗读需要设备可用的英语语音。
+CLI 创建格式：`cyeam trello card create --list <id> --name <title> --type english_reading --reading-file article.txt`。
+
+
+译文不写入 Trello。点击翻译时优先读取 APP 本地缓存，未命中再调用 `/ai/translate/api`，只缓存成功的中文结果，失败可重试。朗读首次使用系统 TTS 合成音频到 APP 私有目录，失败时下载 `/api/tts` 音频；后续直接播放本地文件。音频缓存上限 64 MiB，按最近使用淘汰，不缓存失败或空文件。
+
+朗读时在按钮旁显示来源图标和短标签：手机图标表示“系统语音”，云图标表示“在线语音”。来源随音频缓存一并保存，命中缓存也显示最初来源；播放失败不保留本次来源标记。

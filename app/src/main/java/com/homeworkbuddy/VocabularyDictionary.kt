@@ -5,6 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -38,6 +39,10 @@ internal class VocabularyDictionary(private val context: Context) {
         }.awaitAll()
     }
 
+    suspend fun translate(text: String): String? = withContext(io) {
+        lookup(text, requireTranslation = true).translations.joinToString("\n").ifBlank { null }
+    }
+
     private fun loadChunks(words: Set<String>): Map<String, Pair<List<String>, Int>> =
         context.assets.open("word_study_chunks.txt").bufferedReader().useLines { lines ->
             lines.mapNotNull { line ->
@@ -48,9 +53,9 @@ internal class VocabularyDictionary(private val context: Context) {
             }.toMap()
         }
 
-    private fun lookup(word: String): VocabularyEntry {
+    private fun lookup(word: String, requireTranslation: Boolean = false): VocabularyEntry {
         prefs.getString(word, null)?.let { cached ->
-            parse(word, cached)?.takeIf { it.hasMeanings }?.let { return it }
+            parse(word, cached)?.takeIf { if (requireTranslation) it.translations.isNotEmpty() else it.hasMeanings }?.let { return it }
         }
         val url = (GameActivity.ENGLISH_READING_URL + "/api").toHttpUrl().newBuilder()
             .addQueryParameter("text", word).build()
@@ -58,7 +63,9 @@ internal class VocabularyDictionary(private val context: Context) {
             client.newCall(Request.Builder().url(url).build()).execute().use { response ->
                 val raw = response.body?.string()
                 val entry = if (response.isSuccessful && raw != null) parse(word, raw) else null
-                if (entry?.hasMeanings == true) prefs.edit().putString(word, raw).apply()
+                if (entry != null && (if (requireTranslation) entry.translations.isNotEmpty() else entry.hasMeanings)) {
+                    prefs.edit().putString(word, raw).apply()
+                }
                 entry ?: VocabularyEntry(word)
             }
         } catch (_: IOException) {

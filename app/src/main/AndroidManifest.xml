@@ -103,6 +103,7 @@
             android:lockTaskMode="if_whitelisted"
             android:resizeableActivity="false"
             android:screenOrientation="unspecified" />
+        <activity android:name=".ReadingActivity" android:exported="false" android:theme="@style/ActivityTheme" />
         <activity
             android:name=".VocabularyActivity"
             android:exported="false"
