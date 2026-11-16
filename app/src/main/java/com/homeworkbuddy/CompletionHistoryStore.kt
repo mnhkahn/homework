@@ -15,6 +15,7 @@ data class CompletionRecord(
     val durationSeconds: Int?,
     val localAudioUri: String?,
     val attachments: List<HomeworkAttachment>,
+    val taskSnapshot: HomeworkTask? = null,
 ) {
     val photoUrls: List<String> get() = attachments.filterNot(HomeworkAttachment::isAudio).map(HomeworkAttachment::url)
     val audioAttachments: List<HomeworkAttachment> get() = attachments.filter(HomeworkAttachment::isAudio)
@@ -27,6 +28,7 @@ data class CompletionRecord(
  */
 class CompletionHistoryStore(context: Context) {
     private val prefs = context.getSharedPreferences("completion_history", Context.MODE_PRIVATE)
+    private val taskCodec = HomeworkCacheStore(context)
 
     /** Merges the day's tasks into the history. Existing completions are never dropped. */
     fun noteTasks(tasks: List<HomeworkTask>, date: LocalDate = LocalDate.now()) {
@@ -34,6 +36,7 @@ class CompletionHistoryStore(context: Context) {
         tasks.forEach { task ->
             val deadline = task.dueDate.atTime(task.deadline).atZone(ZoneId.systemDefault()).toEpochSecond()
             val entry = day.optJSONObject(task.id) ?: JSONObject()
+            entry.put("task_snapshot", taskCodec.encode(task))
             entry.put("title", task.title).put("deadline", deadline)
             task.startedAtEpochSeconds?.let { entry.put("started_at", it) }
             entry.put("photo_urls", org.json.JSONArray(task.photoUrls))
@@ -86,6 +89,7 @@ class CompletionHistoryStore(context: Context) {
                 } ?: entry.optJSONArray("photo_urls")?.let { photos ->
                     (0 until photos.length()).mapNotNull { index -> photos.optString(index).ifBlank { null }?.let { url -> HomeworkAttachment(url, "", "image/*") } }
                 } ?: emptyList(),
+                entry.optJSONObject("task_snapshot")?.let { runCatching { taskCodec.decode(it) }.getOrNull() },
             )
         }.toList()
     }

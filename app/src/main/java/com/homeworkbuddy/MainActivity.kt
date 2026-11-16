@@ -410,6 +410,7 @@ private fun HomeworkBuddyApp() {
     val studyActivityStore = remember(context) { StudyActivityStore(context) }
     val pianoPracticeStore = remember(context) { PianoPracticeStore(context) }
     val taskCache = remember(context) { HomeworkCacheStore(context) }
+    val activityStore = remember(context) { HomeworkActivityStore(context) }
     val scope = rememberCoroutineScope()
     var childName by remember { mutableStateOf(context.getSharedPreferences("profile", Context.MODE_PRIVATE).getString("child_name", "") ?: "") }
     // The home screen must only show work returned by the family service.  Keeping
@@ -567,7 +568,7 @@ private fun HomeworkBuddyApp() {
         }
     }
 
-    val dayTasks = if (selectedDate == LocalDate.now()) tasks else weekTasks.filter { it.dueDate == selectedDate }
+    val dayTasks = homeworkTasksForDate(tasks, weekTasks, CompletionHistoryStore(context).day(selectedDate), selectedDate)
 
     fun selectTask(task: HomeworkTask?) {
         selectedId = task?.id.orEmpty()
@@ -636,6 +637,7 @@ private fun HomeworkBuddyApp() {
         setDictationAwaitingPhoto(dictationAwaitingPhoto - taskId)
         HomeworkReminderScheduler.taskCompleted(context, taskId)
         val completedAt = System.currentTimeMillis() / 1_000
+        activityStore.complete(taskId, completedAt)
         fun complete(task: HomeworkTask) = task.afterSubmission(isCorrection ?: task.submitsCorrection)
             .copy(completedAtEpochSeconds = completedAt, updatedAtEpochSeconds = completedAt, photoPath = photoPath ?: task.photoPath)
 
@@ -912,7 +914,7 @@ private fun HomeworkBuddyApp() {
             val completed = weekTasks.filter { it.status.isSubmitted }
             val scheduled = scheduledCards.map { fresh ->
                 val old = weekTasks.firstOrNull { it.id == fresh.id }
-                if (old?.status == TaskStatus.RUNNING && fresh.status != TaskStatus.NEEDS_CORRECTION) fresh.copy(status = TaskStatus.RUNNING, startedAtEpochSeconds = old.startedAtEpochSeconds) else fresh
+                if (old?.status == TaskStatus.RUNNING && !fresh.status.isSubmitted && old.isCorrection == fresh.isCorrection) fresh.copy(status = TaskStatus.RUNNING, startedAtEpochSeconds = old.startedAtEpochSeconds) else fresh
             }
             weekTasks = (scheduled + completed).distinctBy { it.id }
             taskCache.saveWeek(weekTasks)
@@ -963,6 +965,10 @@ private fun HomeworkBuddyApp() {
         if (!connected || !foreground) return@LaunchedEffect
         while (connected && foreground) {
             refreshing = true
+            runCatching { api.syncActivity() }.onFailure { error ->
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                Log.w("HomeworkActivity", "Activity sync deferred", error)
+            }
             runCatching { api.activeTasks() }.onSuccess { remote ->
                 val local = tasks.associateBy { it.id }
                 val completionHistory = CompletionHistoryStore(context)
@@ -970,15 +976,16 @@ private fun HomeworkBuddyApp() {
                 val merged = remote.map { fresh ->
                     local[fresh.id]?.let { old ->
                         if (fresh.status.isSubmitted) {
+                            activityStore.complete(fresh.id, fresh.completedAtEpochSeconds ?: System.currentTimeMillis() / 1_000)
                             // A task turning COMPLETED here means an offline
                             // retry finished the upload; the completion was not
                             // recorded on this device yet.
                             if (!old.status.isSubmitted) {
                                 completionHistory.recordCompletion(fresh.id, System.currentTimeMillis() / 1_000, today.atTime(fresh.deadline).atZone(ZoneId.systemDefault()).toEpochSecond(), old.startedAtEpochSeconds)
                             }
-                            fresh.copy(startedAtEpochSeconds = old.startedAtEpochSeconds, photoPath = old.photoPath)
+                            fresh.copy(startedAtEpochSeconds = fresh.startedAtEpochSeconds ?: old.startedAtEpochSeconds, photoPath = old.photoPath)
                         }
-                        else fresh.copy(status = if (old.status == TaskStatus.RUNNING && fresh.status != TaskStatus.NEEDS_CORRECTION) TaskStatus.RUNNING else fresh.status, startedAtEpochSeconds = old.startedAtEpochSeconds, photoPath = old.photoPath)
+                        else fresh.copy(status = if (old.status == TaskStatus.RUNNING && !fresh.status.isSubmitted && old.isCorrection == fresh.isCorrection) TaskStatus.RUNNING else fresh.status, startedAtEpochSeconds = fresh.startedAtEpochSeconds ?: old.startedAtEpochSeconds, photoPath = old.photoPath)
                     } ?: fresh
                 }
                 tasks = merged
@@ -1156,15 +1163,22 @@ private fun HomeworkBuddyApp() {
             },
             onStart = start@{
                 val task = detailTask ?: return@start
-                selectTask(task)
-                val startedAt = System.currentTimeMillis()
-                taskStartedAtMillis = startedAt
-                taskElapsedSeconds = 0
-                running = true
-                tasks = tasks.map { if (it.id == selectedId) it.copy(status = if (it.isCorrection) TaskStatus.NEEDS_CORRECTION else TaskStatus.RUNNING, startedAtEpochSeconds = startedAt / 1_000) else it }
+                val started = try { activityStore.start(task, System.currentTimeMillis() / 1_000) }
+                catch (failure: Exception) { connectionError = failure.message; return@start }
+                tasks = tasks.map { if (it.id == task.id) started else it }
                 taskCache.saveToday(tasks)
-                weekTasks = weekTasks.map { if (it.id == selectedId) it.copy(status = if (it.isCorrection) TaskStatus.NEEDS_CORRECTION else TaskStatus.RUNNING, startedAtEpochSeconds = startedAt / 1_000) else it }
+                weekTasks = if (weekTasks.any { it.id == task.id }) {
+                    weekTasks.map { if (it.id == task.id) started else it }
+                } else weekTasks + started
                 taskCache.saveWeek(weekTasks)
+                CompletionHistoryStore(context).noteTasks(listOf(started), selectedDate)
+                selectTask(started)
+                scope.launch {
+                    runCatching { api.syncActivity() }.onFailure { error ->
+                        if (error is kotlinx.coroutines.CancellationException) throw error
+                        reportSyncError(error, "开始记录已保存在本机，联网后自动同步")
+                    }
+                }
                 HomeworkReminderScheduler.taskStarted(context, task.id)
             },
             onPianoRecord = {
@@ -1480,7 +1494,7 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, detailTask: 
     val completedEstimatedSeconds = tasks.filter { it.status.isSubmitted }
         .sumOf { it.estimatedMinutes.coerceAtLeast(0) * 60 }
     val todayElapsedSeconds = (completedEstimatedSeconds + activeElapsedSeconds).coerceAtMost(todayEstimatedSeconds)
-    val dayTasks = if (selectedDate == LocalDate.now()) tasks else weekTasks.filter { it.dueDate == selectedDate }
+    val dayTasks = homeworkTasksForDate(tasks, weekTasks, CompletionHistoryStore(context).day(selectedDate), selectedDate)
     LaunchedEffect(detailTask?.id, refreshing) {
         if (refreshing || !reviewApi.isConnected) return@LaunchedEffect
         reviewSyncError = null
@@ -1534,14 +1548,7 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, detailTask: 
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text("${selectedDate.format(DateTimeFormatter.ofPattern("M月d日"))} 暂无作业安排", fontSize = 24.sp)
                 }
-            } else if (dayTasks.isEmpty() && selectedDate != LocalDate.now()) {
-                HistoryDayContent(
-                    modifier = Modifier.fillMaxSize(),
-                    date = selectedDate,
-                    records = CompletionHistoryStore(context).day(selectedDate),
-                    mark = FlowerCalendar(context).markFor(selectedDate),
-                )
-            } else if (dayTasks.isEmpty()) {
+            } else if (dayTasks.isEmpty() && selectedDate == LocalDate.now()) {
                 EmptyTaskState(Modifier.fillMaxSize())
             } else {
                 HomeworkTable(Modifier.fillMaxWidth().weight(1f), dayTasks, selectedDate, onSelect)
@@ -1734,70 +1741,6 @@ private fun RemoteNoticeCard(notice: RemoteNotice) {
         drawArc(track, -90f, 360f, false, style = Stroke(stroke))
         drawArc(color, -90f, progress * 360f, false, style = Stroke(stroke))
     }
-}
-
-@Composable private fun HistoryDayContent(modifier: Modifier, date: LocalDate, records: List<CompletionRecord>, mark: DayMark) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val doneCount = records.count { it.completedAtEpochSeconds != null }
-    BoxWithConstraints(modifier) {
-        if (maxWidth >= 700.dp) Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(22.dp)) {
-            Column(Modifier.weight(1.45f).fillMaxHeight().clip(RoundedCornerShape(26.dp)).background(if (mark == DayMark.FLOWER) Leaf else Sky).padding(28.dp)) {
-                Text(date.format(DateTimeFormatter.ofPattern("M月d日")) + " 的作业", fontSize = 30.sp, fontWeight = FontWeight.Medium)
-                Spacer(Modifier.height(10.dp))
-                Text(when { mark == DayMark.FLOWER -> "全部完成 · 奖励已记录"; records.isEmpty() -> "这一天还没有作业记录"; else -> "已完成 $doneCount / ${records.size} 项" }, fontSize = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.weight(1f))
-                Text(if (mark == DayMark.FLOWER) "🌸" else if (mark == DayMark.BLACK) "🖤" else "📚", fontSize = 72.sp, modifier = Modifier.align(Alignment.CenterHorizontally))
-                Spacer(Modifier.height(10.dp))
-                when (mark) {
-                    DayMark.FLOWER -> Text("太棒了！这一天的作业全部完成，继续保持！", modifier = Modifier.align(Alignment.CenterHorizontally), color = Color(0xFF24733A), fontWeight = FontWeight.Medium)
-                    DayMark.BLACK -> Text("还没完成：${records.filter { it.completedAtEpochSeconds == null && it.title.isNotBlank() }.joinToString("、") { it.title }}", color = OverdueInk, fontWeight = FontWeight.Medium)
-                    else -> Unit
-                }
-                Spacer(Modifier.weight(1f))
-            }
-            HistoryTaskList(Modifier.weight(.8f).fillMaxHeight(), records, context)
-        } else Column(Modifier.fillMaxSize()) {
-            Text(date.format(DateTimeFormatter.ofPattern("M月d日")) + " 的作业 · 已完成 $doneCount / ${records.size} 项", fontSize = 20.sp, fontWeight = FontWeight.Medium)
-            Spacer(Modifier.height(12.dp))
-            HistoryTaskList(Modifier.weight(1f), records, context)
-        }
-    }
-}
-
-@Composable private fun HistoryTaskList(modifier: Modifier, records: List<CompletionRecord>, context: Context) {
-    var photoUrls by remember { mutableStateOf<List<String>?>(null) }
-    Column(modifier) {
-        Text("作业清单 · ${records.size} 项", fontSize = 20.sp, fontWeight = FontWeight.Medium)
-        Spacer(Modifier.height(6.dp))
-        if (records.isEmpty()) Text("暂无作业记录", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        else LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            items(records, key = { it.taskId }) { record ->
-                val done = record.completedAtEpochSeconds != null
-                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(if (done) Leaf else TodoSurface).padding(horizontal = 12.dp, vertical = 10.dp)) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Text(record.title.ifBlank { "作业" }, modifier = Modifier.weight(1f), fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        TaskStatusPill(if (done) TaskStatus.COMPLETED else TaskStatus.TODO)
-                    }
-                    record.durationSeconds?.let { duration ->
-                        Text("实际用时 ${elapsedLabel(duration)}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
-                    }
-                    buildList {
-                        record.startedAtEpochSeconds?.let { add("开始 ${homeworkTimeLabel(it)}") }
-                        record.completedAtEpochSeconds?.let { add("完成 ${homeworkTimeLabel(it)}") }
-                    }.joinToString(" · ").takeIf { it.isNotBlank() }?.let { timing ->
-                        Text(timing, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
-                    }
-                    if (record.photoUrls.isNotEmpty()) {
-                        TextButton(onClick = { photoUrls = record.photoUrls }, contentPadding = PaddingValues(top = 5.dp, bottom = 0.dp)) {
-                            Icon(Icons.Outlined.CameraAlt, null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("查看图片（${record.photoUrls.size} 张）")
-                        }
-                    }
-                    record.localAudioUri?.let { LocalRecordingButton(it) }
-                }
-            }
-        }
-    }
-    photoUrls?.let { PhotoViewer(it, HomeworkApi(context)) { photoUrls = null } }
 }
 
 @Composable
@@ -2213,7 +2156,7 @@ private fun formatStudyDuration(seconds: Long): String {
 @Composable internal fun TaskStatusPill(status: TaskStatus) {
     val (label, surface, content) = when (status) {
         TaskStatus.OVERTIME -> Triple("⚠ 已超期", OverdueSurface, OverdueInk)
-        TaskStatus.RUNNING -> Triple("正在完成", Color(0xFFFFF3CE), Ink)
+        TaskStatus.RUNNING -> Triple("正在做", Color(0xFFFFF3CE), Ink)
         TaskStatus.COMPLETED -> Triple("✓ 已完成", Leaf, Color(0xFF24733A))
         TaskStatus.CORRECTED -> Triple("✓ 已改错", Leaf, Color(0xFF24733A))
         TaskStatus.TODO -> Triple("待完成", TodoSurface, Primary)

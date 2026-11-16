@@ -36,7 +36,7 @@ class HomeworkCacheStore(context: Context) {
         prefs.edit().putString("${prefix}_date", date).putString("${prefix}_tasks", values.toString()).apply()
     }
 
-    private fun encode(task: HomeworkTask) = JSONObject().apply {
+    internal fun encode(task: HomeworkTask) = JSONObject().apply {
         put("id", task.id)
         put("subject", task.subject)
         put("title", task.title)
@@ -62,7 +62,7 @@ class HomeworkCacheStore(context: Context) {
         put("explicit_estimated_minutes", task.explicitEstimatedMinutes)
     }
 
-    private fun decode(value: JSONObject): HomeworkTask = HomeworkTask(
+    internal fun decode(value: JSONObject): HomeworkTask = HomeworkTask(
         id = value.getString("id"),
         subject = value.optString("subject", "作业"),
         title = value.optString("title", "作业"),

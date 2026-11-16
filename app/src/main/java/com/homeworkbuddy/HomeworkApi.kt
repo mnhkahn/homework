@@ -102,6 +102,19 @@ class HomeworkApi(private val context: Context) {
         }
     }
 
+    private val activityStore = HomeworkActivityStore(context)
+    private val activitySyncMutex = Mutex()
+
+    /** Stable event IDs make retries safe after a successful request whose reply was lost. */
+    suspend fun syncActivity() = activitySyncMutex.withLock {
+        for (event in activityStore.pending()) {
+            val heading = if (event.optString("event") == "started") "开始做作业" else "作业完成"
+            val comment = "$heading\n[homework-activity:v1]\n$event"
+            postSubmissionComment(event.getString("task_id"), comment, retry = true)
+            activityStore.markSynced(event.getString("id"))
+        }
+    }
+
     suspend fun todayTasks(): List<HomeworkTask> {
         // The 待完成 list is the parent's current-day queue.  Do not use a
         // mutable Trello due date to discard its cards: changing a deadline
@@ -328,7 +341,7 @@ class HomeworkApi(private val context: Context) {
             val details = HomeworkTaskDetails.fromDescription(item.optString("desc"))
             val plannedStart = parseTrelloDate(item.optString("start"))
             val plannedDue = parseTrelloDate(item.optString("due"))
-            HomeworkTask(
+            activityStore.restore(HomeworkTask(
                 item.getString("id"), subject, item.getString("name"), homeworkMinutes(item.optString("desc")),
                 deadline.toLocalTime(), taskStatus,
                 photoUrls = attachments.filterNot { it.isAudio || it.isPdf }.map(HomeworkAttachment::url),
@@ -343,7 +356,7 @@ class HomeworkApi(private val context: Context) {
                 scheduledStartEpochSeconds = plannedStart,
                 scheduledDueEpochSeconds = plannedDue,
                 explicitEstimatedMinutes = explicitHomeworkMinutes(item.optString("desc")),
-            )
+            ))
         }
     }
 

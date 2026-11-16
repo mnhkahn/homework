@@ -55,12 +55,13 @@ private val TableDateFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 private val tableHeaders = listOf("标题", "作业类型", "进度", "打分结果", "实际完成时间", "预计完成时间", "更新时间")
 private val columnWeights = listOf(24f, 10f, 11f, 11f, 15f, 15f, 15f)
 
-private enum class TaskProgressFilter(val label: String) {
-    ALL("全部进度"), UNFINISHED("未完成"), SUBMITTED("已提交");
+internal enum class TaskProgressFilter(val label: String) {
+    ALL("全部进度"), UNFINISHED("未完成"), RUNNING("正在做"), SUBMITTED("已提交");
 
     fun includes(status: TaskStatus): Boolean = when (this) {
         ALL -> true
         UNFINISHED -> !status.isSubmitted
+        RUNNING -> status == TaskStatus.RUNNING
         SUBMITTED -> status.isSubmitted
     }
 }
