@@ -117,7 +117,7 @@ internal fun HomeworkReviewPanel(task: HomeworkTask, modifier: Modifier = Modifi
                         if (review.type == "text") {
                             SelectionContainer {
                                 HomeworkLinkedText(
-                                    review.text.orEmpty(),
+                                    review.displayText,
                                     style = LocalTextStyle.current.copy(fontSize = textSize, lineHeight = textSize * 1.5f),
                                 )
                             }

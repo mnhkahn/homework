@@ -349,8 +349,8 @@ private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
         item {
             Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFEAF4FF)), shape = RoundedCornerShape(20.dp)) {
                 Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                    Text("小李连接", fontSize = 21.sp, fontWeight = FontWeight.Medium)
-                    Text("扫码绑定这台平板，让小李可查询作业、发送通知、请求拍照和临时开放 15 分钟。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("李老师连接", fontSize = 21.sp, fontWeight = FontWeight.Medium)
+                    Text("扫码绑定这台平板，让李老师可查询作业、发送通知、请求拍照和临时开放 15 分钟。", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(if (screenshotAvailable) "屏幕截图服务已连接" else "屏幕截图服务未连接", modifier = Modifier.padding(top = 10.dp))
                     Text("远程拍照检查会同时上传当前屏幕，包括桌面及其他应用。需 Android 11 及以上，并在系统无障碍设置中启用“作业小伙伴屏幕截图”。", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     OutlinedButton(enabled = Build.VERSION.SDK_INT >= 30, onClick = {
@@ -361,7 +361,7 @@ private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
                                 message = "无法打开无障碍设置：${it.message}"
                             }
                     }) { Text("配置屏幕截图权限") }
-                    Button(onClick = { activity.startActivity(Intent(activity, XiaoliSettingsActivity::class.java)) }, modifier = Modifier.padding(top = 10.dp)) { Text("配置小李连接") }
+                    Button(onClick = { activity.startActivity(Intent(activity, XiaoliSettingsActivity::class.java)) }, modifier = Modifier.padding(top = 10.dp)) { Text("配置李老师连接") }
                 }
             }
         }

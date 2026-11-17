@@ -1495,7 +1495,7 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, detailTask: 
         .sumOf { it.estimatedMinutes.coerceAtLeast(0) * 60 }
     val todayElapsedSeconds = (completedEstimatedSeconds + activeElapsedSeconds).coerceAtMost(todayEstimatedSeconds)
     val dayTasks = homeworkTasksForDate(tasks, weekTasks, CompletionHistoryStore(context).day(selectedDate), selectedDate)
-    LaunchedEffect(detailTask?.id, refreshing) {
+    LaunchedEffect(detailTask?.id, detailTask?.updatedAtEpochSeconds, refreshing) {
         if (refreshing || !reviewApi.isConnected) return@LaunchedEffect
         reviewSyncError = null
         val id = detailTask?.id ?: return@LaunchedEffect
@@ -1590,7 +1590,7 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, detailTask: 
                         onStart = { onStart(); if (task.isCorrection) showReview(task) },
                         onPianoRecord = onPianoRecord,
                         onFinish = onFinish,
-                        hasReview = task.id in reviewedTaskIds,
+                        hasReview = task.canOpenReview(task.id in reviewedTaskIds),
                         onReview = { showReview(task) },
                         vocabularyPhotoRequired = vocabularyPhotoRequired,
                         onOpenVocabulary = onOpenVocabulary,
@@ -1901,9 +1901,9 @@ private fun LocalRecordingButton(localUri: String) {
 
 @Composable private fun XiaoliConnectionIcon(connection: XiaoliConnectionSnapshot) {
     val (icon, tint, description) = when (connection.status) {
-        "已连接" -> Triple(Icons.Outlined.CloudDone, Color(0xFF24733A), "已连接小李服务")
-        "正在连接" -> Triple(Icons.Outlined.CloudSync, Color(0xFF765B11), "正在连接小李服务")
-        else -> Triple(Icons.Outlined.CloudOff, MaterialTheme.colorScheme.error, "未连接小李服务")
+        "已连接" -> Triple(Icons.Outlined.CloudDone, Color(0xFF24733A), "已连接李老师服务")
+        "正在连接" -> Triple(Icons.Outlined.CloudSync, Color(0xFF765B11), "正在连接李老师服务")
+        else -> Triple(Icons.Outlined.CloudOff, MaterialTheme.colorScheme.error, "未连接李老师服务")
     }
     Icon(icon, description, modifier = Modifier.size(24.dp), tint = tint)
 }

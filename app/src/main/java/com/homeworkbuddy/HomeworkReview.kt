@@ -39,3 +39,14 @@ data class HomeworkReview(
 }
 
 data class HomeworkReviewContent(val reviews: List<HomeworkReview>, val attachments: Map<String, HomeworkAttachment>)
+
+/** Keep the entry usable even while the remote comment lookup is pending or fails. */
+internal fun HomeworkTask.canOpenReview(confirmedReview: Boolean): Boolean =
+    confirmedReview || gradeResult != null || isCorrection || status == TaskStatus.NEEDS_CORRECTION || status.isSubmitted
+
+/** Hide redundant lines emitted by early automatic-review versions; keep the stored record intact. */
+internal val HomeworkReview.displayText: String get() = text.orEmpty().lineSequence().filterNot { line ->
+    val value = line.trim()
+    (gradeResult != null && Regex("^打分结果[:：]").containsMatchIn(value)) ||
+        Regex("^第\\d+[题项]：正确[。.]?(?:正确[。.]?)?$").matches(value)
+}.joinToString("\n").trim()

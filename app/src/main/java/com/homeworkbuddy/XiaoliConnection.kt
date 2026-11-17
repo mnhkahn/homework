@@ -26,15 +26,6 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
-data class XiaoliConnectionConfig(
-    val deviceId: String,
-    val deviceName: String,
-    val websocketUrl: String,
-    val token: String,
-    /** Optional explicit endpoint supplied by newer pairing servers. */
-    val snapshotUrl: String? = null,
-)
-
 object XiaoliDeviceStore {
     private const val PREFS = "xiaoli_device"
     private const val DEVICE_ID = "device_id"
@@ -172,14 +163,13 @@ object XiaoliMcpNotifications {
  */
 object XiaoliPairingClient {
     fun pair(context: Context, rawQr: String, requestedName: String): XiaoliConnectionConfig {
-        val qr = JSONObject(rawQr)
-        val pairUrl = qr.getString("pair_url")
+        val pairing = TeacherPairing.request(rawQr)
         val body = JSONObject()
-            .put("code", qr.getString("code"))
+            .put("code", pairing.code)
             .put("device_id", XiaoliDeviceStore.defaultDeviceId(context))
             .put("device_name", requestedName)
             .put("device_kind", "android")
-        val connection = (URL(pairUrl).openConnection() as HttpURLConnection).apply {
+        val connection = (URL(pairing.url).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             doOutput = true
             connectTimeout = 10_000
@@ -187,40 +177,40 @@ object XiaoliPairingClient {
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("Accept", "application/json")
         }
-        connection.outputStream.bufferedWriter().use { it.write(body.toString()) }
-        val text = (if (connection.responseCode in 200..299) connection.inputStream else connection.errorStream)
-            .bufferedReader().use { it.readText() }
-        if (connection.responseCode !in 200..299) throw IllegalStateException(runCatching { JSONObject(text).optString("error") }.getOrDefault("配对失败"))
-        val result = JSONObject(text)
-        val device = result.optJSONObject("device")
-        val websocket = result.getJSONObject("websocket")
-        return XiaoliConnectionConfig(
-            result.optString("device_id").ifBlank { device?.optString("id").orEmpty() }
-                .ifBlank { XiaoliDeviceStore.defaultDeviceId(context) },
-            device?.optString("name").orEmpty().ifBlank { requestedName },
-            websocket.getString("url"),
-            websocket.getString("token"),
-            result.optString("vision_snapshot_url").ifBlank { result.optString("snapshot_url") }.ifBlank { null },
-        )
+        try {
+            connection.outputStream.bufferedWriter().use { it.write(body.toString()) }
+            val text = (if (connection.responseCode in 200..299) connection.inputStream else connection.errorStream)
+                ?.bufferedReader()?.use { it.readText() }.orEmpty()
+            if (connection.responseCode !in 200..299) {
+                val reason = runCatching { JSONObject(text).optString("error") }.getOrDefault("")
+                throw IllegalStateException(reason.ifBlank { "配对失败，请重新生成二维码后再试" })
+            }
+            return TeacherPairing.response(JSONObject(text), XiaoliDeviceStore.defaultDeviceId(context), requestedName)
+        } finally {
+            connection.disconnect()
+        }
     }
 }
 
 class XiaoliConnectionService : Service() {
     private val client = OkHttpClient.Builder().pingInterval(20, TimeUnit.SECONDS).build()
-    private val worker = Executors.newSingleThreadExecutor()
+    private var worker = Executors.newSingleThreadExecutor()
     private val reconnectWorker = Executors.newSingleThreadScheduledExecutor()
-    private var socket: WebSocket? = null
+    @Volatile private var socket: WebSocket? = null
+    private var connectionGeneration = 0L
+    @Volatile private var connectionConfig: XiaoliConnectionConfig? = null
     private var reconnectFuture: ScheduledFuture<*>? = null
-    private var sessionId: String? = null
+    @Volatile private var sessionId: String? = null
     private var reconnectAttempts = 0
-    private var stopped = false
+    @Volatile private var stopped = false
     private var cameraCaptureDepth = 0
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
                 stopped = true
-                socket?.close(1000, "user disconnected")
+                resetConnection()
+                XiaoliConnectionState.disconnected("已解除绑定")
                 stopForeground(STOP_FOREGROUND_DETACH)
                 stopSelf()
                 return START_NOT_STICKY
@@ -237,6 +227,10 @@ class XiaoliConnectionService : Service() {
             }
         }
         stopped = false
+        if (intent?.action == ACTION_RECONNECT || (socket != null && connectionConfig != XiaoliDeviceStore.config(this))) {
+            resetConnection()
+            reconnectAttempts = 0
+        }
         refreshForeground()
         if (socket == null) connect()
         return START_STICKY
@@ -256,11 +250,8 @@ class XiaoliConnectionService : Service() {
     }
 
     override fun onDestroy() {
-        XiaoliMcpNotifications.clear()
-        RemoteTtsStreamPlayer.reset()
-        reconnectFuture?.cancel(true)
-        socket?.cancel()
-        worker.shutdownNow()
+        stopped = true
+        resetConnection(recreateWorker = false)
         reconnectWorker.shutdownNow()
         stopForeground(STOP_FOREGROUND_DETACH)
         super.onDestroy()
@@ -279,12 +270,32 @@ class XiaoliConnectionService : Service() {
 
     private fun stopConnectionAfterTimeout() {
         stopped = true
-        reconnectFuture?.cancel(true)
-        socket?.close(1000, "foreground service time limit reached")
+        resetConnection()
+        XiaoliConnectionState.disconnected("后台连接已停止，请重新打开应用")
         stopForeground(STOP_FOREGROUND_DETACH)
         stopSelf()
     }
     override fun onBind(intent: Intent?): IBinder? = null
+
+    /** Invalidate callbacks before cancelling the socket; old commands cannot move to the new binding. */
+    @Synchronized private fun resetConnection(recreateWorker: Boolean = true) {
+        connectionGeneration++
+        reconnectFuture?.cancel(false)
+        reconnectFuture = null
+        val previous = socket
+        socket = null
+        sessionId = null
+        connectionConfig = null
+        XiaoliMcpNotifications.clear()
+        RemoteTtsStreamPlayer.reset()
+        runCatching { RemoteStreamCoordinator.stop() }
+        worker.shutdownNow()
+        if (recreateWorker) worker = Executors.newSingleThreadExecutor()
+        previous?.cancel()
+    }
+
+    @Synchronized private fun isCurrent(webSocket: WebSocket, generation: Long): Boolean =
+        !stopped && connectionGeneration == generation && socket === webSocket
 
     @Synchronized private fun connect() {
         if (stopped || socket != null) return
@@ -302,9 +313,11 @@ class XiaoliConnectionService : Service() {
             .header("Device-Id", config.deviceId)
             .header("Authorization", "Bearer ${config.token}")
             .build()
+        connectionConfig = config
+        val generation = ++connectionGeneration
         socket = client.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                if (socket != null && socket !== webSocket) { webSocket.cancel(); return }
+            override fun onOpen(webSocket: WebSocket, response: Response): Unit = synchronized(this@XiaoliConnectionService) {
+                if (!isCurrent(webSocket, generation)) { webSocket.cancel(); return@synchronized }
                 socket = webSocket
                 sessionId = null
                 reconnectAttempts = 0
@@ -325,36 +338,39 @@ class XiaoliConnectionService : Service() {
                     .toString())
             }
 
-            override fun onMessage(webSocket: WebSocket, text: String) = handleMessage(webSocket, config, text)
-
-            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                RemoteTtsStreamPlayer.offer(bytes.toByteArray())
+            override fun onMessage(webSocket: WebSocket, text: String) = synchronized(this@XiaoliConnectionService) {
+                if (isCurrent(webSocket, generation)) handleMessage(webSocket, config, text, generation)
             }
 
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                if (socket !== webSocket) return
-                socket = null
-                XiaoliMcpNotifications.clear()
-                RemoteTtsStreamPlayer.reset()
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString): Unit = synchronized(this@XiaoliConnectionService) {
+                if (isCurrent(webSocket, generation)) RemoteTtsStreamPlayer.offer(bytes.toByteArray())
+            }
+
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = synchronized(this@XiaoliConnectionService) {
+                if (!isCurrent(webSocket, generation)) return@synchronized
+                resetConnection()
                 XiaoliConnectionState.disconnected(t.message ?: "连接失败")
                 reconnect()
             }
 
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                if (socket !== webSocket) return
-                socket = null
-                XiaoliMcpNotifications.clear()
-                RemoteTtsStreamPlayer.reset()
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = synchronized(this@XiaoliConnectionService) {
+                if (!isCurrent(webSocket, generation)) return@synchronized
+                resetConnection()
                 XiaoliConnectionState.disconnected(reason.ifBlank { "连接已关闭" })
                 reconnect()
             }
         })
     }
 
-    private fun handleMessage(webSocket: WebSocket, config: XiaoliConnectionConfig, text: String) {
+    private fun handleMessage(webSocket: WebSocket, config: XiaoliConnectionConfig, text: String, generation: Long) {
         val message = runCatching { JSONObject(text) }.getOrNull() ?: return
         if (message.optString("type") == "hello") {
-            sessionId = message.optString("session_id").ifBlank { null }
+            val session = message.optString("session_id").takeIf { it.isNotBlank() }
+            if (message.optInt("version", 1) != 1 || session == null) {
+                webSocket.close(1002, "李老师连接协议不兼容")
+                return
+            }
+            sessionId = session
             XiaoliConnectionState.connected()
             return
         }
@@ -377,11 +393,12 @@ class XiaoliConnectionService : Service() {
             }
             return
         }
-        if (message.optString("type") != "mcp") return
+        if (message.optString("type") != "mcp" || message.optString("session_id") != sessionId) return
         val payload = message.optJSONObject("payload") ?: return
         val method = payload.optString("method")
         val id = payload.opt("id") ?: return
         worker.execute {
+            if (!isCurrent(webSocket, generation) || Thread.currentThread().isInterrupted) return@execute
             val response = try {
                 val result = when (method) {
                     "initialize" -> JSONObject()
@@ -402,18 +419,19 @@ class XiaoliConnectionService : Service() {
                 JSONObject().put("jsonrpc", "2.0").put("id", id)
                     .put("error", JSONObject().put("code", code).put("message", error.message ?: "执行失败"))
             }
-            sendMcp(webSocket, response)
+            sendMcp(webSocket, response, generation)
         }
     }
 
-    private fun sendMcp(webSocket: WebSocket, payload: JSONObject) {
+    @Synchronized private fun sendMcp(webSocket: WebSocket, payload: JSONObject, generation: Long) {
+        if (!isCurrent(webSocket, generation)) return
         val envelope = JSONObject().put("type", "mcp").put("payload", payload)
         sessionId?.let { envelope.put("session_id", it) }
         webSocket.send(envelope.toString())
     }
 
     /** Sends a server-defined MCP notification while the device connection is active. */
-    fun publishMcpNotification(method: String, params: JSONObject): Boolean {
+    @Synchronized fun publishMcpNotification(method: String, params: JSONObject): Boolean {
         val webSocket = socket ?: return false
         val payload = JSONObject()
             .put("jsonrpc", "2.0")
@@ -433,10 +451,12 @@ class XiaoliConnectionService : Service() {
     }
 
     companion object {
+        private const val ACTION_RECONNECT = "com.homeworkbuddy.xiaoli.RECONNECT"
         private const val ACTION_STOP = "com.homeworkbuddy.xiaoli.STOP"
         private const val ACTION_CAMERA_CAPTURE_BEGIN = "com.homeworkbuddy.xiaoli.CAMERA_CAPTURE_BEGIN"
         private const val ACTION_CAMERA_CAPTURE_END = "com.homeworkbuddy.xiaoli.CAMERA_CAPTURE_END"
         fun connect(context: Context) = ContextCompat.startForegroundService(context, Intent(context, XiaoliConnectionService::class.java))
+        fun reconnect(context: Context) = ContextCompat.startForegroundService(context, Intent(context, XiaoliConnectionService::class.java).setAction(ACTION_RECONNECT))
         fun disconnect(context: Context) = context.startService(Intent(context, XiaoliConnectionService::class.java).setAction(ACTION_STOP))
 
         /** Adds/removes the camera foreground-service type while a remote capture runs. */

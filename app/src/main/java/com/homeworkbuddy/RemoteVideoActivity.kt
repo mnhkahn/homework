@@ -123,7 +123,7 @@ class RemoteVideoActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        title = "小李请求录制学习视频"
+        title = "李老师请求录制学习视频"
         maxSeconds = intent.getIntExtra(EXTRA_MAX_SECONDS, 15).coerceIn(1, 30)
         outputFile = savedInstanceState?.getString("output_path")?.let(::File)
         if (savedInstanceState != null) return
