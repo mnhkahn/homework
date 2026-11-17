@@ -3,48 +3,52 @@ package com.homeworkbuddy
 import java.net.URI
 import org.json.JSONObject
 
-data class XiaoliConnectionConfig(
+data class TeacherConnectionConfig(
     val deviceId: String,
     val deviceName: String,
     val websocketUrl: String,
     val token: String,
-    /** Optional explicit endpoint supplied by newer pairing servers. */
-    val snapshotUrl: String? = null,
 )
 
-
-/** mr-li pairing uses the existing device protocol, with server addresses supplied by the QR. */
+/** Only mr-li gateway v1 QR codes, credentials and handshakes are accepted. */
 internal object TeacherPairing {
+    const val SERVICE = "mr-li"
+    const val PROTOCOL = 1
     data class Request(val url: String, val code: String)
+
+    fun isGateway(value: JSONObject): Boolean =
+        value.optString("service") == SERVICE && value.optInt("protocol", -1) == PROTOCOL
 
     fun request(rawQr: String): Request {
         val qr = JSONObject(rawQr.trim())
+        require(isGateway(qr)) { "请扫描李老师新生成的配对二维码，旧版二维码已不再支持" }
         val url = qr.getString("pair_url").trim()
-        endpoint(url, setOf("http", "https"), "配对地址无效，请扫描李老师生成的二维码")
+        endpoint(url, setOf("http", "https"), "/tablet/v1/pair", "李老师配对地址无效")
         val code = qr.getString("code").trim()
         require(code.isNotEmpty()) { "二维码缺少配对码" }
         return Request(url, code)
     }
 
-    fun response(result: JSONObject, deviceId: String, deviceName: String): XiaoliConnectionConfig {
-        val device = result.optJSONObject("device")
-        val websocket = result.getJSONObject("websocket")
-        val url = websocket.getString("url").trim()
-        endpoint(url, setOf("ws", "wss"), "服务端未返回有效的连接地址")
-        val token = websocket.getString("token").trim()
-        require(token.isNotEmpty()) { "服务端未返回设备凭证，请重新扫码" }
-        val snapshot = result.optString("vision_snapshot_url").ifBlank { result.optString("snapshot_url") }
-            .takeIf { it.isNotBlank() }
-        snapshot?.let { endpoint(it, setOf("http", "https"), "服务端返回的照片上传地址无效") }
-        return XiaoliConnectionConfig(
-            result.optString("device_id").ifBlank { device?.optString("id").orEmpty() }.ifBlank { deviceId },
-            device?.optString("name").orEmpty().ifBlank { deviceName },
-            url, token, snapshot,
-        )
+    fun response(result: JSONObject): TeacherConnectionConfig {
+        require(isGateway(result)) { "此服务端不是支持的李老师网关" }
+        val device = result.getJSONObject("device")
+        val connection = result.getJSONObject("connection")
+        val url = connection.getString("url").trim()
+        endpoint(url, setOf("ws", "wss"), "/tablet/v1/ws", "李老师连接地址无效")
+        val id = device.getString("id").trim()
+        val name = device.getString("name").trim()
+        val token = connection.getString("token").trim()
+        require(id.isNotEmpty() && name.isNotEmpty() && token.isNotEmpty()) { "服务端未返回完整的设备凭证，请重新扫码" }
+        return TeacherConnectionConfig(id, name, url, token)
     }
 
-    private fun endpoint(value: String, schemes: Set<String>, message: String) {
+    fun isConnectionUrl(url: String): Boolean = runCatching {
+        endpoint(url, setOf("ws", "wss"), "/tablet/v1/ws", "李老师连接地址无效")
+    }.isSuccess
+
+    private fun endpoint(value: String, schemes: Set<String>, path: String, message: String) {
         val uri = runCatching { URI(value) }.getOrNull()
-        require(uri != null && uri.scheme?.lowercase() in schemes && !uri.host.isNullOrBlank() && uri.userInfo == null && uri.fragment == null) { message }
+        require(uri != null && uri.scheme?.lowercase() in schemes && !uri.host.isNullOrBlank() &&
+            uri.userInfo == null && uri.fragment == null && uri.query == null && uri.path == path) { message }
     }
 }

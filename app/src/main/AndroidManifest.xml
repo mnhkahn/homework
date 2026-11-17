@@ -53,6 +53,7 @@
         </intent>
     </queries>
     <application
+        android:name=".TeacherApplication"
         android:allowBackup="true"
         android:usesCleartextTraffic="true"
         android:icon="@drawable/ic_launcher_homework"
@@ -114,15 +115,10 @@
             android:exported="false"
             android:screenOrientation="unspecified" />
         <activity
-            android:name=".XiaoliSettingsActivity"
+            android:name=".TeacherSettingsActivity"
             android:exported="false"
             android:screenOrientation="unspecified" />
-        <activity
-            android:name=".RemoteVideoActivity"
-            android:configChanges="orientation|screenSize"
-            android:exported="false"
-            android:screenOrientation="unspecified" />
-        <activity
+<activity
             android:name=".StudyBlockActivity"
             android:exported="false"
             android:launchMode="singleTask"
@@ -138,7 +134,7 @@
             <meta-data android:name="android.accessibilityservice" android:resource="@xml/screen_capture_service" />
         </service>
         <service
-            android:name=".XiaoliConnectionService"
+            android:name=".TeacherConnectionService"
             android:exported="false"
             android:foregroundServiceType="remoteMessaging|camera" />
         <service

@@ -62,7 +62,7 @@ object RemotePhotoCoordinator {
             screenLock = power.newWakeLock(PowerManager.FULL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP, "homework:remote_photo_screen")
             screenLock.acquire(30_000L)
         }
-        XiaoliConnectionService.beginCameraCapture(appContext)
+        TeacherConnectionService.beginCameraCapture(appContext)
         try {
             val result = CompletableDeferred<JSONObject>()
             synchronized(this) {
@@ -88,7 +88,7 @@ object RemotePhotoCoordinator {
                 }
             }
         } finally {
-            XiaoliConnectionService.endCameraCapture(appContext)
+            TeacherConnectionService.endCameraCapture(appContext)
             screenLock?.let { runCatching { if (it.isHeld) it.release() } }
             runCatching { if (cpuLock.isHeld) cpuLock.release() }
             if (wokeScreen) {

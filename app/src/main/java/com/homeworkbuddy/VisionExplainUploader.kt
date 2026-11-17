@@ -11,7 +11,7 @@ import java.util.UUID
 /** Sends a paired tablet's photo to the server-side vision model for MCP calls. */
 object VisionExplainUploader {
     fun explain(context: Context, photo: JSONObject, question: String, screenshot: JSONObject? = null, screenshotError: String? = null): String {
-        val config = XiaoliDeviceStore.config(context)
+        val config = TeacherDeviceStore.config(context)
             ?: throw McpException(-32010, "设备尚未配对")
         val jpeg = photo.optString("image_base64").takeIf { it.isNotBlank() }
             ?.let { Base64.decode(it, Base64.NO_WRAP) }
@@ -86,6 +86,6 @@ object VisionExplainUploader {
             else -> throw IllegalArgumentException("WebSocket 地址无效")
         }
         require(!websocket.host.isNullOrBlank()) { "WebSocket 地址无效" }
-        return URI(scheme, websocket.userInfo, websocket.host, websocket.port, "/mcp/vision/explain", null, null).toString()
+        return URI(scheme, websocket.userInfo, websocket.host, websocket.port, "/tablet/v1/photo-check", null, null).toString()
     }
 }

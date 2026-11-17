@@ -11,7 +11,7 @@ import org.json.JSONObject
 import java.time.Instant
 
 /**
- * MCP tool registry served over the Xiaoli websocket. Each tool is one
+ * MCP tool registry served over the Teacher websocket. Each tool is one
  * registration; definitions() and call() both walk this list, so adding a
  * tool is a single entry instead of touching two places.
  */
@@ -28,9 +28,9 @@ object McpTools {
     private val tools = listOf(
         ToolRegistration("self.device.get_status", "查询平板与李老师连接状态", emptySchema()) { context, _ ->
             JSONObject()
-                .put("device_id", XiaoliDeviceStore.config(context)?.deviceId ?: XiaoliDeviceStore.defaultDeviceId(context))
-                .put("connection", XiaoliConnectionState.status)
-                .put("last_connected_at", XiaoliConnectionState.lastConnectedAt?.let { Instant.ofEpochMilli(it).toString() })
+                .put("device_id", TeacherDeviceStore.config(context)?.deviceId ?: TeacherDeviceStore.defaultDeviceId(context))
+                .put("connection", TeacherConnectionState.status)
+                .put("last_connected_at", TeacherConnectionState.lastConnectedAt?.let { Instant.ofEpochMilli(it).toString() })
                 .put("battery_percent", context.getSystemService(BatteryManager::class.java).getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY))
                 .put("kiosk_mode", KioskPolicy(context).mode().name.lowercase())
         },
@@ -96,14 +96,6 @@ object McpTools {
         val arguments = params.optJSONObject("arguments") ?: JSONObject()
         val tool = tools.firstOrNull { it.name == name } ?: throw McpException(-32601, "未注册工具：$name")
         val result = tool.handler(context, arguments)
-        // The gateway preview reads image fields from the tool result.  Do
-        // not hide a JPEG inside MCP's human-readable text content.
-        if (result.has("image_base64")) {
-            return JSONObject()
-                .put("content", JSONArray().put(JSONObject().put("type", "text").put("text", "已拍摄一张照片")))
-                .put("mime_type", result.optString("mime_type", "image/jpeg"))
-                .put("image_base64", result.getString("image_base64"))
-        }
         if (result.has("raw_response")) {
             return JSONObject().put("content", JSONArray().put(JSONObject()
                 .put("type", "text").put("text", result.getString("raw_response"))))
@@ -119,14 +111,13 @@ object McpTools {
             .put("width", result.optInt("width", 0))
             .put("height", result.optInt("height", 0))
             .put("resolution", result.optString("resolution"))
-            .put("stream_event_id", result.optString("stream_event_id"))
     }
 
     private fun notify(context: Context, title: String, body: String) {
         RemoteNoticeStore(context).save(title, body)
         val manager = context.getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel("xiaoli_requests", "李老师通知", NotificationManager.IMPORTANCE_DEFAULT))
-        manager.notify((System.currentTimeMillis() % Int.MAX_VALUE).toInt(), NotificationCompat.Builder(context, "xiaoli_requests")
+        manager.createNotificationChannel(NotificationChannel("teacher_requests", "李老师通知", NotificationManager.IMPORTANCE_DEFAULT))
+        manager.notify((System.currentTimeMillis() % Int.MAX_VALUE).toInt(), NotificationCompat.Builder(context, "teacher_requests")
             .setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle(title).setContentText(body).setAutoCancel(true).build())
     }
 }

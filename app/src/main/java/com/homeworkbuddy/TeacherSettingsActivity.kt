@@ -45,10 +45,10 @@ import kotlinx.coroutines.withContext
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
 
-class XiaoliSettingsActivity : ComponentActivity() {
+class TeacherSettingsActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { MaterialTheme { XiaoliSettingsScreen(onBack = ::finish) } }
+        setContent { MaterialTheme { TeacherSettingsScreen(onBack = ::finish) } }
     }
 
     override fun onResume() {
@@ -59,17 +59,17 @@ class XiaoliSettingsActivity : ComponentActivity() {
 }
 
 @Composable
-private fun XiaoliSettingsScreen(onBack: () -> Unit) {
+private fun TeacherSettingsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var activeConfig by remember { mutableStateOf(XiaoliDeviceStore.config(context)) }
-    var connection by remember { mutableStateOf(XiaoliConnectionState.snapshot()) }
+    var activeConfig by remember { mutableStateOf(TeacherDeviceStore.config(context)) }
+    var connection by remember { mutableStateOf(TeacherConnectionState.snapshot()) }
     DisposableEffect(Unit) {
         val handler = Handler(Looper.getMainLooper())
-        val listener: (XiaoliConnectionSnapshot) -> Unit = { snapshot -> handler.post { connection = snapshot } }
-        XiaoliConnectionState.addChangeListener(listener)
+        val listener: (TeacherConnectionSnapshot) -> Unit = { snapshot -> handler.post { connection = snapshot } }
+        TeacherConnectionState.addChangeListener(listener)
         onDispose {
-            XiaoliConnectionState.removeChangeListener(listener)
+            TeacherConnectionState.removeChangeListener(listener)
             handler.removeCallbacksAndMessages(null)
         }
     }
@@ -97,7 +97,7 @@ private fun XiaoliSettingsScreen(onBack: () -> Unit) {
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("连接状态：${connection.status}")
-                Text("设备 ID：${activeConfig?.deviceId ?: XiaoliDeviceStore.defaultDeviceId(context)}")
+                Text("设备 ID：${activeConfig?.deviceId ?: TeacherDeviceStore.defaultDeviceId(context)}")
                 activeConfig?.let { Text("连接地址：${it.websocketUrl}") }
                 connection.lastError?.let { Text("错误：$it", color = MaterialTheme.colorScheme.error) }
             }
@@ -123,9 +123,9 @@ private fun XiaoliSettingsScreen(onBack: () -> Unit) {
                 scope.launch {
                     try {
                         val config = withContext(Dispatchers.IO) {
-                            XiaoliPairingClient.pair(context, qrContent, name.trim()).also {
-                                XiaoliDeviceStore.save(context, it)
-                                XiaoliConnectionService.reconnect(context.applicationContext)
+                            TeacherPairingClient.pair(context, qrContent, name.trim()).also {
+                                TeacherDeviceStore.save(context, it)
+                                TeacherConnectionService.reconnect(context.applicationContext)
                             }
                         }
                         activeConfig = config
@@ -140,7 +140,7 @@ private fun XiaoliSettingsScreen(onBack: () -> Unit) {
                     }
                 }
             }) { Text(if (pairing) "正在配对…" else "保存并连接") }
-            OutlinedButton(enabled = !pairing && activeConfig != null, onClick = { XiaoliConnectionService.disconnect(context); XiaoliDeviceStore.clear(context); activeConfig = null; message = "已解除本机绑定" }) { Text("解除绑定") }
+            OutlinedButton(enabled = !pairing && activeConfig != null, onClick = { TeacherConnectionService.disconnect(context); TeacherDeviceStore.clear(context); activeConfig = null; message = "已解除本机绑定" }) { Text("解除绑定") }
         }
         OutlinedButton(enabled = !pairing && android.os.Build.VERSION.SDK_INT >= 30, onClick = {
             val policy = KioskPolicy(context)

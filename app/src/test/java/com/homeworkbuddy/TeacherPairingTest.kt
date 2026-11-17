@@ -5,42 +5,44 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class TeacherPairingTest {
-    @Test fun acceptsLanQrWithoutAnyPresetDeviceOrServer() {
-        val qr = TeacherPairing.request("""{"pair_url":"http://192.168.1.12:8787/xiaozhi/pair","code":"one-time-code"}""")
-        assertEquals("http://192.168.1.12:8787/xiaozhi/pair", qr.url)
+    @Test fun acceptsOnlyMrLiQrCodesOnTheNewApi() {
+        val qr = TeacherPairing.request(qr("http://192.168.1.12:8787/tablet/v1/pair").toString())
+        assertEquals("http://192.168.1.12:8787/tablet/v1/pair", qr.url)
         assertEquals("one-time-code", qr.code)
-        assertEquals("https://teacher.example/xiaozhi/pair", TeacherPairing.request("""{"pair_url":"https://teacher.example/xiaozhi/pair","code":"new-code"}""").url)
+        assertEquals("https://teacher.example/tablet/v1/pair", TeacherPairing.request(qr("https://teacher.example/tablet/v1/pair").toString()).url)
     }
 
-    @Test fun readsMrLiResponseAndReplacesOldConnectionIncludingItsToken() {
-        val old = TeacherPairing.response(response("wss://old.example/xiaozhi/v1/", "old-token"), "tablet-local", "学习平板")
-        val current = TeacherPairing.response(response("ws://192.168.1.12:8787/xiaozhi/v1/", "new-token")
-            .put("device", JSONObject().put("id", "paired-tablet").put("name", "书桌平板")), "tablet-local", "学习平板")
+    @Test fun rejectsOldServerQrEvenWhenItHasAUsableUrlAndCode() {
+        val legacy = JSONObject().put("pair_url", "https://xiaoli-server.example/xiaozhi/pair").put("code", "valid-looking-code")
+        assertThrows(IllegalArgumentException::class.java) { TeacherPairing.request(legacy.toString()) }
+        assertThrows(IllegalArgumentException::class.java) { TeacherPairing.request(legacy.put("service", "mr-li").put("protocol", 1).toString()) }
+        assertThrows(IllegalArgumentException::class.java) { TeacherPairing.request(qr("https://teacher.example/tablet/v1/pair").put("protocol", 2).toString()) }
+    }
+
+    @Test fun requiresNewServiceIdentityAndCredentialShape() {
+        val current = TeacherPairing.response(response())
         assertEquals("paired-tablet", current.deviceId)
         assertEquals("书桌平板", current.deviceName)
-        assertEquals("ws://192.168.1.12:8787/xiaozhi/v1/", current.websocketUrl)
+        assertEquals("ws://192.168.1.12:8787/tablet/v1/ws", current.websocketUrl)
         assertEquals("new-token", current.token)
-        assertNotEquals(old.token, current.token)
-        assertNull(current.snapshotUrl)
+        val legacy = JSONObject().put("device", JSONObject().put("id", "old-device"))
+            .put("websocket", JSONObject().put("url", "wss://xiaoli-server.example/xiaozhi/v1/").put("token", "old-token"))
+        assertThrows(IllegalArgumentException::class.java) { TeacherPairing.response(legacy) }
+        assertThrows(IllegalArgumentException::class.java) { TeacherPairing.response(response().put("service", "xiaoli")) }
     }
 
-    @Test fun preservesLegacyOptionalUploadFieldsAndNewCredentialsOnSameServer() {
-        val payload = response("wss://teacher.example/xiaozhi/v1/", "replacement-token")
-            .put("device_id", "server-device")
-            .put("vision_snapshot_url", "https://teacher.example/mcp/vision/snapshot")
-        val config = TeacherPairing.response(payload, "local-device", "学习平板")
-        assertEquals("server-device", config.deviceId)
-        assertEquals("replacement-token", config.token)
-        assertEquals("https://teacher.example/mcp/vision/snapshot", config.snapshotUrl)
+    @Test fun onlyNewGatewayHelloCanLightUpTheCloud() {
+        assertFalse(TeacherPairing.isGateway(JSONObject().put("type", "hello").put("version", 1).put("session_id", "old-session")))
+        assertTrue(TeacherPairing.isGateway(JSONObject().put("type", "hello").put("service", "mr-li").put("protocol", 1).put("session_id", "new-session")))
+        assertFalse(TeacherPairing.isConnectionUrl("wss://xiaoli-server.example/xiaozhi/v1/"))
     }
 
-    @Test fun rejectsMissingCredentialsOrInvalidPairingAddresses() {
-        for (url in listOf("file:///tmp/pair", "http:///xiaozhi/pair", "https://user:secret@teacher.example/pair")) {
-            assertThrows(IllegalArgumentException::class.java) { TeacherPairing.request(JSONObject().put("pair_url", url).put("code", "code").toString()) }
+    @Test fun rejectsMissingCredentialsAndInvalidAddresses() {
+        for (url in listOf("file:///tmp/pair", "http:///tablet/v1/pair", "https://user:secret@teacher.example/tablet/v1/pair")) {
+            assertThrows(IllegalArgumentException::class.java) { TeacherPairing.request(qr(url).toString()) }
         }
-        assertThrows(IllegalArgumentException::class.java) { TeacherPairing.request("""{"pair_url":"https://teacher.example/pair","code":" "}""") }
-        assertThrows(IllegalArgumentException::class.java) { TeacherPairing.response(response("https://teacher.example", "token"), "id", "name") }
-        assertThrows(IllegalArgumentException::class.java) { TeacherPairing.response(response("wss://teacher.example/ws", " "), "id", "name") }
+        assertThrows(IllegalArgumentException::class.java) { TeacherPairing.request(qr("https://teacher.example/tablet/v1/pair").put("code", " ").toString()) }
+        assertThrows(IllegalArgumentException::class.java) { TeacherPairing.response(response().put("connection", JSONObject().put("url", "wss://teacher.example/tablet/v1/ws").put("token", " "))) }
     }
 
     @Test fun declaresOnlyToolsMigratedToTeacherGateway() {
@@ -49,5 +51,8 @@ class TeacherPairingTest {
         assertEquals(setOf("self.device.get_status", "self.homework.get_status", "self.homework.get_weekly_report", "self.notify.send", "self.camera.take_photo", "self.camera.snapshot", "self.kiosk.pause_15_minutes"), names)
     }
 
-    private fun response(url: String, token: String) = JSONObject().put("websocket", JSONObject().put("url", url).put("token", token))
+    private fun qr(url: String) = JSONObject().put("service", "mr-li").put("protocol", 1).put("pair_url", url).put("code", "one-time-code")
+    private fun response() = JSONObject().put("service", "mr-li").put("protocol", 1)
+        .put("device", JSONObject().put("id", "paired-tablet").put("name", "书桌平板"))
+        .put("connection", JSONObject().put("url", "ws://192.168.1.12:8787/tablet/v1/ws").put("token", "new-token"))
 }

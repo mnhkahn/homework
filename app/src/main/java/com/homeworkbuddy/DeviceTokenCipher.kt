@@ -9,7 +9,7 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-/** Encrypts the device credential with an Android Keystore key before it is persisted. */
+/** Local Trello/TOTP encryption. Keep its historical alias stable; gateway tokens use TeacherTokenCipher. */
 object DeviceTokenCipher {
     private const val KEYSTORE = "AndroidKeyStore"
     private const val ALIAS = "homeworkbuddy_xiaoli_device_token"

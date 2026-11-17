@@ -319,7 +319,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         if (HomeworkApi.saveAuthorizationResult(this, intent.data)) trelloAuthorizationRevision++
-        ensureXiaoliConnection()
+        ensureTeacherConnection()
     }
 
     override fun onStart() {
@@ -327,7 +327,7 @@ class MainActivity : ComponentActivity() {
         // A foreground Activity is the most reliable and Android-compliant
         // opportunity to revive a foreground service that HyperOS may have
         // reclaimed while the tablet was idle.
-        ensureXiaoliConnection()
+        ensureTeacherConnection()
         ContextCompat.registerReceiver(
             this,
             modeChangeReceiver,
@@ -342,10 +342,10 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    private fun ensureXiaoliConnection() {
+    private fun ensureTeacherConnection() {
         // Clearing the binding removes the config, so an explicit user
         // disconnect is never undone by an Activity lifecycle callback.
-        if (XiaoliDeviceStore.config(this) != null) XiaoliConnectionService.connect(this)
+        if (TeacherDeviceStore.config(this) != null) TeacherConnectionService.connect(this)
     }
 
     override fun onStop() {
@@ -472,11 +472,10 @@ private fun HomeworkBuddyApp() {
     var studyActivity by remember { mutableStateOf(studyActivityStore.today()) }
     var systemNonAllowedApps by remember { mutableStateOf(kioskPolicy.todayNonAllowedAppUsage()) }
     var showBlockedApps by remember { mutableStateOf(false) }
-    var xiaoliConnection by remember { mutableStateOf(XiaoliConnectionState.snapshot()) }
+    var teacherConnection by remember { mutableStateOf(TeacherConnectionState.snapshot()) }
     // Keep the header useful immediately; a network response only replaces this
     // default when it contains a non-blank slogan.
     var slogan by remember { mutableStateOf(DEFAULT_HOME_SLOGAN) }
-    var xiaoliNotification by remember(context) { mutableStateOf(XiaoliDeviceStore.currentNotification(context)) }
 
     LaunchedEffect(captureStatusStore) {
         captureStatusStore.clearInterruptedCapture()
@@ -485,21 +484,6 @@ private fun HomeworkBuddyApp() {
 
     LaunchedEffect(Unit) {
         runCatching { SloganApi.fetch() }.getOrNull()?.let { slogan = it }
-    }
-
-    DisposableEffect(context) {
-        val refresh = { xiaoliNotification = XiaoliDeviceStore.currentNotification(context) }
-        val removeListener = XiaoliDeviceStore.observeNotification(context, refresh)
-        refresh()
-        onDispose { removeListener() }
-    }
-
-    LaunchedEffect(xiaoliNotification?.expiresAt) {
-        val expiresAt = xiaoliNotification?.expiresAt ?: return@LaunchedEffect
-        while (Instant.now().isBefore(expiresAt)) {
-            delay((expiresAt.toEpochMilli() - System.currentTimeMillis()).coerceAtLeast(1L))
-        }
-        xiaoliNotification = XiaoliDeviceStore.currentNotification(context)
     }
 
     DisposableEffect(remoteNoticeStore) {
@@ -526,11 +510,11 @@ private fun HomeworkBuddyApp() {
 
     DisposableEffect(Unit) {
         val mainHandler = Handler(Looper.getMainLooper())
-        val listener: (XiaoliConnectionSnapshot) -> Unit = { snapshot ->
-            mainHandler.post { xiaoliConnection = snapshot }
+        val listener: (TeacherConnectionSnapshot) -> Unit = { snapshot ->
+            mainHandler.post { teacherConnection = snapshot }
         }
-        XiaoliConnectionState.addChangeListener(listener)
-        onDispose { XiaoliConnectionState.removeChangeListener(listener) }
+        TeacherConnectionState.addChangeListener(listener)
+        onDispose { TeacherConnectionState.removeChangeListener(listener) }
     }
 
     LaunchedEffect(captureStatus?.atMillis, captureStatus?.active) {
@@ -892,7 +876,6 @@ private fun HomeworkBuddyApp() {
             when (event) {
                 Lifecycle.Event.ON_START -> {
                     foreground = true
-                    xiaoliNotification = XiaoliDeviceStore.currentNotification(context)
                     captureStatus = captureStatusStore.current()
                     systemNonAllowedApps = kioskPolicy.todayNonAllowedAppUsage()
                     refreshRequest++
@@ -1114,7 +1097,7 @@ private fun HomeworkBuddyApp() {
             }
         }
         HomeworkHome(
-            slogan = xiaoliNotification?.content ?: slogan,
+            slogan = slogan,
             tasks = tasks,
             detailTask = detailTask,
             submissionType = selected?.type,
@@ -1139,7 +1122,7 @@ private fun HomeworkBuddyApp() {
             calendarLoading = calendarLoading,
             captureStatus = captureStatus,
             studyActivity = studyActivity,
-            xiaoliConnection = xiaoliConnection,
+            teacherConnection = teacherConnection,
             kioskMode = kioskMode,
             remoteNotice = remoteNotice,
             syncError = if (connected) connectionError else null,
@@ -1484,7 +1467,7 @@ private fun CelebrationDialog(taskTitle: String, allTasksComplete: Boolean, comp
 }
 
 @Composable
-private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, detailTask: HomeworkTask?, submissionType: HomeworkTaskType?, onCloseDetail: () -> Unit, selectedDate: LocalDate, onSelectDate: (LocalDate) -> Unit, running: Boolean, taskElapsedSeconds: Int, activeElapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, calendarLoading: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, xiaoliConnection: XiaoliConnectionSnapshot, kioskMode: KioskMode, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, vocabularyPhotoRequired: Boolean, onOpenVocabulary: (HomeworkTask, List<String>) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onResubmit: (String) -> Unit, onChoosePhoto: () -> Unit, onChooseAudio: () -> Unit, onChooseText: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photos: List<Uri>, initialPhotoPreviewIndex: Int, audioAttached: Boolean, showSubmissionChoice: Boolean, showTextSubmission: Boolean, submissionText: String, onSubmissionTextChange: (String) -> Unit, onSubmitText: () -> Unit, onAddPhoto: () -> Unit, onRetakePhoto: (Int) -> Unit, onRemovePhoto: (Int) -> Unit, onDismissSubmissionChoice: () -> Unit, onRetake: () -> Unit, onDismissTextSubmission: () -> Unit) {
+private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, detailTask: HomeworkTask?, submissionType: HomeworkTaskType?, onCloseDetail: () -> Unit, selectedDate: LocalDate, onSelectDate: (LocalDate) -> Unit, running: Boolean, taskElapsedSeconds: Int, activeElapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, calendarLoading: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, teacherConnection: TeacherConnectionSnapshot, kioskMode: KioskMode, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, vocabularyPhotoRequired: Boolean, onOpenVocabulary: (HomeworkTask, List<String>) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onResubmit: (String) -> Unit, onChoosePhoto: () -> Unit, onChooseAudio: () -> Unit, onChooseText: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photos: List<Uri>, initialPhotoPreviewIndex: Int, audioAttached: Boolean, showSubmissionChoice: Boolean, showTextSubmission: Boolean, submissionText: String, onSubmissionTextChange: (String) -> Unit, onSubmitText: () -> Unit, onAddPhoto: () -> Unit, onRetakePhoto: (Int) -> Unit, onRemovePhoto: (Int) -> Unit, onDismissSubmissionChoice: () -> Unit, onRetake: () -> Unit, onDismissTextSubmission: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val reviewApi = remember(context) { HomeworkApi(context) }
     var reviewedTaskIds by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -1516,7 +1499,7 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, detailTask: 
             .padding(24.dp),
     ) {
         Column(Modifier.fillMaxSize()) {
-            Header(slogan, refreshing, captureStatus, studyActivity, systemNonAllowedApps, xiaoliConnection, kioskMode, onRefresh, onParent, onStudyApps, onBlockedApps)
+            Header(slogan, refreshing, captureStatus, studyActivity, systemNonAllowedApps, teacherConnection, kioskMode, onRefresh, onParent, onStudyApps, onBlockedApps)
             reviewSyncError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             if (remoteNotice != null) {
                 Spacer(Modifier.height(14.dp))
@@ -1866,13 +1849,13 @@ private fun LocalRecordingButton(localUri: String) {
 }
 
 @OptIn(ExperimentalFoundationApi::class)
-@Composable private fun Header(slogan: String, refreshing: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, xiaoliConnection: XiaoliConnectionSnapshot, kioskMode: KioskMode, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit) {
+@Composable private fun Header(slogan: String, refreshing: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, teacherConnection: TeacherConnectionSnapshot, kioskMode: KioskMode, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f).combinedClickable(onClick = {}, onLongClick = onParent)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("今天的作业", fontSize = 30.sp, fontWeight = FontWeight.Medium)
                 Spacer(Modifier.width(8.dp))
-                XiaoliConnectionIcon(xiaoliConnection)
+                TeacherConnectionIcon(teacherConnection)
             }
             Text(slogan, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
@@ -1899,7 +1882,7 @@ private fun LocalRecordingButton(localUri: String) {
     }
 }
 
-@Composable private fun XiaoliConnectionIcon(connection: XiaoliConnectionSnapshot) {
+@Composable private fun TeacherConnectionIcon(connection: TeacherConnectionSnapshot) {
     val (icon, tint, description) = when (connection.status) {
         "已连接" -> Triple(Icons.Outlined.CloudDone, Color(0xFF24733A), "已连接李老师服务")
         "正在连接" -> Triple(Icons.Outlined.CloudSync, Color(0xFF765B11), "正在连接李老师服务")

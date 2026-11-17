@@ -191,44 +191,37 @@ PDF 是附件，不是作业类型。所有作业类型均可直接上传 PDF �
 3. 每个发布构建都会等待蒲公英完成发布；成功后 Actions 日志和飞书通知会显示固定的蒲公英下载页链接。安装方式为公开安装、无有效期。
 4. 平板上首次从 debug 签名切换到 release 签名时需卸载重装一次；之后同签名版本即可自动覆盖升级。
 
-## 李老师（mr-li）连接
+## 李老师（mr-li）连接：不兼容升级
 
-平板今后与 `../mr-li` 的设备网关交互。界面入口为「家长设置 → 李老师连接」。在部署机的 mr-li 目录运行 `./scripts/run.sh tablet-pair` 生成一次性二维码，扫描后点「保存并连接」，即可签发并保存独立设备 token；不需要登录旧小李管理台、MD5 验证或手工填写设备白名单。设备 token 继续使用 Android Keystore 的 AES-GCM 密钥加密保存。
+本版只连接 `../mr-li` 的平板网关，不再兼容旧小李服务端。旧连接服务、设置 Activity、音频/TTS、专用通知推送及录像/连续画面实现均已删除。升级首次启动会清除旧绑定和旧通知渠道；不会迁移或解密旧凭证。原先的作业、家长验证和学习模式设置保留。旧通用加密密钥还保护 Trello 与家长验证码，因此不删除；新网关使用独立的新密钥，不读取旧密钥或旧绑定。必须安装新版并重新扫码配对，未配对时云朵保持灰色。
 
-二维码直接提供服务器地址，APP 不写死 Mac mini 的 IP 或任何云端域名。例如当前局域网部署：
+新入口为「家长设置 → 李老师连接」。部署机运行 `./scripts/run.sh tablet-pair`，扫描新生成的五分钟有效二维码，再点「保存并连接」。二维码格式：
 
 ```json
-{"pair_url":"http://192.168.1.12:8787/xiaozhi/pair","code":"short-lived-one-time-code"}
+{"service":"mr-li","protocol":1,"pair_url":"http://192.168.1.12:8787/tablet/v1/pair","code":"short-lived-one-time-code"}
 ```
 
-应用向 `pair_url` 提交 `code`、`device_id`、`device_name`、`device_kind=android`。网关返回：
+没有 MD5 验证、设备白名单或旧管理台登录。APP 不写死服务器 IP，地址由二维码提供；局域网连接需让平板与部署机位于同一网络。旧版二维码即使尚未过期也不能使用。
+
+APP 提交 `code`、`device_id`、`device_name` 和 `device_kind=android`，仅接受新响应结构：
 
 ```json
 {
-  "device": {"id":"homework-tablet-abcd1234", "name":"学习平板"},
-  "websocket": {"url":"ws://192.168.1.12:8787/xiaozhi/v1/", "token":"device-token", "version":1}
+  "service":"mr-li", "protocol":1,
+  "device":{"id":"homework-tablet-abcd1234","name":"学习平板"},
+  "connection":{"url":"ws://192.168.1.12:8787/tablet/v1/ws","token":"device-token"}
 }
 ```
 
-重新扫码会替换保存的地址和 token，并立即取消旧连接、废弃旧连接回调及待执行指令，连接新网关。即使在同一服务器上重新配对、只更换 token，也会重新握手，不需要先「解除绑定」。配对失败保留原有本机配置；服务端已消费配对码或轮换凭证的情况，需要生成新二维码再试。界面显示已保存的连接地址，方便确认当前连接目标。局域网连接时，平板与部署机需在同一网络。以后切换域名或部署机时，再扫新的配对二维码即可。
+凭证保存在全新的 `teacher_gateway_v1` 偏好设置中，并使用新的 Android Keystore 密钥加密。没有旧字段、旧地址或旧密钥的兼容回退。重新配对会替换 token 和地址、立即取消旧连接并废弃其回调和待执行指令。设置页实时显示连接状态和当前地址。
 
-连接使用现有 WebSocket `hello` 与 `mcp` envelope，内部为 JSON-RPC 2.0。握手携带 `Device-Id` 和 Bearer 设备 token；不需要聊天会话、SSE 或 `/mobile/v1` 接口。保留内部 `Xiaoli*` 标识、偏好设置名、Keystore 别名和协议字段，使现有设备凭证可继续读取。
+新 WebSocket 使用 `Device-Id` 与 Bearer token；双方 `hello` 均需包含 `service=mr-li` 和 `protocol=1`。只有新网关完成握手才显示已连接。工具调用仍为带连接 `session_id` 的 MCP JSON-RPC，不需要聊天会话或 SSE。
 
-目前仅声明 mr-li 已迁移的七个 MCP 工具：
+当前支持七项工具：`self.device.get_status`、`self.homework.get_status`、`self.homework.get_weekly_report`、`self.notify.send`、`self.camera.take_photo`、`self.camera.snapshot`、`self.kiosk.pause_15_minutes`。临时开放继续要求已启用的家长动态验证码，服务端不能绕过。
 
-- `self.device.get_status`：电量、学习模式和连接状态。
-- `self.homework.get_status`：今天作业和当前学习状态。
-- `self.homework.get_weekly_report`：本周作业完成周报。
-- `self.notify.send`：在平板显示通知。
-- `self.camera.take_photo`：截取当前屏幕，再在应用内单次拍照，将两张图交给李老师分析。
-- `self.camera.snapshot`：拍照并上传原图。
-- `self.kiosk.pause_15_minutes`：临时开放 15 分钟；启用家长动态验证时仍需当前验证码。
+拍照和屏幕截图分别使用 `/tablet/v1/photo-check` 与 `/tablet/v1/snapshot`，不再调用旧视觉接口。检查请求的 multipart 字段为 `image`、可选 `screenshot`、`question` 和可选 `screenshot_error`；图片由 mr-li 保存并交给支持图片的 OpenCode 模型读取分析。拍照仍显示提示、播放提示音；截图失败仍可提交照片并说明原因。
 
-录像、连续画面和音频播放工具暂不对网关声明，待服务端相应功能迁移后再接入。已有本地相关代码保留。
-
-屏幕截图需要 Android 11 及以上。在「李老师连接 → 配置屏幕截图权限」进入系统无障碍设置，手动开启「作业小伙伴屏幕截图」。服务只在拍照检查请求时截图，不读取无障碍节点或监听页面事件。截图保留当时桌面、微信等前台画面，不切换应用；长边最多 1600 像素，JPEG 单张不超过 2 MB。熄屏、未授权、超时或系统拒绝时继续提交相机照片，并明确说明截图失败。系统安全保护的内容可能无法截取或被遮黑。拍照继续显示提示并播放提示音。
-
-照片检查使用 `/mcp/vision/explain`：`image` 为 `photo.jpg`，可选 `screenshot` 为 `screenshot.jpg`，文本字段为 `question` 和可选的 `screenshot_error`。mr-li 保存图片并把本机文件路径交给 OpenCode，由支持图片的模型读取分析；`self.camera.snapshot` 使用 `/mcp/vision/snapshot`。协议和上传字段沿用现有格式。
+屏幕截图需要 Android 11+。在「李老师连接 → 配置屏幕截图权限」手动启用「作业小伙伴屏幕截图」。仅处理拍照检查时的单次截图，不读取无障碍节点或监听页面事件；截图包括当前前台应用，系统保护内容可能遮黑。照片和截图各不超过 2 MB，截图长边最多 1600 像素。
 
 ## 本地头部状态
 

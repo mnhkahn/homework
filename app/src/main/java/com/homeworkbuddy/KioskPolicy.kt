@@ -855,8 +855,8 @@ class KioskSystemReceiver : BroadcastReceiver() {
         HomeworkReminderScheduler.rescheduleFromPrefs(context)
         // A bound device should be reachable again after a reboot or an APK
         // update, not only after somebody opens the homework screen.
-        if (XiaoliDeviceStore.config(context) != null) {
-            runCatching { XiaoliConnectionService.connect(context) }
+        if (TeacherDeviceStore.config(context) != null) {
+            runCatching { TeacherConnectionService.connect(context) }
         }
     }
 }

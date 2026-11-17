@@ -361,7 +361,7 @@ private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
                                 message = "无法打开无障碍设置：${it.message}"
                             }
                     }) { Text("配置屏幕截图权限") }
-                    Button(onClick = { activity.startActivity(Intent(activity, XiaoliSettingsActivity::class.java)) }, modifier = Modifier.padding(top = 10.dp)) { Text("配置李老师连接") }
+                    Button(onClick = { activity.startActivity(Intent(activity, TeacherSettingsActivity::class.java)) }, modifier = Modifier.padding(top = 10.dp)) { Text("配置李老师连接") }
                 }
             }
         }
