@@ -14,7 +14,8 @@ data class TeacherConnectionConfig(
 internal object TeacherPairing {
     const val SERVICE = "homework-gateway"
     const val PROTOCOL = 1
-    const val DEFAULT_CONNECTION_URL = "wss://mr-li-tablet-relay.vercel.app/tablet/v1/ws"
+    const val DEFAULT_CONNECTION_URL = "wss://homework.cyeam.com/tablet/v1/ws"
+    private const val PREVIOUS_CONNECTION_URL = "wss://mr-li-tablet-relay.vercel.app/tablet/v1/ws"
     data class Request(val url: String, val code: String)
 
     fun isGateway(value: JSONObject): Boolean =
@@ -49,7 +50,7 @@ internal object TeacherPairing {
 
     /** Unmarked 0.7.0 bindings are retained only for the known standalone endpoint. */
     fun canReuseStoredConnection(url: String, service: String?): Boolean =
-        isConnectionUrl(url) && (service == SERVICE || (service == null && url == DEFAULT_CONNECTION_URL))
+        isConnectionUrl(url) && (service == SERVICE || (service == null && url in setOf(DEFAULT_CONNECTION_URL, PREVIOUS_CONNECTION_URL)))
 
     private fun endpoint(value: String, schemes: Set<String>, path: String, message: String) {
         val uri = runCatching { URI(value) }.getOrNull()

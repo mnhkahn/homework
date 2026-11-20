@@ -51,6 +51,7 @@ class TeacherPairingTest {
         assertFalse(TeacherPairing.canReuseStoredConnection("wss://old.example/tablet/v1/ws", "mr-li"))
         assertFalse(TeacherPairing.canReuseStoredConnection("wss://old.example/tablet/v1/ws", null))
         assertTrue(TeacherPairing.canReuseStoredConnection(TeacherPairing.DEFAULT_CONNECTION_URL, null))
+        assertTrue(TeacherPairing.canReuseStoredConnection("wss://mr-li-tablet-relay.vercel.app/tablet/v1/ws", null))
         assertTrue(TeacherPairing.canReuseStoredConnection("wss://gateway.example/tablet/v1/ws", TeacherPairing.SERVICE))
         assertFalse(TeacherPairing.canReuseStoredConnection(TeacherPairing.DEFAULT_CONNECTION_URL, "mr-li"))
     }

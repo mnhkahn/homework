@@ -198,10 +198,10 @@ Homework 直接连接独立 `homework-gateway`，mr-li 不再负责设备连接�
 二维码格式：
 
 ```json
-{"service":"homework-gateway","protocol":1,"pair_url":"https://mr-li-tablet-relay.vercel.app/tablet/v1/pair","code":"short-lived-one-time-code"}
+{"service":"homework-gateway","protocol":1,"pair_url":"https://homework.cyeam.com/tablet/v1/pair","code":"short-lived-one-time-code"}
 ```
 
-APP 提交 `code`、`device_id`、`device_name` 和 `device_kind=android`。响应身份必须为 `homework-gateway`，连接地址使用 WSS；默认地址为 `wss://mr-li-tablet-relay.vercel.app/tablet/v1/ws`。设备凭证由网关签发并绑定生成二维码的账号，不能复用旧 mr-li token。重新配对会替换凭证和地址、取消旧连接并废弃其回调和待执行指令。
+APP 提交 `code`、`device_id`、`device_name` 和 `device_kind=android`。响应身份必须为 `homework-gateway`，连接地址使用 WSS；默认地址为 `wss://homework.cyeam.com/tablet/v1/ws`。设备凭证由网关签发并绑定生成二维码的账号，不能复用旧 mr-li token。重新配对会替换凭证和地址、取消旧连接并废弃其回调和待执行指令。
 
 0.7.0 支持新网关，但仍会读取升级前保存的本地连接，需要重新配对。后续修复在启动时停用旧网关绑定并提示重新扫码；未标记服务身份的 0.7.0 凭证仅在地址为上述独立网关时保留。已明确标记为独立网关的其它 WSS 部署也可保留。设备名称、设备 ID、作业、Trello 凭证及家长验证设置保留，不会把旧 token 发送给新服务器。
 
