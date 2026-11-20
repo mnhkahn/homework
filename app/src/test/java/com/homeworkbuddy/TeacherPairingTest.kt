@@ -6,8 +6,8 @@ import org.junit.Test
 
 class TeacherPairingTest {
     @Test fun acceptsOnlyStandaloneGatewayQrCodes() {
-        val qr = TeacherPairing.request(qr("http://192.168.1.12:8787/tablet/v1/pair").toString())
-        assertEquals("http://192.168.1.12:8787/tablet/v1/pair", qr.url)
+        val qr = TeacherPairing.request(qr("https://mr-li-tablet-relay.vercel.app/tablet/v1/pair").toString())
+        assertEquals("https://mr-li-tablet-relay.vercel.app/tablet/v1/pair", qr.url)
         assertEquals("one-time-code", qr.code)
         assertEquals("https://teacher.example/tablet/v1/pair", TeacherPairing.request(qr("https://teacher.example/tablet/v1/pair").toString()).url)
     }
@@ -23,7 +23,7 @@ class TeacherPairingTest {
         val current = TeacherPairing.response(response())
         assertEquals("paired-tablet", current.deviceId)
         assertEquals("书桌平板", current.deviceName)
-        assertEquals("ws://192.168.1.12:8787/tablet/v1/ws", current.websocketUrl)
+        assertEquals("wss://mr-li-tablet-relay.vercel.app/tablet/v1/ws", current.websocketUrl)
         assertEquals("new-token", current.token)
         val legacy = JSONObject().put("device", JSONObject().put("id", "old-device"))
             .put("websocket", JSONObject().put("url", "wss://xiaoli-server.example/xiaozhi/v1/").put("token", "old-token"))
@@ -46,6 +46,20 @@ class TeacherPairingTest {
         assertThrows(IllegalArgumentException::class.java) { TeacherPairing.response(response().put("connection", JSONObject().put("url", "wss://teacher.example/tablet/v1/ws").put("token", " "))) }
     }
 
+    @Test fun migrationRejectsRetiredBindingsAndPreservesStandaloneCredentials() {
+        assertFalse(TeacherPairing.canReuseStoredConnection("ws://192.168.1.12:8787/tablet/v1/ws", null))
+        assertFalse(TeacherPairing.canReuseStoredConnection("wss://old.example/tablet/v1/ws", "mr-li"))
+        assertFalse(TeacherPairing.canReuseStoredConnection("wss://old.example/tablet/v1/ws", null))
+        assertTrue(TeacherPairing.canReuseStoredConnection(TeacherPairing.DEFAULT_CONNECTION_URL, null))
+        assertTrue(TeacherPairing.canReuseStoredConnection("wss://gateway.example/tablet/v1/ws", TeacherPairing.SERVICE))
+        assertFalse(TeacherPairing.canReuseStoredConnection(TeacherPairing.DEFAULT_CONNECTION_URL, "mr-li"))
+    }
+
+    @Test fun pairingRequiresEncryptedStandaloneEndpoints() {
+        assertThrows(IllegalArgumentException::class.java) { TeacherPairing.request(qr("http://192.168.1.12:8787/tablet/v1/pair").toString()) }
+        assertThrows(IllegalArgumentException::class.java) { TeacherPairing.response(response().put("connection", JSONObject().put("url", "ws://192.168.1.12:8787/tablet/v1/ws").put("token", "old-token"))) }
+    }
+
     @Test fun declaresOnlyToolsMigratedToTeacherGateway() {
         val definitions = McpTools.definitions()
         val names = (0 until definitions.length()).map { definitions.getJSONObject(it).getString("name") }.toSet()
@@ -55,5 +69,5 @@ class TeacherPairingTest {
     private fun qr(url: String) = JSONObject().put("service", "homework-gateway").put("protocol", 1).put("pair_url", url).put("code", "one-time-code")
     private fun response() = JSONObject().put("service", "homework-gateway").put("protocol", 1)
         .put("device", JSONObject().put("id", "paired-tablet").put("name", "书桌平板"))
-        .put("connection", JSONObject().put("url", "ws://192.168.1.12:8787/tablet/v1/ws").put("token", "new-token"))
+        .put("connection", JSONObject().put("url", "wss://mr-li-tablet-relay.vercel.app/tablet/v1/ws").put("token", "new-token"))
 }

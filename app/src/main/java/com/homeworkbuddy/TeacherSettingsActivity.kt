@@ -92,13 +92,14 @@ private fun TeacherSettingsScreen(onBack: () -> Unit) {
     }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(28.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("李老师连接", fontSize = 30.sp)
-        Text("扫描李老师生成的一次性配对二维码。配对成功后会自动切换连接，无需先解除旧绑定。局域网连接时，请让平板与李老师所在电脑连接同一网络。")
+        Text("设备网关连接", fontSize = 30.sp)
+        Text("先在 cyeam-cli 登录，执行 cyeam device pair 生成一次性配对二维码，再扫码连接独立网关。设备可通过互联网连接，无需与服务器处于同一局域网。")
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("连接状态：${connection.status}")
                 Text("设备 ID：${activeConfig?.deviceId ?: TeacherDeviceStore.defaultDeviceId(context)}")
-                activeConfig?.let { Text("连接地址：${it.websocketUrl}") }
+                Text("连接地址：${activeConfig?.websocketUrl ?: TeacherPairing.DEFAULT_CONNECTION_URL}")
+                if (activeConfig == null) Text(TeacherDeviceStore.pairingHint(context), color = MaterialTheme.colorScheme.primary)
                 connection.lastError?.let { Text("错误：$it", color = MaterialTheme.colorScheme.error) }
             }
         }
@@ -111,7 +112,7 @@ private fun TeacherSettingsScreen(onBack: () -> Unit) {
             OutlinedButton(enabled = !pairing, onClick = {
                 scanner.launch(ScanOptions().apply {
                     setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                    setPrompt("对准李老师生成的配对二维码")
+                    setPrompt("对准 cyeam device pair 生成的配对二维码")
                     setBeepEnabled(false)
                     // Keep the parent settings activity intact on MIUI tablets.
                     // The QR scanner is happy in the current (landscape) orientation.
@@ -130,7 +131,7 @@ private fun TeacherSettingsScreen(onBack: () -> Unit) {
                         }
                         activeConfig = config
                         qrContent = ""
-                        message = "已配对，正在连接李老师"
+                        message = "已配对，正在连接独立网关"
                     } catch (error: kotlinx.coroutines.CancellationException) {
                         throw error
                     } catch (error: Exception) {

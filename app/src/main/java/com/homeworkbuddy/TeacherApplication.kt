@@ -8,6 +8,7 @@ class TeacherApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         removeLegacyGatewayBinding(this)
+        TeacherDeviceStore.migrateStandalone(this)
     }
 }
 

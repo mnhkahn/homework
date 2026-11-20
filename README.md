@@ -191,37 +191,25 @@ PDF 是附件，不是作业类型。所有作业类型均可直接上传 PDF �
 3. 每个发布构建都会等待蒲公英完成发布；成功后 Actions 日志和飞书通知会显示固定的蒲公英下载页链接。安装方式为公开安装、无有效期。
 4. 平板上首次从 debug 签名切换到 release 签名时需卸载重装一次；之后同签名版本即可自动覆盖升级。
 
-## 李老师（mr-li）连接：不兼容升级
+## 独立设备网关连接
 
-本版只连接 `../mr-li` 的平板网关，不再兼容旧小李服务端。旧连接服务、设置 Activity、音频/TTS、专用通知推送及录像/连续画面实现均已删除。升级首次启动会清除旧绑定和旧通知渠道；不会迁移或解密旧凭证。原先的作业、家长验证和学习模式设置保留。旧通用加密密钥还保护 Trello 与家长验证码，因此不删除；新网关使用独立的新密钥，不读取旧密钥或旧绑定。必须安装新版并重新扫码配对，未配对时云朵保持灰色。
+Homework 直接连接独立 `homework-gateway`，mr-li 不再负责设备连接和保活。入口为「家长设置 → 设备网关连接」（0.7.0 中仍叫「李老师连接」）。在已登录的新版 cyeam-cli 中执行 `cyeam device pair`，扫描生成的五分钟有效二维码，再点「保存并连接」。平板通过互联网访问网关，无需与 CLI 或 mr-li 位于同一局域网。
 
-新入口为「家长设置 → 李老师连接」。部署机运行 `./scripts/run.sh tablet-pair`，扫描新生成的五分钟有效二维码，再点「保存并连接」。二维码格式：
-
-```json
-{"service":"mr-li","protocol":1,"pair_url":"http://192.168.1.12:8787/tablet/v1/pair","code":"short-lived-one-time-code"}
-```
-
-没有 MD5 验证、设备白名单或旧管理台登录。APP 不写死服务器 IP，地址由二维码提供；局域网连接需让平板与部署机位于同一网络。旧版二维码即使尚未过期也不能使用。
-
-APP 提交 `code`、`device_id`、`device_name` 和 `device_kind=android`，仅接受新响应结构：
+二维码格式：
 
 ```json
-{
-  "service":"mr-li", "protocol":1,
-  "device":{"id":"homework-tablet-abcd1234","name":"学习平板"},
-  "connection":{"url":"ws://192.168.1.12:8787/tablet/v1/ws","token":"device-token"}
-}
+{"service":"homework-gateway","protocol":1,"pair_url":"https://mr-li-tablet-relay.vercel.app/tablet/v1/pair","code":"short-lived-one-time-code"}
 ```
 
-凭证保存在全新的 `teacher_gateway_v1` 偏好设置中，并使用新的 Android Keystore 密钥加密。没有旧字段、旧地址或旧密钥的兼容回退。重新配对会替换 token 和地址、立即取消旧连接并废弃其回调和待执行指令。设置页实时显示连接状态和当前地址。
+APP 提交 `code`、`device_id`、`device_name` 和 `device_kind=android`。响应身份必须为 `homework-gateway`，连接地址使用 WSS；默认地址为 `wss://mr-li-tablet-relay.vercel.app/tablet/v1/ws`。设备凭证由网关签发并绑定生成二维码的账号，不能复用旧 mr-li token。重新配对会替换凭证和地址、取消旧连接并废弃其回调和待执行指令。
 
-新 WebSocket 使用 `Device-Id` 与 Bearer token；双方 `hello` 均需包含 `service=mr-li` 和 `protocol=1`。只有新网关完成握手才显示已连接。工具调用仍为带连接 `session_id` 的 MCP JSON-RPC，不需要聊天会话或 SSE。
+0.7.0 支持新网关，但仍会读取升级前保存的本地连接，需要重新配对。后续修复在启动时停用旧网关绑定并提示重新扫码；未标记服务身份的 0.7.0 凭证仅在地址为上述独立网关时保留。已明确标记为独立网关的其它 WSS 部署也可保留。设备名称、设备 ID、作业、Trello 凭证及家长验证设置保留，不会把旧 token 发送给新服务器。
 
-当前支持七项工具：`self.device.get_status`、`self.homework.get_status`、`self.homework.get_weekly_report`、`self.notify.send`、`self.camera.take_photo`、`self.camera.snapshot`、`self.kiosk.pause_15_minutes`。临时开放继续要求已启用的家长动态验证码，服务端不能绕过。
+凭证保存在 `teacher_gateway_v1`，由独立 Android Keystore 密钥加密。WebSocket 使用 `Device-Id` 与 Bearer token，双方 `hello` 均包含 `service=homework-gateway` 和 `protocol=1`。网关完成握手后才显示已连接，断线后自动重连。工具使用带连接 `session_id` 的 MCP JSON-RPC。
 
-拍照和屏幕截图分别使用 `/tablet/v1/photo-check` 与 `/tablet/v1/snapshot`，不再调用旧视觉接口。检查请求的 multipart 字段为 `image`、可选 `screenshot`、`question` 和可选 `screenshot_error`；图片由 mr-li 保存并交给支持图片的 OpenCode 模型读取分析。拍照仍显示提示、播放提示音；截图失败仍可提交照片并说明原因。
+支持设备状态、作业状态和周报、通知、拍照、截图、语音播报及临时开放工具。临时开放仍要求已启用的家长动态验证码，服务端不能绕过。图片通过 HTTPS 上传独立网关，照片和截图各不超过 2 MB；截图长边最多 1600 像素。拍照仍显示提示并播放提示音。
 
-屏幕截图需要 Android 11+。在「李老师连接 → 配置屏幕截图权限」手动启用「作业小伙伴屏幕截图」。仅处理拍照检查时的单次截图，不读取无障碍节点或监听页面事件；截图包括当前前台应用，系统保护内容可能遮黑。照片和截图各不超过 2 MB，截图长边最多 1600 像素。
+屏幕截图需要 Android 11+。在连接设置页点击「配置屏幕截图权限」，手动启用「作业小伙伴屏幕截图」。只在远程指令或拍照检查时执行单次截图，不读取无障碍节点或监听页面事件；截图包括当前前台应用，系统保护内容可能遮黑。
 
 ## 本地头部状态
 
@@ -268,7 +256,7 @@ APP 提交 `code`、`device_id`、`device_name` 和 `device_kind=android`，仅�
 
 ## 独立网关远程能力
 
-Homework 使用 `homework-gateway` 协议身份直接连接独立网关，不再通过 mr-li。先由登录后的 `cyeam device pair` 生成账号专属配对 JSON，在平板“李老师”设置里扫码或粘贴并连接。旧配对码不再支持，设备转移账号需先撤销旧绑定。
+Homework 使用 `homework-gateway` 协议身份直接连接独立网关，不再通过 mr-li。先由登录后的 `cyeam device pair` 生成账号专属配对 JSON，在平板的设备网关连接设置里扫码或粘贴并连接。旧配对码不再支持，设备转移账号需先撤销旧绑定。
 
 新增 `self.screen.screenshot`：复用已授权的无障碍截图服务，只截屏，不额外拍摄摄像头；上传 JPEG 到网关，返回图片引用。要求 Android 11+、服务已授权且屏幕点亮，受保护的系统页面会明确失败。
 

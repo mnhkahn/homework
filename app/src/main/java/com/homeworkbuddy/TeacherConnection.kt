@@ -30,12 +30,14 @@ object TeacherDeviceStore {
     private const val DEVICE_NAME = "device_name"
     private const val WS_URL = "websocket_url"
     private const val TOKEN = "token"
+    private const val SERVICE = "service"
+    private const val REPAIR_REQUIRED = "standalone_repair_required"
     fun defaultDeviceId(context: Context): String = "homework-tablet-" + android.provider.Settings.Secure.getString(context.contentResolver, android.provider.Settings.Secure.ANDROID_ID).takeLast(8)
 
     fun config(context: Context): TeacherConnectionConfig? {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val url = prefs.getString(WS_URL, null) ?: return null
-        if (!TeacherPairing.isConnectionUrl(url)) return null
+        if (!TeacherPairing.canReuseStoredConnection(url, prefs.getString(SERVICE, null))) return null
         val token = prefs.getString(TOKEN, null)?.let(TeacherTokenCipher::decrypt)?.takeIf { it.isNotBlank() } ?: return null
         return TeacherConnectionConfig(
             prefs.getString(DEVICE_ID, defaultDeviceId(context)) ?: defaultDeviceId(context),
@@ -50,6 +52,8 @@ object TeacherDeviceStore {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val editor = prefs.edit()
         editor
+            .putString(SERVICE, TeacherPairing.SERVICE)
+            .remove(REPAIR_REQUIRED)
             .putString(DEVICE_ID, config.deviceId)
             .putString(DEVICE_NAME, config.deviceName)
             .putString(WS_URL, config.websocketUrl)
@@ -62,9 +66,29 @@ object TeacherDeviceStore {
             .remove(DEVICE_ID)
             .remove(DEVICE_NAME)
             .remove(WS_URL)
+            .remove(SERVICE)
+            .remove(REPAIR_REQUIRED)
             .remove(TOKEN)
             .apply()
     }
+
+    /** Run before service startup; never decrypt or forward credentials from a retired gateway. */
+    @Synchronized fun migrateStandalone(context: Context) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val url = prefs.getString(WS_URL, null) ?: return
+        if (TeacherPairing.canReuseStoredConnection(url, prefs.getString(SERVICE, null))) {
+            prefs.edit().putString(SERVICE, TeacherPairing.SERVICE).commit()
+        } else {
+            prefs.edit().remove(WS_URL).remove(TOKEN).remove(SERVICE)
+                .putBoolean(REPAIR_REQUIRED, true).commit()
+            TeacherConnectionState.disconnected(pairingHint(context))
+        }
+    }
+
+    fun pairingHint(context: Context): String =
+        if (context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(REPAIR_REQUIRED, false))
+            "旧的本地网关绑定已停用，请用 cyeam device pair 生成新二维码后重新配对"
+        else "尚未配对独立网关，请用 cyeam device pair 生成配对二维码"
 
 }
 
@@ -242,7 +266,7 @@ class TeacherConnectionService : Service() {
     @Synchronized private fun connect() {
         if (stopped || socket != null) return
         val config = TeacherDeviceStore.config(this) ?: run {
-            TeacherConnectionState.disconnected("尚未配对李老师")
+            TeacherConnectionState.disconnected(TeacherDeviceStore.pairingHint(this))
             stopForeground(STOP_FOREGROUND_DETACH)
             stopSelf()
             return

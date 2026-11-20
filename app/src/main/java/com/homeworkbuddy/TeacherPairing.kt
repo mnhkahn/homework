@@ -14,6 +14,7 @@ data class TeacherConnectionConfig(
 internal object TeacherPairing {
     const val SERVICE = "homework-gateway"
     const val PROTOCOL = 1
+    const val DEFAULT_CONNECTION_URL = "wss://mr-li-tablet-relay.vercel.app/tablet/v1/ws"
     data class Request(val url: String, val code: String)
 
     fun isGateway(value: JSONObject): Boolean =
@@ -23,7 +24,7 @@ internal object TeacherPairing {
         val qr = JSONObject(rawQr.trim())
         require(isGateway(qr)) { "请扫描独立 Homework 网关生成的配对二维码，旧版二维码已不再支持" }
         val url = qr.getString("pair_url").trim()
-        endpoint(url, setOf("http", "https"), "/tablet/v1/pair", "李老师配对地址无效")
+        endpoint(url, setOf("https"), "/tablet/v1/pair", "网关配对地址无效")
         val code = qr.getString("code").trim()
         require(code.isNotEmpty()) { "二维码缺少配对码" }
         return Request(url, code)
@@ -34,7 +35,7 @@ internal object TeacherPairing {
         val device = result.getJSONObject("device")
         val connection = result.getJSONObject("connection")
         val url = connection.getString("url").trim()
-        endpoint(url, setOf("ws", "wss"), "/tablet/v1/ws", "李老师连接地址无效")
+        endpoint(url, setOf("wss"), "/tablet/v1/ws", "网关连接地址无效")
         val id = device.getString("id").trim()
         val name = device.getString("name").trim()
         val token = connection.getString("token").trim()
@@ -43,8 +44,12 @@ internal object TeacherPairing {
     }
 
     fun isConnectionUrl(url: String): Boolean = runCatching {
-        endpoint(url, setOf("ws", "wss"), "/tablet/v1/ws", "李老师连接地址无效")
+        endpoint(url, setOf("wss"), "/tablet/v1/ws", "网关连接地址无效")
     }.isSuccess
+
+    /** Unmarked 0.7.0 bindings are retained only for the known standalone endpoint. */
+    fun canReuseStoredConnection(url: String, service: String?): Boolean =
+        isConnectionUrl(url) && (service == SERVICE || (service == null && url == DEFAULT_CONNECTION_URL))
 
     private fun endpoint(value: String, schemes: Set<String>, path: String, message: String) {
         val uri = runCatching { URI(value) }.getOrNull()
