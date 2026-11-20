@@ -44,6 +44,18 @@ object McpTools {
             notify(context, arguments.getString("title"), arguments.getString("body"))
             JSONObject().put("delivered", true)
         },
+        ToolRegistration("self.screen.screenshot", "截取当前屏幕并上传；需要已授权的截图服务和点亮的屏幕", emptySchema()) { context, _ ->
+            val screen = runBlocking { ScreenCaptureService.capture() }
+            VisionSnapshotUploader.upload(context, screen, "screen")
+        },
+        ToolRegistration("self.audio.speak", "使用系统语音引擎播报文字，完成播放后返回", JSONObject().put("type", "object")
+            .put("properties", JSONObject().put("text", JSONObject().put("type", "string").put("maxLength", 300))
+                .put("language", JSONObject().put("type", "string").put("enum", JSONArray().put("zh-CN").put("en-US")))
+                .put("rate", JSONObject().put("type", "number").put("minimum", 0.5).put("maximum", 2)))
+            .put("required", JSONArray().put("text"))) { context, arguments ->
+            val request = RemoteSpeechRequest.parse(arguments)
+            runBlocking { RemoteSpeech.speak(context, request) }
+        },
         ToolRegistration("self.camera.take_photo", "拍摄学习照片并截取当前屏幕，交给李老师结合两张图回答检查问题", JSONObject()
             .put("type", "object")
             .put("properties", JSONObject().put("question", JSONObject().put("type", "string")))

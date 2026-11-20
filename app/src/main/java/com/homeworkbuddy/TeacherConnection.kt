@@ -144,6 +144,7 @@ class TeacherConnectionService : Service() {
     private var reconnectAttempts = 0
     @Volatile private var stopped = false
     private var cameraCaptureDepth = 0
+    private var speechDepth = 0
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -155,6 +156,8 @@ class TeacherConnectionService : Service() {
                 stopSelf()
                 return START_NOT_STICKY
             }
+            ACTION_SPEECH_BEGIN -> { speechDepth++; refreshForeground(); return START_STICKY }
+            ACTION_SPEECH_END -> { speechDepth = (speechDepth - 1).coerceAtLeast(0); refreshForeground(); return START_STICKY }
             ACTION_CAMERA_CAPTURE_BEGIN -> {
                 cameraCaptureDepth++
                 refreshForeground()
@@ -178,6 +181,7 @@ class TeacherConnectionService : Service() {
 
     private fun refreshForeground() {
         var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING
+        if (speechDepth > 0) types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
         // Opening the camera while the device is locked requires a camera-type
         // foreground service (Android 12+); carry the type only while a remote
         // capture runs so boot-time starts stay a plain remoteMessaging service.
@@ -347,6 +351,10 @@ class TeacherConnectionService : Service() {
     companion object {
         private const val ACTION_RECONNECT = "com.homeworkbuddy.teacher.RECONNECT"
         private const val ACTION_STOP = "com.homeworkbuddy.teacher.STOP"
+        private const val ACTION_SPEECH_BEGIN = "com.homeworkbuddy.teacher.SPEECH_BEGIN"
+        private const val ACTION_SPEECH_END = "com.homeworkbuddy.teacher.SPEECH_END"
+        fun beginSpeech(context: Context) { context.startService(Intent(context, TeacherConnectionService::class.java).setAction(ACTION_SPEECH_BEGIN)) }
+        fun endSpeech(context: Context) { runCatching { context.startService(Intent(context, TeacherConnectionService::class.java).setAction(ACTION_SPEECH_END)) } }
         private const val ACTION_CAMERA_CAPTURE_BEGIN = "com.homeworkbuddy.teacher.CAMERA_CAPTURE_BEGIN"
         private const val ACTION_CAMERA_CAPTURE_END = "com.homeworkbuddy.teacher.CAMERA_CAPTURE_END"
         fun connect(context: Context) = ContextCompat.startForegroundService(context, Intent(context, TeacherConnectionService::class.java))

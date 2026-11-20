@@ -265,3 +265,13 @@ APP 提交 `code`、`device_id`、`device_name` 和 `device_kind=android`，仅�
 `cyeam trello card create` 的背单词 `--task` 按英文或中文逗号分项，空格保留在词组内部；`--word` 每次传入一个完整单词或词组。支持英文字母、词内撇号（`'`、`’`）、连字符 `-` 和词组空格。英文括号续词 `post(office)` 规范为 `post office`，中文括号注释 `camera（相机）` 去掉；不支持数字、网址、其它标点或不完整括号。CLI 创建前校验，Android 用相同规则解析，缺少有效词表时提示刷新，不跳转翻译网页。
 
 两端测试覆盖相同的词表样例，包括 Lesson 9 的 19 个词、词组、大小写、注释和非法输入。修改词表规则时同时更新两端实现及测试。
+
+## 独立网关远程能力
+
+Homework 使用 `homework-gateway` 协议身份直接连接独立网关，不再通过 mr-li。先由登录后的 `cyeam device pair` 生成账号专属配对 JSON，在平板“李老师”设置里扫码或粘贴并连接。旧配对码不再支持，设备转移账号需先撤销旧绑定。
+
+新增 `self.screen.screenshot`：复用已授权的无障碍截图服务，只截屏，不额外拍摄摄像头；上传 JPEG 到网关，返回图片引用。要求 Android 11+、服务已授权且屏幕点亮，受保护的系统页面会明确失败。
+
+新增 `self.audio.speak`：使用系统 TTS 播报 1–300 字，支持 zh-CN/en-US 和 0.5–2 倍语速。播放期间启用 mediaPlayback 前台服务类型，以系统播放完成回调作为成功依据；超时或失败不自动重复播报，不改变系统音量。
+
+对应 CLI：`cyeam device screenshot --device <id> --out screen.jpg`、`cyeam device speak --device <id> --text "休息五分钟"`。网关及 CLI 登录与设备归属管理在各自仓库，App 只保存设备凭证，不保存管理员密钥或 CLI 登录凭证。

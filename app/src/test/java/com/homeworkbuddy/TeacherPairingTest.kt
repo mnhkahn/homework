@@ -5,7 +5,7 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class TeacherPairingTest {
-    @Test fun acceptsOnlyMrLiQrCodesOnTheNewApi() {
+    @Test fun acceptsOnlyStandaloneGatewayQrCodes() {
         val qr = TeacherPairing.request(qr("http://192.168.1.12:8787/tablet/v1/pair").toString())
         assertEquals("http://192.168.1.12:8787/tablet/v1/pair", qr.url)
         assertEquals("one-time-code", qr.code)
@@ -15,7 +15,7 @@ class TeacherPairingTest {
     @Test fun rejectsOldServerQrEvenWhenItHasAUsableUrlAndCode() {
         val legacy = JSONObject().put("pair_url", "https://xiaoli-server.example/xiaozhi/pair").put("code", "valid-looking-code")
         assertThrows(IllegalArgumentException::class.java) { TeacherPairing.request(legacy.toString()) }
-        assertThrows(IllegalArgumentException::class.java) { TeacherPairing.request(legacy.put("service", "mr-li").put("protocol", 1).toString()) }
+        assertThrows(IllegalArgumentException::class.java) { TeacherPairing.request(legacy.put("service", "homework-gateway").put("protocol", 1).toString()) }
         assertThrows(IllegalArgumentException::class.java) { TeacherPairing.request(qr("https://teacher.example/tablet/v1/pair").put("protocol", 2).toString()) }
     }
 
@@ -33,7 +33,8 @@ class TeacherPairingTest {
 
     @Test fun onlyNewGatewayHelloCanLightUpTheCloud() {
         assertFalse(TeacherPairing.isGateway(JSONObject().put("type", "hello").put("version", 1).put("session_id", "old-session")))
-        assertTrue(TeacherPairing.isGateway(JSONObject().put("type", "hello").put("service", "mr-li").put("protocol", 1).put("session_id", "new-session")))
+        assertFalse(TeacherPairing.isGateway(JSONObject().put("type", "hello").put("service", "mr-li").put("protocol", 1).put("session_id", "old-mr-li")))
+        assertTrue(TeacherPairing.isGateway(JSONObject().put("type", "hello").put("service", "homework-gateway").put("protocol", 1).put("session_id", "new-session")))
         assertFalse(TeacherPairing.isConnectionUrl("wss://xiaoli-server.example/xiaozhi/v1/"))
     }
 
@@ -48,11 +49,11 @@ class TeacherPairingTest {
     @Test fun declaresOnlyToolsMigratedToTeacherGateway() {
         val definitions = McpTools.definitions()
         val names = (0 until definitions.length()).map { definitions.getJSONObject(it).getString("name") }.toSet()
-        assertEquals(setOf("self.device.get_status", "self.homework.get_status", "self.homework.get_weekly_report", "self.notify.send", "self.camera.take_photo", "self.camera.snapshot", "self.kiosk.pause_15_minutes"), names)
+        assertEquals(setOf("self.screen.screenshot", "self.audio.speak", "self.device.get_status", "self.homework.get_status", "self.homework.get_weekly_report", "self.notify.send", "self.camera.take_photo", "self.camera.snapshot", "self.kiosk.pause_15_minutes"), names)
     }
 
-    private fun qr(url: String) = JSONObject().put("service", "mr-li").put("protocol", 1).put("pair_url", url).put("code", "one-time-code")
-    private fun response() = JSONObject().put("service", "mr-li").put("protocol", 1)
+    private fun qr(url: String) = JSONObject().put("service", "homework-gateway").put("protocol", 1).put("pair_url", url).put("code", "one-time-code")
+    private fun response() = JSONObject().put("service", "homework-gateway").put("protocol", 1)
         .put("device", JSONObject().put("id", "paired-tablet").put("name", "书桌平板"))
         .put("connection", JSONObject().put("url", "ws://192.168.1.12:8787/tablet/v1/ws").put("token", "new-token"))
 }

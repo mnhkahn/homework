@@ -10,9 +10,9 @@ data class TeacherConnectionConfig(
     val token: String,
 )
 
-/** Only mr-li gateway v1 QR codes, credentials and handshakes are accepted. */
+/** Only standalone Homework gateway v1 QR codes, credentials and handshakes are accepted. */
 internal object TeacherPairing {
-    const val SERVICE = "mr-li"
+    const val SERVICE = "homework-gateway"
     const val PROTOCOL = 1
     data class Request(val url: String, val code: String)
 
@@ -21,7 +21,7 @@ internal object TeacherPairing {
 
     fun request(rawQr: String): Request {
         val qr = JSONObject(rawQr.trim())
-        require(isGateway(qr)) { "请扫描李老师新生成的配对二维码，旧版二维码已不再支持" }
+        require(isGateway(qr)) { "请扫描独立 Homework 网关生成的配对二维码，旧版二维码已不再支持" }
         val url = qr.getString("pair_url").trim()
         endpoint(url, setOf("http", "https"), "/tablet/v1/pair", "李老师配对地址无效")
         val code = qr.getString("code").trim()
@@ -30,7 +30,7 @@ internal object TeacherPairing {
     }
 
     fun response(result: JSONObject): TeacherConnectionConfig {
-        require(isGateway(result)) { "此服务端不是支持的李老师网关" }
+        require(isGateway(result)) { "此服务端不是支持的独立 Homework 网关" }
         val device = result.getJSONObject("device")
         val connection = result.getJSONObject("connection")
         val url = connection.getString("url").trim()
