@@ -33,6 +33,8 @@ import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.util.UUID
 
+internal const val MAX_HOMEWORK_PHOTOS = 10
+
 data class TrelloOption(val id: String, val name: String)
 
 /** Thrown when Trello rejects the stored token (HTTP 401); the parent must re-authorize. */
@@ -186,7 +188,7 @@ class HomeworkApi(private val context: Context) {
         isOvertime.hashCode()
         val existingNames = attachmentNames(taskId)
         val uploadedAudioNames = mutableListOf<String>()
-        attachments.take(MAX_PHOTOS).forEachIndexed { index, attachment ->
+        attachments.take(MAX_HOMEWORK_PHOTOS).forEachIndexed { index, attachment ->
             val (name, mimeType) = attachmentMetadata(attachment, submissionId, index, photoNamePrefix)
             if (name !in existingNames) {
                 attachFile(taskId, attachment, name, mimeType)
@@ -644,7 +646,6 @@ class HomeworkApi(private val context: Context) {
         private const val CORRECTION_LIST_NAME = "待改错"
         private const val TODO_LIST_NAME = "待完成"
         private const val DONE_LIST_NAME = "已完成"
-        private const val MAX_PHOTOS = 4
         private val AUDIO_EXTENSIONS = setOf("m4a", "mp4", "mp3", "wav", "3gp", "3gpp", "amr", "aac", "ogg", "opus")
         private val HOMEWORK_ZONE: ZoneId = ZoneId.of("Asia/Shanghai")
 

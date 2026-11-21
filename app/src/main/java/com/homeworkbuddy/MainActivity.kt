@@ -104,7 +104,6 @@ private val Primary @Composable get() = LocalHomeColors.current.primary
 private val TodoSurface @Composable get() = LocalHomeColors.current.sky
 private val OverdueSurface = Color(0xFFFFE8E6)
 private val OverdueInk = Color(0xFFB3261E)
-private const val MAX_HOMEWORK_PHOTOS = 4
 
 private fun copyHomeworkRecording(context: Context, source: Uri): Uri {
     val extension = source.lastPathSegment?.substringAfterLast('.', "")
