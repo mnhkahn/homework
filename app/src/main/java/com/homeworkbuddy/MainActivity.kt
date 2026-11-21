@@ -420,7 +420,6 @@ private fun HomeworkBuddyApp() {
     var weekTasks by remember { mutableStateOf(taskCache.weekTasks()) }
     var selectedDate by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(LocalDate.now()) }
     val visibleWeekStart = calendarWeekStart(selectedDate)
-    var calendarLoading by remember { mutableStateOf(false) }
     var selectedId by remember { mutableStateOf("") }
     var detailTaskId by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
     var remainingSeconds by remember { mutableIntStateOf(0) }
@@ -429,6 +428,11 @@ private fun HomeworkBuddyApp() {
     var taskElapsedSeconds by remember { mutableIntStateOf(0) }
     var showNameDialog by remember { mutableStateOf(childName.isBlank()) }
     var connected by remember { mutableStateOf(api.isConnected) }
+    val tableBindingId = if (connected) api.tableBindingId else null
+    var tableTasks by remember(tableBindingId) { mutableStateOf(taskCache.tableTasks(tableBindingId)) }
+    var tableLoading by remember(tableBindingId) { mutableStateOf(tableBindingId != null) }
+    var tableRefreshRequest by remember { mutableIntStateOf(0) }
+    var tableError by remember(tableBindingId) { mutableStateOf<String?>(null) }
     var showConnectionDialog by remember { mutableStateOf(childName.isNotBlank() && !api.isConnected) }
     var authorizationStarted by remember { mutableStateOf(api.hasAuthorization) }
     var trelloBoards by remember { mutableStateOf<List<TrelloOption>>(emptyList()) }
@@ -552,7 +556,7 @@ private fun HomeworkBuddyApp() {
         }
     }
 
-    val dayTasks = homeworkTasksForDate(tasks, weekTasks, CompletionHistoryStore(context).day(selectedDate), selectedDate)
+    val dayTasks = remember(tableTasks, selectedDate) { homeworkTableForDate(tableTasks, selectedDate) }
 
     fun selectTask(task: HomeworkTask?) {
         selectedId = task?.id.orEmpty()
@@ -622,8 +626,23 @@ private fun HomeworkBuddyApp() {
         HomeworkReminderScheduler.taskCompleted(context, taskId)
         val completedAt = System.currentTimeMillis() / 1_000
         activityStore.complete(taskId, completedAt)
-        fun complete(task: HomeworkTask) = task.afterSubmission(isCorrection ?: task.submitsCorrection)
-            .copy(completedAtEpochSeconds = completedAt, updatedAtEpochSeconds = completedAt, photoPath = photoPath ?: task.photoPath)
+        fun complete(task: HomeworkTask): HomeworkTask {
+            val corrected = isCorrection ?: task.submitsCorrection
+            return task.afterSubmission(corrected).copy(
+                completedAtEpochSeconds = completedAt,
+                updatedAtEpochSeconds = completedAt,
+                photoPath = photoPath ?: task.photoPath,
+                tableCard = task.tableCard?.copy(
+                    listName = if (corrected) "已改错" else "已完成",
+                    dueComplete = true,
+                    completedAtMillis = completedAt * 1000,
+                    updatedAtMillis = completedAt * 1000,
+                ),
+            )
+        }
+        tableTasks = tableTasks.map { if (it.id == taskId) complete(it) else it }
+        tableBindingId?.let { taskCache.saveTable(it, tableTasks) }
+        tableRefreshRequest++
 
         if (weekTasks.any { it.id == taskId }) {
             weekTasks = weekTasks.map { if (it.id == taskId) complete(it) else it }
@@ -634,7 +653,7 @@ private fun HomeworkBuddyApp() {
         }
         taskCache.saveToday(tasks)
         if (selectedId == taskId) {
-            val updated = if (selectedDate == LocalDate.now()) tasks else weekTasks.filter { it.dueDate == selectedDate }
+            val updated = homeworkTableForDate(tableTasks, selectedDate)
             val currentIndex = updated.indexOfFirst { it.id == taskId }
             val next = updated.drop(currentIndex + 1).firstOrNull { !it.status.isSubmitted }
                 ?: updated.take(currentIndex.coerceAtLeast(0)).firstOrNull { !it.status.isSubmitted }
@@ -647,7 +666,7 @@ private fun HomeworkBuddyApp() {
     }
 
     fun celebrateRetriedSubmission(pending: PendingSubmission) {
-        val task = (tasks + weekTasks).firstOrNull { it.id == pending.taskId }
+        val task = (tasks + weekTasks + tableTasks).firstOrNull { it.id == pending.taskId }
         if (task != null) {
             val history = CompletionHistoryStore(context)
             history.noteTasks(listOf(task))
@@ -852,7 +871,7 @@ private fun HomeworkBuddyApp() {
     val vocabulary = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             val taskId = result.data?.getStringExtra(VocabularyActivity.EXTRA_TASK_ID)
-            val task = (tasks + weekTasks).firstOrNull { it.id == taskId }
+            val task = (tasks + weekTasks + tableTasks).firstOrNull { it.id == taskId }
             when (task?.type) {
                 HomeworkTaskType.ENGLISH_READING -> ReadingActivity.open(context, task)
                 HomeworkTaskType.WORD_MEMORIZATION -> if (!task.status.isSubmitted) {
@@ -892,7 +911,6 @@ private fun HomeworkBuddyApp() {
     // query. Do not make them wait for the much slower completed-card audit.
     LaunchedEffect(connected, foreground, refreshRequest, visibleWeekStart) {
         if (!connected || !foreground) return@LaunchedEffect
-        calendarLoading = true
         runCatching { api.weekScheduledTasks(visibleWeekStart) }.onSuccess { scheduledCards ->
             val completed = weekTasks.filter { it.status.isSubmitted }
             val scheduled = scheduledCards.map { fresh ->
@@ -906,7 +924,6 @@ private fun HomeworkBuddyApp() {
                 reportSyncError(error, "拉取本周作业安排失败")
             }
         }
-        calendarLoading = false
     }
 
     // Historical import is independent from the live queue.  A temporary
@@ -941,6 +958,32 @@ private fun HomeworkBuddyApp() {
             if (error is kotlinx.coroutines.CancellationException || error.message == "The coroutine scope left composition.") return@onFailure
             Log.e("HomeworkHistory", "weekly import failed", error)
             reportSyncError(error, "拉取本周完成记录失败")
+        }
+    }
+
+    LaunchedEffect(tableBindingId, foreground, refreshRequest, tableRefreshRequest) {
+        val binding = tableBindingId ?: return@LaunchedEffect
+        if (!foreground) return@LaunchedEffect
+        while (true) {
+            try {
+                val remote = api.tableTasks(binding)
+                if (api.tableBindingId != binding) return@LaunchedEffect
+                val local = (weekTasks + tasks + tableTasks).associateBy { it.id }
+                tableTasks = remote.map { task -> task.copy(photoPath = local[task.id]?.photoPath) }
+                taskCache.saveTable(binding, tableTasks)
+                tableError = null
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: AuthorizationExpiredException) {
+                reportSyncError(error, "拉取作业表格失败")
+                return@LaunchedEffect
+            } catch (error: Exception) {
+                Log.w("HomeworkTable", "Unable to refresh homework table", error)
+                tableError = "作业表格同步失败，请点击刷新重试"
+            } finally {
+                tableLoading = false
+            }
+            delay(60_000)
         }
     }
 
@@ -1098,7 +1141,9 @@ private fun HomeworkBuddyApp() {
         }
         HomeworkHome(
             slogan = slogan,
-            tasks = tasks,
+            todayTasks = tasks,
+            dayTasks = dayTasks,
+            reviewTasks = tableTasks,
             detailTask = detailTask,
             submissionType = selected?.type,
             onCloseDetail = { detailTaskId = null },
@@ -1106,7 +1151,7 @@ private fun HomeworkBuddyApp() {
             onSelectDate = { date ->
                 detailTaskId = null
                 selectedDate = date
-                val scheduled = if (date == LocalDate.now()) tasks else weekTasks.filter { it.dueDate == date }
+                val scheduled = homeworkTableForDate(tableTasks, date)
                 selectTask(scheduled.firstOrNull { it.status == TaskStatus.RUNNING } ?: scheduled.firstOrNull { !it.status.isSubmitted })
             },
             running = detailTask?.status == TaskStatus.RUNNING || (running && detailTask?.id == selectedId),
@@ -1118,14 +1163,13 @@ private fun HomeworkBuddyApp() {
             submitting = submittingTaskId != null,
             refreshing = refreshing,
             weekMarks = weekMarks,
-            weekTasks = weekTasks,
-            calendarLoading = calendarLoading,
+            tableLoading = tableLoading,
             captureStatus = captureStatus,
             studyActivity = studyActivity,
             teacherConnection = teacherConnection,
             kioskMode = kioskMode,
             remoteNotice = remoteNotice,
-            syncError = if (connected) connectionError else null,
+            syncError = if (connected) connectionError ?: tableError else null,
             onRefresh = { refreshRequest++ },
             onParent = {
                 context.startActivity(Intent(context, KioskSettingsActivity::class.java))
@@ -1148,6 +1192,8 @@ private fun HomeworkBuddyApp() {
                 val task = detailTask ?: return@start
                 val started = try { activityStore.start(task, System.currentTimeMillis() / 1_000) }
                 catch (failure: Exception) { connectionError = failure.message; return@start }
+                tableTasks = tableTasks.map { if (it.id == task.id) started else it }
+                tableBindingId?.let { taskCache.saveTable(it, tableTasks) }
                 tasks = tasks.map { if (it.id == task.id) started else it }
                 taskCache.saveToday(tasks)
                 weekTasks = if (weekTasks.any { it.id == task.id }) {
@@ -1157,7 +1203,7 @@ private fun HomeworkBuddyApp() {
                 CompletionHistoryStore(context).noteTasks(listOf(started), selectedDate)
                 selectTask(started)
                 scope.launch {
-                    runCatching { api.syncActivity() }.onFailure { error ->
+                    runCatching { api.syncActivity() }.onSuccess { tableRefreshRequest++ }.onFailure { error ->
                         if (error is kotlinx.coroutines.CancellationException) throw error
                         reportSyncError(error, "开始记录已保存在本机，联网后自动同步")
                     }
@@ -1190,7 +1236,8 @@ private fun HomeworkBuddyApp() {
                             check(!hasPendingSubmission(correction)) { "上次提交尚未同步到 Trello，联网后会自动重试。" }
                             tasks = listOf(correction) + tasks.filterNot { it.id == cardId }
                             taskCache.saveToday(tasks)
-                            selectedDate = LocalDate.now()
+                            selectedDate = tableTasks.firstOrNull { it.id == cardId }?.dueDate ?: correction.dueDate
+                            tableRefreshRequest++
                             selectTask(correction)
                             detailTaskId = correction.id
                             openSubmission(correction)
@@ -1467,17 +1514,16 @@ private fun CelebrationDialog(taskTitle: String, allTasksComplete: Boolean, comp
 }
 
 @Composable
-private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, detailTask: HomeworkTask?, submissionType: HomeworkTaskType?, onCloseDetail: () -> Unit, selectedDate: LocalDate, onSelectDate: (LocalDate) -> Unit, running: Boolean, taskElapsedSeconds: Int, activeElapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, weekTasks: List<HomeworkTask>, calendarLoading: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, teacherConnection: TeacherConnectionSnapshot, kioskMode: KioskMode, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, vocabularyPhotoRequired: Boolean, onOpenVocabulary: (HomeworkTask, List<String>) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onResubmit: (String) -> Unit, onChoosePhoto: () -> Unit, onChooseAudio: () -> Unit, onChooseText: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photos: List<Uri>, initialPhotoPreviewIndex: Int, audioAttached: Boolean, showSubmissionChoice: Boolean, showTextSubmission: Boolean, submissionText: String, onSubmissionTextChange: (String) -> Unit, onSubmitText: () -> Unit, onAddPhoto: () -> Unit, onRetakePhoto: (Int) -> Unit, onRemovePhoto: (Int) -> Unit, onDismissSubmissionChoice: () -> Unit, onRetake: () -> Unit, onDismissTextSubmission: () -> Unit) {
+private fun HomeworkHome(slogan: String, todayTasks: List<HomeworkTask>, dayTasks: List<HomeworkTask>, reviewTasks: List<HomeworkTask>, detailTask: HomeworkTask?, submissionType: HomeworkTaskType?, onCloseDetail: () -> Unit, selectedDate: LocalDate, onSelectDate: (LocalDate) -> Unit, running: Boolean, taskElapsedSeconds: Int, activeElapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, tableLoading: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, teacherConnection: TeacherConnectionSnapshot, kioskMode: KioskMode, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, vocabularyPhotoRequired: Boolean, onOpenVocabulary: (HomeworkTask, List<String>) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onResubmit: (String) -> Unit, onChoosePhoto: () -> Unit, onChooseAudio: () -> Unit, onChooseText: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photos: List<Uri>, initialPhotoPreviewIndex: Int, audioAttached: Boolean, showSubmissionChoice: Boolean, showTextSubmission: Boolean, submissionText: String, onSubmissionTextChange: (String) -> Unit, onSubmitText: () -> Unit, onAddPhoto: () -> Unit, onRetakePhoto: (Int) -> Unit, onRemovePhoto: (Int) -> Unit, onDismissSubmissionChoice: () -> Unit, onRetake: () -> Unit, onDismissTextSubmission: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val reviewApi = remember(context) { HomeworkApi(context) }
     var reviewedTaskIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var reviewTask by remember { mutableStateOf<HomeworkTask?>(null) }
     var reviewSyncError by remember { mutableStateOf<String?>(null) }
-    val todayEstimatedSeconds = tasks.sumOf { it.estimatedMinutes.coerceAtLeast(0) * 60 }
-    val completedEstimatedSeconds = tasks.filter { it.status.isSubmitted }
+    val todayEstimatedSeconds = todayTasks.sumOf { it.estimatedMinutes.coerceAtLeast(0) * 60 }
+    val completedEstimatedSeconds = todayTasks.filter { it.status.isSubmitted }
         .sumOf { it.estimatedMinutes.coerceAtLeast(0) * 60 }
     val todayElapsedSeconds = (completedEstimatedSeconds + activeElapsedSeconds).coerceAtMost(todayEstimatedSeconds)
-    val dayTasks = homeworkTasksForDate(tasks, weekTasks, CompletionHistoryStore(context).day(selectedDate), selectedDate)
     LaunchedEffect(detailTask?.id, detailTask?.updatedAtEpochSeconds, refreshing) {
         if (refreshing || !reviewApi.isConnected) return@LaunchedEffect
         reviewSyncError = null
@@ -1525,7 +1571,7 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, detailTask: 
                 )
             }
             Spacer(Modifier.height(14.dp))
-            if (calendarLoading && selectedDate != LocalDate.now()) {
+            if (tableLoading && dayTasks.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
             } else if (dayTasks.isEmpty() && selectedDate.isAfter(LocalDate.now())) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -1584,7 +1630,7 @@ private fun HomeworkHome(slogan: String, tasks: List<HomeworkTask>, detailTask: 
         }
     }
     reviewTask?.let { openedTask ->
-        val currentTask = (tasks + weekTasks).firstOrNull { it.id == openedTask.id } ?: openedTask
+        val currentTask = reviewTasks.firstOrNull { it.id == openedTask.id } ?: openedTask
         HomeworkReviewDialog(
             task = currentTask,
             refreshing = refreshing,
@@ -1976,7 +2022,7 @@ private fun formatStudyDuration(seconds: Long): String {
 
 @Composable private fun EmptyTaskState(modifier: Modifier) {
     Box(modifier.clip(RoundedCornerShape(26.dp)).background(Leaf), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) { Text("🎉", fontSize = 58.sp); Spacer(Modifier.height(12.dp)); Text("今天还没有作业", fontSize = 26.sp, fontWeight = FontWeight.Medium); Text("新增到 Trello 的“待完成”列表后，最多一分钟会出现在这里。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        Column(horizontalAlignment = Alignment.CenterHorizontally) { Text("🎉", fontSize = 58.sp); Spacer(Modifier.height(12.dp)); Text("今天还没有作业", fontSize = 26.sp, fontWeight = FontWeight.Medium); Text("Trello 上截止日期为今天的作业会显示在这里。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
     }
 }
 

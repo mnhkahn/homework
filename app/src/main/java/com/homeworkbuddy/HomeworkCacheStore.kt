@@ -22,6 +22,11 @@ class HomeworkCacheStore(context: Context) {
 
     fun saveWeek(tasks: List<HomeworkTask>) = save("week", LocalDate.now().with(java.time.DayOfWeek.MONDAY).toString(), tasks)
 
+    fun tableTasks(bindingId: String?): List<HomeworkTask> =
+        bindingId?.let { tasksFor("table", it) }.orEmpty()
+
+    fun saveTable(bindingId: String, tasks: List<HomeworkTask>) = save("table", bindingId, tasks)
+
     private fun tasksFor(prefix: String, expectedDate: String): List<HomeworkTask> {
         if (prefs.getString("${prefix}_date", null) != expectedDate) return emptyList()
         val stored = prefs.getString("${prefix}_tasks", null) ?: return emptyList()
@@ -60,6 +65,17 @@ class HomeworkCacheStore(context: Context) {
         put("scheduled_start", task.scheduledStartEpochSeconds)
         put("scheduled_due", task.scheduledDueEpochSeconds)
         put("explicit_estimated_minutes", task.explicitEstimatedMinutes)
+        task.tableCard?.let { card ->
+            put("table_card", JSONObject()
+                .put("list", card.listName)
+                .put("start", card.startAtMillis)
+                .put("due", card.dueAtMillis)
+                .put("due_complete", card.dueComplete)
+                .put("type", card.typeLabel)
+                .put("grade", card.gradeLabel)
+                .put("completed", card.completedAtMillis)
+                .put("updated", card.updatedAtMillis))
+        }
     }
 
     internal fun decode(value: JSONObject): HomeworkTask = HomeworkTask(
@@ -93,6 +109,15 @@ class HomeworkCacheStore(context: Context) {
         scheduledStartEpochSeconds = value.optLong("scheduled_start").takeIf { it > 0 },
         scheduledDueEpochSeconds = value.optLong("scheduled_due").takeIf { it > 0 },
         explicitEstimatedMinutes = value.optInt("explicit_estimated_minutes").takeIf { it in 1..180 },
+        tableCard = value.optJSONObject("table_card")?.let { card ->
+            HomeworkTableCard(
+                card.getString("list"), card.optLong("start").takeUnless { card.isNull("start") },
+                card.getLong("due"), card.optBoolean("due_complete"),
+                card.optString("type").ifEmpty { null }, card.optString("grade").ifEmpty { null },
+                card.optLong("completed").takeUnless { card.isNull("completed") },
+                card.optLong("updated").takeUnless { card.isNull("updated") },
+            )
+        },
     ).let { task ->
         when (task.type) {
             HomeworkTaskType.WORD_MEMORIZATION -> task.copy(link = HomeworkTaskDetails.restoreVocabularyLink(task))

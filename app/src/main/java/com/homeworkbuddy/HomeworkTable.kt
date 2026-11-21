@@ -52,19 +52,11 @@ private val TableInk = Color(0xFF28463B)
 private val TableMuted = Color(0xFF4B6D5D)
 private val TableDateFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
-private val tableHeaders = listOf("标题", "作业类型", "进度", "打分结果", "实际完成时间", "预计完成时间", "更新时间")
-private val columnWeights = listOf(24f, 10f, 11f, 11f, 15f, 15f, 15f)
-
-internal enum class TaskProgressFilter(val label: String) {
-    ALL("全部进度"), UNFINISHED("未完成"), RUNNING("正在做"), SUBMITTED("已提交");
-
-    fun includes(status: TaskStatus): Boolean = when (this) {
-        ALL -> true
-        UNFINISHED -> !status.isSubmitted
-        RUNNING -> status == TaskStatus.RUNNING
-        SUBMITTED -> status.isSubmitted
-    }
-}
+private val tableHeaders = listOf(
+    "标题", "作业类型", "进度", "打分结果", "计划开始时间", "实际完成时间", "预计完成时间", "更新时间",
+)
+private val standardProgressLists = setOf("待完成", "待改错", "已完成", "已改错")
+private val columnWeights = listOf(18f, 9f, 10f, 7f, 14f, 14f, 14f, 14f)
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -78,10 +70,10 @@ internal fun HomeworkTable(
     var subject by rememberSaveable { mutableStateOf<HomeworkSubject?>(null) }
     var progressExpanded by remember { mutableStateOf(false) }
     var subjectExpanded by remember { mutableStateOf(false) }
-    val progressTasks = tasks.filter { progress.includes(it.status) }
+    val progressTasks = tasks.filter { progress.includes(it.tableGroup) }
     val visibleTasks = progressTasks.filter { subject == null || HomeworkSubject.fromTitle(it.title) == subject }
     val listState = rememberLazyListState()
-    LaunchedEffect(date, progress, subject) { listState.scrollToItem(0) }
+    LaunchedEffect(date, progress, subject, visibleTasks.firstOrNull()?.id) { listState.scrollToItem(0) }
 
     Column(modifier) {
         FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -140,11 +132,22 @@ internal fun HomeworkTable(
                         if (visibleTasks.isEmpty()) item {
                             Text("暂无符合筛选条件的作业", Modifier.padding(16.dp), color = TableMuted)
                         }
-                        items(visibleTasks, key = { it.id }) { task ->
-                            HomeworkTableRow(
-                                task = task,
-                                modifier = Modifier.clickable(role = Role.Button, onClickLabel = "打开作业详情") { onSelect(task) },
-                            )
+                        visibleTasks.groupBy { it.tableGroup }.forEach { (group, rows) ->
+                            item(key = "group-" + group.name) {
+                                Text(
+                                    group.label,
+                                    Modifier.fillMaxWidth().background(TableHeader).padding(horizontal = 17.dp, vertical = 7.dp),
+                                    color = TableMuted,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                )
+                            }
+                            items(rows, key = { it.id }) { task ->
+                                HomeworkTableRow(
+                                    task = task,
+                                    modifier = Modifier.clickable(role = Role.Button, onClickLabel = "打开作业详情") { onSelect(task) },
+                                )
+                            }
                         }
                     }
                 }
@@ -167,12 +170,18 @@ private fun HomeworkTableRow(
             .padding(horizontal = 10.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        val grade = task?.gradeResult
+        val grade = HomeworkGradeResult.parse(task?.tableCard?.gradeLabel)
         (task?.tableCells() ?: tableHeaders).forEachIndexed { index, value ->
             Box(Modifier.weight(columnWeights[index]).padding(horizontal = 7.dp)) {
                 when {
-                    task != null && index == 2 -> TaskStatusPill(task.status)
-                    grade != null && index == 3 -> HomeworkGradeBadge(grade, compact = true)
+                    task?.tableStartedAt != null && index == 2 -> Column {
+                        Text("已开始", color = TableInk, fontSize = 14.sp)
+                        Text(task.tableStartedAt?.let(Instant::ofEpochSecond).tableTime().drop(5),
+                            color = TableMuted, fontSize = 12.sp)
+                    }
+                    index == 2 && task != null && task.tableCard?.listName?.trim()?.let(standardProgressLists::contains) == true ->
+                        TaskStatusPill(task.status)
+                    index == 3 && grade != null -> HomeworkGradeBadge(grade, compact = true)
                     else -> {
                         val title = !header && index == 0
                         Text(
@@ -190,22 +199,19 @@ private fun HomeworkTableRow(
     HorizontalDivider(color = TableDivider)
 }
 
-private fun HomeworkTask.tableCells(): List<String> = listOf(
-    title,
-    when (type) {
-        HomeworkTaskType.NORMAL -> "—"
-        HomeworkTaskType.WORD_MEMORIZATION -> "背单词"
-        HomeworkTaskType.ENGLISH_READING -> "阅读英语"
-        HomeworkTaskType.ARITHMETIC -> "口算"
-        HomeworkTaskType.PREVIEW -> "预习"
-    },
-    "—", // Progress badge
-    "—", // Grade badge or an empty grade
-    completedAtEpochSeconds?.takeIf { status.isSubmitted }.tableTime(),
-    scheduledDueEpochSeconds.tableTime(),
-    updatedAtEpochSeconds.tableTime(),
-)
+private fun HomeworkTask.tableCells(): List<String> {
+    val card = requireNotNull(tableCard)
+    return listOf(
+        title,
+        card.typeLabel ?: "—",
+        card.listName,
+        card.gradeLabel ?: "—",
+        card.startAtMillis?.let(Instant::ofEpochMilli).tableTime(),
+        card.completedAtMillis?.let(Instant::ofEpochMilli).tableTime(),
+        Instant.ofEpochMilli(card.dueAtMillis).tableTime(),
+        card.updatedAtMillis?.let(Instant::ofEpochMilli).tableTime(),
+    )
+}
 
-private fun Long?.tableTime(): String = this?.let {
-    Instant.ofEpochSecond(it).atZone(ZoneId.systemDefault()).format(TableDateFormat)
-} ?: "—"
+private fun Instant?.tableTime(): String =
+    this?.atZone(ZoneId.systemDefault())?.format(TableDateFormat) ?: "—"

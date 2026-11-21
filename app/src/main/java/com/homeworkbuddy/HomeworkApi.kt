@@ -6,6 +6,9 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.webkit.MimeTypeMap
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flow
@@ -22,6 +25,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.LocalDate
 import java.time.DayOfWeek
@@ -44,6 +48,7 @@ class HomeworkApi(private val context: Context) {
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     private val token: String? get() = prefs.getString(TOKEN, null)?.let(DeviceTokenCipher::decrypt)
     val hasAuthorization get() = token != null
+    internal val tableBindingId: String? get() = prefs.getString(TODO_LIST, null)
     val isConnected get() = token != null && prefs.contains(TODO_LIST) && prefs.contains(DONE_LIST) && !prefs.getBoolean(VERIFY_BINDING, false)
 
     fun openAuthorization() {
@@ -70,7 +75,7 @@ class HomeworkApi(private val context: Context) {
         val done = listNamed(DONE_LIST_NAME)
         val correction = listNamed(CORRECTION_LIST_NAME)
         val corrected = listNamed(CORRECTED_LIST_NAME)
-        prefs.edit().putString(TODO_LIST, todo.id).putString(DONE_LIST, done.id).putString(CORRECTION_LIST, correction.id).putString(CORRECTED_LIST, corrected.id).remove(VERIFY_BINDING).apply()
+        prefs.edit().putString(BOARD, boardId).putString(TODO_LIST, todo.id).putString(DONE_LIST, done.id).putString(CORRECTION_LIST, correction.id).putString(CORRECTED_LIST, corrected.id).remove(VERIFY_BINDING).apply()
     }
 
     /** Keep the board binding when a token expires or is revoked. */
@@ -91,7 +96,7 @@ class HomeworkApi(private val context: Context) {
                 CORRECTED_LIST_NAME to prefs.getString(CORRECTED_LIST, null),
             )
             if (!savedBindingMatches(saved, lists)) return false
-            prefs.edit().remove(VERIFY_BINDING).apply()
+            prefs.edit().putString(BOARD, board).remove(VERIFY_BINDING).apply()
             true
         } catch (_: AuthorizationExpiredException) {
             // An inaccessible old list may also return 401. The caller checks
@@ -325,39 +330,96 @@ class HomeworkApi(private val context: Context) {
                 ?: if (status == TaskStatus.NEEDS_CORRECTION || status == TaskStatus.CORRECTED) now.toOffsetDateTime().toString() else return@mapNotNull null
             val deadline = runCatching { OffsetDateTime.parse(due).atZoneSameInstant(HOMEWORK_ZONE) }.getOrNull() ?: return@mapNotNull null
             if (dueOn != null && deadline.toLocalDate() != dueOn) return@mapNotNull null
-            val labels = item.optJSONArray("labels")
-            val subject = labels?.optJSONObject(0)?.optString("name")?.takeIf { it.isNotBlank() } ?: "作业"
             val taskStatus = if (status == TaskStatus.TODO && !deadline.isAfter(now)) TaskStatus.OVERTIME else status
-            val attachments = item.optJSONArray("attachments")?.let { attachmentArray ->
-                (0 until attachmentArray.length()).mapNotNull { attachment ->
-                    attachmentArray.optJSONObject(attachment)?.let { value ->
-                        if (value.optString("name").startsWith("homework-review-")) null
-                        else value.optString("url").ifBlank { null }?.let { url -> HomeworkAttachment(url, value.optString("name"), value.optString("mimeType")) }
-                    }
-                }
-            } ?: emptyList()
-            val updatedAt = parseTrelloDate(item.optString("dateLastActivity"))
-            val completedAt = if (status.isSubmitted) completionTime(item.getString("id"), listId) ?: updatedAt else null
-            val details = HomeworkTaskDetails.fromDescription(item.optString("desc"))
-            val plannedStart = parseTrelloDate(item.optString("start"))
-            val plannedDue = parseTrelloDate(item.optString("due"))
-            activityStore.restore(HomeworkTask(
-                item.getString("id"), subject, item.getString("name"), homeworkMinutes(item.optString("desc")),
-                deadline.toLocalTime(), taskStatus,
-                photoUrls = attachments.filterNot { it.isAudio || it.isPdf }.map(HomeworkAttachment::url),
-                attachments = attachments,
-                dueDate = deadline.toLocalDate(), completedAtEpochSeconds = completedAt,
-                updatedAtEpochSeconds = updatedAt,
-                type = details.type, task = details.task, link = details.link,
-                description = HomeworkTaskDetails.displayText(item.optString("desc")),
-                requirements = HomeworkTaskDetails.requirements(item.optString("desc")),
-                isCorrection = status == TaskStatus.NEEDS_CORRECTION,
-                gradeResult = HomeworkGradeResult.fromDescription(item.optString("desc")),
-                scheduledStartEpochSeconds = plannedStart,
-                scheduledDueEpochSeconds = plannedDue,
-                explicitEstimatedMinutes = explicitHomeworkMinutes(item.optString("desc")),
-            ))
+            val completedAt = if (status.isSubmitted) {
+                completionTime(item.getString("id"), listId) ?: parseTrelloDate(item.optString("dateLastActivity"))
+            } else null
+            activityStore.restore(cardTask(item, taskStatus, deadline, completedAt))
         }
+    }
+
+    internal suspend fun tableTasks(bindingId: String): List<HomeworkTask> {
+        val boardId = prefs.getString(BOARD, null) ?: request(
+            "GET", "/lists/${segment(bindingId)}?fields=idBoard",
+        ).getString("idBoard").also {
+            if (tableBindingId == bindingId) prefs.edit().putString(BOARD, it).apply()
+        }
+        val board = "/boards/${segment(boardId)}"
+        return coroutineScope {
+            val lists = async { options("$board/lists?filter=open&fields=name").associate { it.id to it.name } }
+            val cards = async {
+                requestArray(
+                    "GET", "$board/cards?filter=open&fields=name,desc,start,due,dueComplete,idList,closed,labels,dateLastActivity,dateCompleted" +
+                        "&attachments=true&attachment_fields=url,name,mimeType",
+                )
+            }
+            val actions = async {
+                try {
+                    requestArray("GET", "$board/actions?filter=commentCard&limit=1000&fields=type,data&memberCreator=false")
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    JSONArray()
+                }
+            }
+            val listNames = lists.await()
+            val boardCards = cards.await()
+            val activity = parseHomeworkTableActivity(actions.await())
+            val zone = ZoneId.systemDefault()
+            val now = Instant.now()
+            (0 until boardCards.length()).mapNotNull { index ->
+                val item = boardCards.getJSONObject(index)
+                val list = listNames[item.optString("idList")]?.ifEmpty { null } ?: "未知进度"
+                val tableCard = item.toHomeworkTableCard(list) ?: return@mapNotNull null
+                val deadline = Instant.ofEpochMilli(tableCard.dueAtMillis).atZone(zone)
+                val status = tableCard.listStatus.let {
+                    if (it == TaskStatus.TODO && !deadline.toInstant().isAfter(now)) TaskStatus.OVERTIME else it
+                }
+                val completedAt = tableCard.completedAtMillis?.let { Instant.ofEpochMilli(it).epochSecond }
+                cardTask(item, status, deadline, completedAt, tableCard)
+                    .withTableActivity(activity[item.getString("id")])
+            }
+        }
+    }
+
+    private fun cardTask(
+        item: JSONObject,
+        status: TaskStatus,
+        deadline: ZonedDateTime,
+        completedAt: Long?,
+        tableCard: HomeworkTableCard? = null,
+    ): HomeworkTask {
+        val subject = item.optJSONArray("labels")?.optJSONObject(0)?.optString("name")
+            ?.takeIf { it.isNotBlank() } ?: "作业"
+        val attachments = item.optJSONArray("attachments")?.let { array ->
+            (0 until array.length()).mapNotNull { index ->
+                val value = array.optJSONObject(index) ?: return@mapNotNull null
+                val name = value.optString("name")
+                if (name.startsWith("homework-review-")) return@mapNotNull null
+                val url = value.optString("url").ifBlank { return@mapNotNull null }
+                HomeworkAttachment(url, name, value.optString("mimeType"))
+            }
+        }.orEmpty()
+        val description = homeworkDescriptionText(item.optString("desc"))
+        val details = HomeworkTaskDetails.fromDescription(description)
+        return HomeworkTask(
+            item.getString("id"), subject, item.getString("name"), homeworkMinutes(description),
+            deadline.toLocalTime(), status,
+            photoUrls = attachments.filterNot { it.isAudio || it.isPdf }.map(HomeworkAttachment::url),
+            attachments = attachments,
+            dueDate = deadline.toLocalDate(), completedAtEpochSeconds = completedAt,
+            updatedAtEpochSeconds = if (tableCard == null) parseTrelloDate(item.optString("dateLastActivity"))
+                else tableCard.updatedAtMillis?.let { Instant.ofEpochMilli(it).epochSecond },
+            type = details.type, task = details.task, link = details.link,
+            description = HomeworkTaskDetails.displayText(description),
+            requirements = HomeworkTaskDetails.requirements(description),
+            isCorrection = status == TaskStatus.NEEDS_CORRECTION,
+            gradeResult = HomeworkGradeResult.fromDescription(description),
+            scheduledStartEpochSeconds = parseTrelloDate(item.optString("start")),
+            scheduledDueEpochSeconds = parseTrelloDate(item.optString("due")),
+            explicitEstimatedMinutes = explicitHomeworkMinutes(description),
+            tableCard = tableCard,
+        )
     }
 
     private fun commentActions(cardId: String) = flow {
@@ -573,6 +635,7 @@ class HomeworkApi(private val context: Context) {
         private const val PREFS = "trello_connection"
         private const val TOKEN = "token"
         private const val VERIFY_BINDING = "verify_binding"
+        private const val BOARD = "board_id"
         private const val TODO_LIST = "todo_list_id"
         private const val DONE_LIST = "done_list_id"
         private const val CORRECTED_LIST = "corrected_list_id"
