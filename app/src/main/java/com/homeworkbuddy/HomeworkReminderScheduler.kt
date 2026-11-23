@@ -20,17 +20,19 @@ object HomeworkReminderScheduler {
         if (tasks.none { !it.status.isSubmitted }) prefs.edit().remove(LAST_MESSAGE).apply()
         val now = System.currentTimeMillis()
         val existing = load(context)
+        val effort = existing.filter { it.isEffortReminder }
+        val scheduled = existing.filterNot { it.isEffortReminder }
         // On upgrade, pending alarms already in the queue identify tasks that
         // were synchronized before this version introduced seen-task tracking.
         val seen = if (prefs.contains(SEEN_TASKS)) prefs.getStringSet(SEEN_TASKS, emptySet()).orEmpty().toSet()
-            else existing.mapTo(HashSet()) { it.taskId }
+            else scheduled.mapTo(HashSet()) { it.taskId }
         val newlyOverdue = newlyObservedOverdue(tasks, seen, now)
         val overdueIds = newlyOverdue.mapTo(HashSet()) { it.taskId }
         val future = homeworkReminderPlan(tasks, now)
         // A refresh may race a previously scheduled alarm at its boundary.
         val validRecent = homeworkReminderPlan(tasks, now - 120_000L).toSet()
-        val due = existing.filter { it.atMillis <= now && it in validRecent && !(it.kind == "start" && it.taskId in overdueIds) }
-        save(context, (future + due).distinct().sortedBy { it.atMillis })
+        val due = scheduled.filter { it.atMillis <= now && it in validRecent && !(it.kind == "start" && it.taskId in overdueIds) }
+        save(context, future + due + effort)
 
         val pending = (due + newlyOverdue).distinctBy { Triple(it.taskId, it.kind, it.atMillis) }
         val notified = if (pending.isEmpty()) true else {
@@ -40,7 +42,7 @@ object HomeworkReminderScheduler {
             val sent = HomeworkReminderReceiver.showStatus(context, message, audible = true)
             if (sent) {
                 prefs.edit().putString(LAST_MESSAGE, message).apply()
-                save(context, future)
+                save(context, future + effort)
             }
             sent
         }
@@ -48,8 +50,21 @@ object HomeworkReminderScheduler {
         val observed = tasks.mapTo(HashSet()) { it.id }
         if (!notified) observed.removeAll(overdueIds)
         prefs.edit().putStringSet(SEEN_TASKS, seen + observed).apply()
-        scheduleNext(context)
-        if (pending.isEmpty()) HomeworkReminderReceiver.showStatus(context, statusText(context), audible = false)
+        if (effort.any { it.atMillis <= now }) fireDue(context, now, effortOnly = true)
+        else {
+            scheduleNext(context)
+            if (pending.isEmpty()) HomeworkReminderReceiver.showStatus(context, statusText(context), audible = false)
+        }
+    }
+
+    internal fun rescheduleEffortFromTasks(context: Context, tasks: List<HomeworkTask>) {
+        val now = System.currentTimeMillis()
+        val existing = load(context)
+        val future = homeworkEffortReminderPlan(tasks, now)
+        val recent = homeworkEffortReminderPlan(tasks, now - 120_000L).toSet()
+        val due = existing.filter { it.isEffortReminder && it.atMillis <= now && it in recent }
+        save(context, existing.filterNot { it.isEffortReminder } + future + due)
+        if (due.isEmpty()) scheduleNext(context) else fireDue(context, now, effortOnly = true)
     }
 
     fun taskStarted(context: Context, taskId: String) = removeEvents(context, taskId, onlyStart = true)
@@ -66,17 +81,19 @@ object HomeworkReminderScheduler {
 
     fun rescheduleFromPrefs(context: Context) {
         val now = System.currentTimeMillis()
-        save(context, load(context).filter { it.atMillis > now })
+        val events = load(context)
+        save(context, events.filter { it.atMillis > now } +
+            events.filter { it.atMillis <= now }.mapNotNull { it.nextOvertimeReminder(now) })
         scheduleNext(context)
         HomeworkReminderReceiver.showStatus(context, statusText(context), audible = false)
     }
 
     /** A stale broadcast cannot revive a cancelled or updated event. */
-    internal fun fireDue(context: Context, now: Long = System.currentTimeMillis()) {
+    internal fun fireDue(context: Context, now: Long = System.currentTimeMillis(), effortOnly: Boolean = false) {
         val events = load(context)
-        val due = events.filter { it.atMillis <= now }
+        val (due, remaining) = events.partition { it.atMillis <= now && (!effortOnly || it.isEffortReminder) }
         if (due.isEmpty()) { scheduleNext(context); return }
-        save(context, events.filter { it.atMillis > now })
+        save(context, remaining + due.mapNotNull { it.nextOvertimeReminder(now) })
         val message = due.joinToString("；") { it.message }
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(LAST_MESSAGE, message).apply()
         scheduleNext(context)
@@ -97,21 +114,29 @@ object HomeworkReminderScheduler {
         val alarm = context.getSystemService(AlarmManager::class.java) ?: return
         val pending = PendingIntent.getBroadcast(context, REQUEST_CODE, Intent(context, HomeworkReminderReceiver::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         alarm.cancel(pending)
-        val next = load(context).firstOrNull { it.atMillis > System.currentTimeMillis() } ?: return
-        runCatching { alarm.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, next.atMillis, pending) }
-            .recoverCatching { alarm.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, next.atMillis, pending) }
+        val now = System.currentTimeMillis()
+        val next = load(context).firstOrNull { it.atMillis > now || it.isEffortReminder } ?: return
+        val triggerAt = maxOf(next.atMillis, now + 1)
+        runCatching { alarm.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pending) }
+            .recoverCatching { alarm.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pending) }
     }
 
     private fun load(context: Context): List<HomeworkReminderEvent> = runCatching {
         val array = JSONArray(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(EVENTS, "[]"))
         (0 until array.length()).map { index -> array.getJSONObject(index).let { value ->
-            HomeworkReminderEvent(value.getString("id"), value.getString("title"), value.getString("kind"), value.getLong("at"))
+            HomeworkReminderEvent(
+                value.getString("id"), value.getString("title"), value.getString("kind"), value.getLong("at"),
+                value.optLong("overtime_since").takeIf { it > 0 },
+            )
         } }.sortedBy { it.atMillis }
     }.getOrDefault(emptyList())
 
     private fun save(context: Context, events: List<HomeworkReminderEvent>) {
         val array = JSONArray()
-        events.forEach { array.put(JSONObject().put("id", it.taskId).put("title", it.title).put("kind", it.kind).put("at", it.atMillis)) }
+        events.distinct().forEach {
+            array.put(JSONObject().put("id", it.taskId).put("title", it.title).put("kind", it.kind)
+                .put("at", it.atMillis).put("overtime_since", it.overtimeSinceMillis))
+        }
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(EVENTS, array.toString()).apply()
     }
 }

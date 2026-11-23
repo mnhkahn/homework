@@ -378,7 +378,7 @@ class HomeworkApi(private val context: Context) {
                     if (it == TaskStatus.TODO && !deadline.toInstant().isAfter(now)) TaskStatus.OVERTIME else it
                 }
                 val completedAt = tableCard.completedAtMillis?.let { Instant.ofEpochMilli(it).epochSecond }
-                cardTask(item, status, deadline, completedAt, tableCard)
+                activityStore.restore(cardTask(item, status, deadline, completedAt, tableCard))
                     .withTableActivity(activity[item.getString("id")])
             }
         }
@@ -421,6 +421,9 @@ class HomeworkApi(private val context: Context) {
             scheduledDueEpochSeconds = parseTrelloDate(item.optString("due")),
             explicitEstimatedMinutes = explicitHomeworkMinutes(description),
             tableCard = tableCard,
+            trelloLastActivityAtMillis = runCatching {
+                OffsetDateTime.parse(item.optString("dateLastActivity")).toInstant().toEpochMilli()
+            }.getOrNull(),
         )
     }
 
@@ -448,17 +451,17 @@ class HomeworkApi(private val context: Context) {
         }
         .toList().distinctBy { it.id }.sortedByDescending { it.date }
 
-    /** Only protocol-valid review comments expose the review button. */
-    suspend fun hasReviews(cardId: String): Boolean = reviewComments(cardId).isNotEmpty()
-
     suspend fun reviews(cardId: String): HomeworkReviewContent {
         val reviews = reviewComments(cardId)
+        val attachmentIds = reviews.mapNotNullTo(mutableSetOf()) { it.attachmentId }
+        if (attachmentIds.isEmpty()) return HomeworkReviewContent(reviews, emptyMap())
         val attachments = requestArray("GET", "/cards/${segment(cardId)}/attachments?fields=id,url,name,mimeType,isUpload")
         val media = mutableMapOf<String, HomeworkAttachment>()
         for (index in 0 until attachments.length()) {
             val value = attachments.getJSONObject(index)
-            if (value.optBoolean("isUpload")) {
-                media[value.getString("id")] = HomeworkAttachment(value.optString("url"), value.optString("name"), value.optString("mimeType"))
+            val id = value.getString("id")
+            if (id in attachmentIds && value.optBoolean("isUpload")) {
+                media[id] = HomeworkAttachment(value.optString("url"), value.optString("name"), value.optString("mimeType"))
             }
         }
         return HomeworkReviewContent(reviews, media)

@@ -24,10 +24,11 @@ class HomeworkTableDataTest {
         assertNull(JSONObject().toHomeworkTableCard("待改错"))
     }
 
-    @Test fun eachGroupUsesPlannedStartThenDueEvenWhenActualTimesDisagree() {
+    @Test fun todoPrecedesCorrectionsAndEachSectionUsesPlannedStartThenDue() {
         val correcting = task("correcting", "待改错", start = "2026-11-21T07:00:00Z").withTableActivity(HomeworkTableActivity(500, true, false))
         val started = task("started", "待完成", start = "2026-11-21T06:00:00Z").withTableActivity(HomeworkTableActivity(400, false, false))
         val pending = task("pending", "待完成", start = "2026-11-21T09:00:00Z")
+        val estimated = task("estimated", "待完成").copy(explicitEstimatedMinutes = 90)
         val wrongAttempt = task("wrong-attempt", "待改错", start = "2026-11-21T08:00:00Z").withTableActivity(HomeworkTableActivity(600, false, false))
         val unrelated = task("custom", "老师复核")
         val doneB = task("done-b", "已完成", "2026-11-21T11:00:00Z", "2026-11-21T01:00:00Z", "2026-11-21T08:00:00Z")
@@ -35,11 +36,12 @@ class HomeworkTableDataTest {
             .withTableActivity(HomeworkTableActivity(700, false, false))
         val doneMissingTime = task("done-missing", "已完成")
         val corrected = task("corrected", "已改错", start = "2026-11-21T07:00:00Z")
-        val input = listOf(corrected, doneMissingTime, wrongAttempt, doneB, unrelated, doneA, started, pending, correcting)
+        val input = listOf(corrected, doneMissingTime, wrongAttempt, doneB, unrelated, doneA, started, pending, correcting, estimated)
         val sorted = homeworkTableForDate(input, day, zone)
-        assertEquals(listOf(started, correcting, wrongAttempt, pending, unrelated, corrected, doneA, doneB, doneMissingTime), sorted)
-        assertEquals(listOf(started, correcting, wrongAttempt, pending, unrelated),
+        assertEquals(listOf(started, estimated, pending, unrelated, correcting, wrongAttempt, corrected, doneA, doneB, doneMissingTime), sorted)
+        assertEquals(listOf(started, estimated, pending, unrelated, correcting, wrongAttempt),
             sorted.filter { TaskProgressFilter.UNFINISHED.includes(it.tableGroup) })
+        assertEquals(listOf(started, correcting), sorted.filter { TaskProgressFilter.RUNNING.includes(it.tableGroup) })
         assertEquals(listOf(corrected, doneA, doneB, doneMissingTime),
             sorted.filter { TaskProgressFilter.SUBMITTED.includes(it.tableGroup) })
     }

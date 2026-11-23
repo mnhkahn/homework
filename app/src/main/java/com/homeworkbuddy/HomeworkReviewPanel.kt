@@ -35,8 +35,12 @@ import java.io.File
 @Composable
 internal fun HomeworkReviewDialog(
     task: HomeworkTask,
+    content: HomeworkReviewContent?,
+    reviewLoading: Boolean,
+    reviewError: String?,
     refreshing: Boolean,
     submitting: Boolean,
+    onRefreshReview: () -> Unit,
     onDismiss: () -> Unit,
     onSubmitCorrection: () -> Unit,
 ) {
@@ -63,7 +67,14 @@ internal fun HomeworkReviewDialog(
                     OutlinedButton(onClick = { textSize += 2 }, enabled = textSize < 32) { Text("放大文字") }
                 }
                 task.gradeResult?.let { HomeworkGradeBadge(it) }
-                HomeworkReviewPanel(task, Modifier.fillMaxWidth().weight(1f), refreshing, textSize.sp)
+                HomeworkReviewPanel(
+                    content = content,
+                    loading = reviewLoading,
+                    error = reviewError,
+                    onRefresh = onRefreshReview,
+                    textSize = textSize.sp,
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                )
                 HorizontalDivider()
                 if (task.canCorrect) {
                     Button(
@@ -80,38 +91,30 @@ internal fun HomeworkReviewDialog(
 }
 
 @Composable
-internal fun HomeworkReviewPanel(task: HomeworkTask, modifier: Modifier = Modifier, refreshing: Boolean, textSize: TextUnit) {
+private fun HomeworkReviewPanel(
+    content: HomeworkReviewContent?,
+    loading: Boolean,
+    error: String?,
+    onRefresh: () -> Unit,
+    textSize: TextUnit,
+    modifier: Modifier = Modifier,
+) {
     val context = LocalContext.current
     val api = remember(context) { HomeworkApi(context) }
-    var content by remember(task.id) { mutableStateOf<HomeworkReviewContent?>(null) }
-    var error by remember(task.id) { mutableStateOf<String?>(null) }
-    var loading by remember(task.id) { mutableStateOf(false) }
-    var refresh by remember { mutableIntStateOf(0) }
-    LaunchedEffect(task.id, refresh, refreshing) {
-        if (refreshing) return@LaunchedEffect
-        loading = true
-        error = null
-        try {
-            content = api.reviews(task.id)
-        } catch (cancelled: CancellationException) { throw cancelled }
-        catch (failure: Exception) { error = failure.message ?: "批改结果加载失败" }
-        finally { loading = false }
-    }
     Column(modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text("批改结果", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
-            TextButton(onClick = { refresh++ }, enabled = !loading && !refreshing) { Text("刷新批改") }
+            TextButton(onClick = onRefresh, enabled = !loading) { Text("刷新批改") }
         }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         if (loading) CircularProgressIndicator()
-        val current = content
-        if (current != null && current.reviews.isEmpty()) Text("还没有批改结果")
+        if (content != null && content.reviews.isEmpty()) Text("还没有批改结果")
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            items(current?.reviews.orEmpty(), key = { it.id }) { review ->
+            items(content?.reviews.orEmpty(), key = { it.id }) { review ->
                 OutlinedCard(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         val date = runCatching { java.time.OffsetDateTime.parse(review.date).atZoneSameInstant(java.time.ZoneId.of("Asia/Shanghai")).format(java.time.format.DateTimeFormatter.ofPattern("M月d日 HH:mm")) }.getOrDefault(review.date)
-                        Text("${if (review.id == current?.reviews?.firstOrNull()?.id) "最新批改 · " else "历史批改 · "}$date")
+                        Text("${if (review.id == content?.reviews?.firstOrNull()?.id) "最新批改 · " else "历史批改 · "}$date")
                         review.gradeResult?.let { HomeworkGradeBadge(it, "本次评分") }
                         review.hasErrors?.let { Text(if (it) "本次批改有错，请查看订正要求" else "本次批改通过") }
                         if (review.type == "text") {
@@ -122,7 +125,7 @@ internal fun HomeworkReviewPanel(task: HomeworkTask, modifier: Modifier = Modifi
                                 )
                             }
                         } else {
-                            val attachment = current?.attachments?.get(review.attachmentId)
+                            val attachment = content?.attachments?.get(review.attachmentId)
                             when {
                                 attachment == null -> Text("批改附件已删除或尚未上传，请联系家长重新提交")
                                 review.type == "image" && attachment.isReviewImage -> ReviewImage(attachment, api)

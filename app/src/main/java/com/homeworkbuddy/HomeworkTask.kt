@@ -72,6 +72,7 @@ data class HomeworkTask(
     val requirements: String? = null,
     val updatedAtEpochSeconds: Long? = null,
     val tableCard: HomeworkTableCard? = null,
+    val trelloLastActivityAtMillis: Long? = null,
 ) {
     /** System recorder URI retained locally; Trello attachments are never used for playback. */
     val localAudioUri: String? get() = photoPath?.takeIf {

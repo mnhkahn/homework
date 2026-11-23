@@ -601,8 +601,13 @@ class KioskPolicy(private val context: Context) {
             val lockTaskPackages = setOf(context.packageName) + studyPackages + temporaryPackages + studyInstallSystemPackages()
             runCatching { dpm.setLockTaskPackages(admin, lockTaskPackages.toTypedArray()) }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                // Keep the tablet's own clock and battery indicators visible in study mode.
-                runCatching { dpm.setLockTaskFeatures(admin, DevicePolicyManager.LOCK_TASK_FEATURE_SYSTEM_INFO) }
+                // Android requires HOME alongside NOTIFICATIONS. The package
+                // allowlist still controls which apps can open in Lock Task.
+                val features = DevicePolicyManager.LOCK_TASK_FEATURE_SYSTEM_INFO or
+                    DevicePolicyManager.LOCK_TASK_FEATURE_HOME or
+                    DevicePolicyManager.LOCK_TASK_FEATURE_NOTIFICATIONS
+                runCatching { dpm.setLockTaskFeatures(admin, features) }
+                    .onFailure { Log.w("StudyGuard", "Cannot apply study-mode notification policy", it) }
             }
         } else {
             unsuspendManagedApps()

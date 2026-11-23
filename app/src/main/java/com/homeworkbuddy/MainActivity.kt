@@ -120,7 +120,7 @@ private fun deletePendingHomeworkRecording(context: Context, uri: Uri?) {
     if (file.parentFile == File(context.filesDir, "pending-audio")) file.delete()
 }
 
-private fun elapsedLabel(seconds: Int): String {
+internal fun elapsedLabel(seconds: Int): String {
     val minutes = seconds.coerceAtLeast(0) / 60
     val remainder = seconds.coerceAtLeast(0) % 60
     return "%02d:%02d".format(minutes, remainder)
@@ -556,6 +556,12 @@ private fun HomeworkBuddyApp() {
     }
 
     val dayTasks = remember(tableTasks, selectedDate) { homeworkTableForDate(tableTasks, selectedDate) }
+
+    LaunchedEffect(tableBindingId, tableLoading, tableTasks) {
+        if (!tableLoading || tableTasks.isNotEmpty()) {
+            HomeworkReminderScheduler.rescheduleEffortFromTasks(context, tableTasks)
+        }
+    }
 
     fun selectTask(task: HomeworkTask?) {
         selectedId = task?.id.orEmpty()
@@ -1143,6 +1149,8 @@ private fun HomeworkBuddyApp() {
             todayTasks = tasks,
             dayTasks = dayTasks,
             reviewTasks = tableTasks,
+            reviewBindingId = tableBindingId,
+            reviewAuthorizationRevision = authorizationRevision,
             detailTask = detailTask,
             submissionType = selected?.type,
             onCloseDetail = { detailTaskId = null },
@@ -1512,29 +1520,50 @@ private fun CelebrationDialog(taskTitle: String, allTasksComplete: Boolean, comp
     AlertDialog(onDismissRequest = {}, icon = { Text("👋", fontSize = 42.sp) }, title = { Text("你好！我怎么称呼你？") }, text = { OutlinedTextField(value = draft, onValueChange = { draft = it.take(12) }, singleLine = true, label = { Text("你的名字") }) }, confirmButton = { Button(enabled = draft.isNotBlank(), onClick = { onSaved(draft.trim()) }) { Text("开始今天的作业") } })
 }
 
+private data class CachedHomeworkReview(val updatedAtMillis: Long?, val content: HomeworkReviewContent)
+
 @Composable
-private fun HomeworkHome(slogan: String, todayTasks: List<HomeworkTask>, dayTasks: List<HomeworkTask>, reviewTasks: List<HomeworkTask>, detailTask: HomeworkTask?, submissionType: HomeworkTaskType?, onCloseDetail: () -> Unit, selectedDate: LocalDate, onSelectDate: (LocalDate) -> Unit, running: Boolean, taskElapsedSeconds: Int, activeElapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, tableLoading: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, teacherConnection: TeacherConnectionSnapshot, kioskMode: KioskMode, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, vocabularyPhotoRequired: Boolean, onOpenVocabulary: (HomeworkTask, List<String>) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onResubmit: (String) -> Unit, onChoosePhoto: () -> Unit, onChooseAudio: () -> Unit, onChooseText: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photos: List<Uri>, initialPhotoPreviewIndex: Int, audioAttached: Boolean, showSubmissionChoice: Boolean, showTextSubmission: Boolean, submissionText: String, onSubmissionTextChange: (String) -> Unit, onSubmitText: () -> Unit, onAddPhoto: () -> Unit, onRetakePhoto: (Int) -> Unit, onRemovePhoto: (Int) -> Unit, onDismissSubmissionChoice: () -> Unit, onRetake: () -> Unit, onDismissTextSubmission: () -> Unit) {
+private fun HomeworkHome(slogan: String, todayTasks: List<HomeworkTask>, dayTasks: List<HomeworkTask>, reviewTasks: List<HomeworkTask>, reviewBindingId: String?, reviewAuthorizationRevision: Int, detailTask: HomeworkTask?, submissionType: HomeworkTaskType?, onCloseDetail: () -> Unit, selectedDate: LocalDate, onSelectDate: (LocalDate) -> Unit, running: Boolean, taskElapsedSeconds: Int, activeElapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, tableLoading: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, teacherConnection: TeacherConnectionSnapshot, kioskMode: KioskMode, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, vocabularyPhotoRequired: Boolean, onOpenVocabulary: (HomeworkTask, List<String>) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onResubmit: (String) -> Unit, onChoosePhoto: () -> Unit, onChooseAudio: () -> Unit, onChooseText: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photos: List<Uri>, initialPhotoPreviewIndex: Int, audioAttached: Boolean, showSubmissionChoice: Boolean, showTextSubmission: Boolean, submissionText: String, onSubmissionTextChange: (String) -> Unit, onSubmitText: () -> Unit, onAddPhoto: () -> Unit, onRetakePhoto: (Int) -> Unit, onRemovePhoto: (Int) -> Unit, onDismissSubmissionChoice: () -> Unit, onRetake: () -> Unit, onDismissTextSubmission: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val reviewApi = remember(context) { HomeworkApi(context) }
-    var reviewedTaskIds by remember { mutableStateOf<Set<String>>(emptySet()) }
-    var reviewTask by remember { mutableStateOf<HomeworkTask?>(null) }
-    var reviewSyncError by remember { mutableStateOf<String?>(null) }
+    val reviewCache = remember(context, reviewBindingId, reviewAuthorizationRevision) {
+        mutableStateMapOf<String, CachedHomeworkReview>()
+    }
+    var reviewTask by remember(reviewCache) { mutableStateOf<HomeworkTask?>(null) }
+    val openReviewTask = reviewTask?.let { opened ->
+        reviewTasks.firstOrNull { it.id == opened.id } ?: opened
+    }
+    val reviewTarget = openReviewTask ?: detailTask
+    val reviewTargetId = reviewTarget?.id
+    val reviewRevision = reviewTarget?.trelloLastActivityAtMillis
+    var reviewRefresh by remember(reviewTargetId, reviewCache) { mutableIntStateOf(0) }
+    var reviewLoading by remember(reviewTargetId, reviewRevision, reviewCache) { mutableStateOf(false) }
+    var reviewError by remember(reviewTargetId, reviewRevision, reviewCache) { mutableStateOf<String?>(null) }
+
+    // The detail page and its review dialog share one load for the current card.
+    LaunchedEffect(reviewCache, reviewTargetId, reviewRevision, reviewRefresh) {
+        val id = reviewTargetId ?: return@LaunchedEffect
+        if (reviewBindingId == null) return@LaunchedEffect
+        val cached = reviewCache[id]
+        if (reviewRefresh == 0 && cached != null && cached.updatedAtMillis == reviewRevision) return@LaunchedEffect
+        reviewLoading = true
+        reviewError = null
+        try {
+            reviewCache[id] = CachedHomeworkReview(reviewRevision, reviewApi.reviews(id))
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            reviewError = failure.message ?: "批改结果加载失败"
+        } finally {
+            reviewLoading = false
+        }
+    }
+
+    val reviewSyncError = reviewError?.let { "批改状态同步失败，请点击刷新重试" }
     val todayEstimatedSeconds = todayTasks.sumOf { it.estimatedMinutes.coerceAtLeast(0) * 60 }
     val completedEstimatedSeconds = todayTasks.filter { it.status.isSubmitted }
         .sumOf { it.estimatedMinutes.coerceAtLeast(0) * 60 }
     val todayElapsedSeconds = (completedEstimatedSeconds + activeElapsedSeconds).coerceAtMost(todayEstimatedSeconds)
-    LaunchedEffect(detailTask?.id, detailTask?.updatedAtEpochSeconds, refreshing) {
-        if (refreshing || !reviewApi.isConnected) return@LaunchedEffect
-        reviewSyncError = null
-        val id = detailTask?.id ?: return@LaunchedEffect
-        try {
-            reviewedTaskIds = if (reviewApi.hasReviews(id)) reviewedTaskIds + id else reviewedTaskIds - id
-        } catch (cancelled: kotlinx.coroutines.CancellationException) {
-            throw cancelled
-        } catch (failure: Exception) {
-            reviewSyncError = "批改状态同步失败，请点击刷新重试"
-        }
-    }
     val showReview: (HomeworkTask) -> Unit = { reviewTask = it }
     Box(
         Modifier
@@ -1544,7 +1573,16 @@ private fun HomeworkHome(slogan: String, todayTasks: List<HomeworkTask>, dayTask
             .padding(24.dp),
     ) {
         Column(Modifier.fillMaxSize()) {
-            Header(slogan, refreshing, captureStatus, studyActivity, systemNonAllowedApps, teacherConnection, kioskMode, onRefresh, onParent, onStudyApps, onBlockedApps)
+            Header(
+                slogan, refreshing, captureStatus, studyActivity, systemNonAllowedApps, teacherConnection, kioskMode,
+                onRefresh = {
+                    if (reviewError != null) reviewRefresh++
+                    onRefresh()
+                },
+                onParent = onParent,
+                onStudyApps = onStudyApps,
+                onBlockedApps = onBlockedApps,
+            )
             reviewSyncError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             if (remoteNotice != null) {
                 Spacer(Modifier.height(14.dp))
@@ -1618,7 +1656,7 @@ private fun HomeworkHome(slogan: String, todayTasks: List<HomeworkTask>, dayTask
                         onStart = { onStart(); if (task.isCorrection) showReview(task) },
                         onPianoRecord = onPianoRecord,
                         onFinish = onFinish,
-                        hasReview = task.canOpenReview(task.id in reviewedTaskIds),
+                        hasReview = task.canOpenReview(reviewCache[task.id]?.content?.reviews?.isNotEmpty() == true),
                         onReview = { showReview(task) },
                         vocabularyPhotoRequired = vocabularyPhotoRequired,
                         onOpenVocabulary = onOpenVocabulary,
@@ -1628,12 +1666,15 @@ private fun HomeworkHome(slogan: String, todayTasks: List<HomeworkTask>, dayTask
             }
         }
     }
-    reviewTask?.let { openedTask ->
-        val currentTask = reviewTasks.firstOrNull { it.id == openedTask.id } ?: openedTask
+    openReviewTask?.let { currentTask ->
         HomeworkReviewDialog(
             task = currentTask,
+            content = reviewCache[currentTask.id]?.content,
+            reviewLoading = reviewLoading,
+            reviewError = reviewError,
             refreshing = refreshing,
             submitting = submitting,
+            onRefreshReview = { reviewRefresh++ },
             onDismiss = { reviewTask = null },
             onSubmitCorrection = {
                 reviewTask = null

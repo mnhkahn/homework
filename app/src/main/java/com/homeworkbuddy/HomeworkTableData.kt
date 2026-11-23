@@ -34,8 +34,22 @@ internal val HomeworkTask.tableStartedAt: Long?
         status == TaskStatus.RUNNING && tableCard?.dueComplete == false && !tableCard.submitted
     }
 
-internal enum class HomeworkTableGroup(val label: String) {
-    RUNNING("正在做"), PENDING("还没做"), SUBMITTED("做完"),
+internal fun HomeworkTask.tableActualEffortSeconds(nowSeconds: Long): Int? {
+    val startedAt = startedAtEpochSeconds ?: return null
+    val endedAt = if (tableStartedAt != null) nowSeconds else {
+        if (!status.isSubmitted) return null
+        completedAtEpochSeconds ?: return null
+    }
+    if (endedAt < startedAt && tableStartedAt == null) return null
+    return (endedAt - startedAt).coerceIn(0, Int.MAX_VALUE.toLong()).toInt()
+}
+
+internal enum class HomeworkTableGroup {
+    RUNNING, PENDING, SUBMITTED,
+}
+
+internal enum class HomeworkTableSection(val label: String) {
+    TODO("待完成"), CORRECTION("待改错"), SUBMITTED("做完"),
 }
 
 internal enum class TaskProgressFilter(val label: String) {
@@ -56,6 +70,13 @@ internal val HomeworkTask.tableGroup: HomeworkTableGroup
         else -> HomeworkTableGroup.PENDING
     }
 
+internal val HomeworkTask.tableSection: HomeworkTableSection
+    get() = when {
+        tableCard?.submitted == true -> HomeworkTableSection.SUBMITTED
+        tableCard?.listStatus == TaskStatus.NEEDS_CORRECTION -> HomeworkTableSection.CORRECTION
+        else -> HomeworkTableSection.TODO
+    }
+
 internal fun homeworkTableForDate(
     tasks: List<HomeworkTask>,
     date: LocalDate,
@@ -64,8 +85,12 @@ internal fun homeworkTableForDate(
     return tasks.filter { task ->
         task.tableCard?.let { Instant.ofEpochMilli(it.dueAtMillis).atZone(zone).toLocalDate() } == date
     }.sortedWith(
-        compareBy<HomeworkTask> { it.tableGroup }
-            .thenBy { it.tableCard!!.let { card -> card.startAtMillis ?: card.dueAtMillis } }
+        compareBy<HomeworkTask> { it.tableSection }
+            .thenBy { it.tableGroup }
+            .thenBy { task ->
+                val card = requireNotNull(task.tableCard)
+                card.startAtMillis ?: (card.dueAtMillis - (task.explicitEstimatedMinutes ?: 0) * 60_000L)
+            }
             .thenBy { it.tableCard!!.dueAtMillis },
     )
 }
@@ -103,7 +128,12 @@ internal fun JSONObject.toHomeworkTableCard(listName: String): HomeworkTableCard
 private fun trelloTableTime(value: String?): Long? =
     value?.let { runCatching { OffsetDateTime.parse(it).toInstant().toEpochMilli() }.getOrNull() }
 
-internal data class HomeworkTableActivity(val at: Long, val correction: Boolean, val completed: Boolean)
+internal data class HomeworkTableActivity(
+    val at: Long,
+    val correction: Boolean,
+    val completed: Boolean,
+    val startedAt: Long? = null,
+)
 
 internal fun parseHomeworkTableActivity(actions: JSONArray): Map<String, HomeworkTableActivity> = buildMap {
     for (index in 0 until actions.length()) {
@@ -129,14 +159,20 @@ internal fun parseHomeworkTableActivity(actions: JSONArray): Map<String, Homewor
         }
         val current = get(card)
         if (current == null || at > current.at || (at == current.at && completed && !current.completed)) {
-            put(card, HomeworkTableActivity(at, correction, completed))
+            val startedAt = (event.opt("started_at") as? Number)?.toLong()?.takeIf { it in 1..at }
+            put(card, HomeworkTableActivity(at, correction, completed, startedAt))
         }
     }
 }
 
 internal fun HomeworkTask.withTableActivity(event: HomeworkTableActivity?): HomeworkTask {
-    if (event == null || event.completed || tableCard?.dueComplete != false ||
-        status.isSubmitted || event.correction != isCorrection
-    ) return this
-    return copy(status = TaskStatus.RUNNING, startedAtEpochSeconds = event.at)
+    if (event == null) return this
+    if (status.isSubmitted && event.completed && event.correction == (status == TaskStatus.CORRECTED)) {
+        return copy(
+            completedAtEpochSeconds = event.at,
+            startedAtEpochSeconds = event.startedAt ?: startedAtEpochSeconds,
+        )
+    }
+    if (event.completed || tableCard?.dueComplete != false || status.isSubmitted || event.correction != isCorrection) return this
+    return copy(status = TaskStatus.RUNNING, startedAtEpochSeconds = maxOf(event.at, tableStartedAt ?: 0))
 }

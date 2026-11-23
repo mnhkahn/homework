@@ -56,6 +56,41 @@ class HomeworkReminderPlanTest {
         assertEquals(listOf("seen"), newlyObservedOverdue(listOf(existing), emptySet(), (due + 1) * 1000).map { it.taskId })
     }
 
+    private fun runningTask() = task().copy(
+        status = TaskStatus.RUNNING,
+        startedAtEpochSeconds = now / 1_000,
+        tableCard = HomeworkTableCard("待完成", null, now + 3_600_000, false, null, null, null, null),
+    )
+
+    @Test fun effortRemindersFollowActualStartAndRepeatAtFiveMinuteBoundaries() {
+        val started = runningTask().copy(scheduledStartEpochSeconds = (now - 180_000) / 1_000)
+        val (warning, limit) = homeworkEffortReminderPlan(listOf(started), now)
+        assertEquals(now + 960_000, warning.atMillis)
+        assertNull(warning.nextOvertimeReminder(warning.atMillis))
+        assertEquals(now + 1_200_000, limit.atMillis)
+        val firstRepeat = requireNotNull(limit.nextOvertimeReminder(limit.atMillis))
+        assertEquals(limit.atMillis + 300_000, firstRepeat.atMillis)
+        assertTrue(firstRepeat.message.contains("5 分钟"))
+        assertEquals(limit.atMillis + 900_000, firstRepeat.nextOvertimeReminder(limit.atMillis + 620_000)?.atMillis)
+    }
+
+    @Test fun effortRemindersDoNotBackfillOrContinueAfterSubmission() {
+        val started = runningTask()
+        val afterLimit = now + 1_320_000
+        val remaining = homeworkEffortReminderPlan(listOf(started), afterLimit)
+        assertEquals(listOf(now + 1_500_000), remaining.map { it.atMillis })
+        assertTrue(homeworkEffortReminderPlan(listOf(started.copy(status = TaskStatus.COMPLETED)), afterLimit).isEmpty())
+        assertTrue(homeworkEffortReminderPlan(listOf(task()), now).isEmpty())
+    }
+
+    @Test fun actualEffortTracksRunningTimeAndFreezesAtCompletion() {
+        val started = runningTask()
+        assertEquals(180, started.tableActualEffortSeconds(now / 1_000 + 180))
+        val done = started.copy(status = TaskStatus.COMPLETED, completedAtEpochSeconds = now / 1_000 + 240)
+        assertEquals(240, done.tableActualEffortSeconds(now / 1_000 + 360))
+        assertNull(done.copy(startedAtEpochSeconds = null).tableActualEffortSeconds(now / 1_000))
+    }
+
     @Test fun trelloDatesPreserveOffsetsAndRejectMissingValues() {
         assertEquals(1_700_000_000L, parseTrelloDate("2023-11-15T06:13:20+08:00"))
         assertNull(parseTrelloDate("null"))
