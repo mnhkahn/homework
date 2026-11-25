@@ -60,6 +60,7 @@ import androidx.compose.material.icons.outlined.CloudSync
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.LockOpen
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -308,9 +309,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (HomeworkApi.saveAuthorizationResult(this, intent?.data)) trelloAuthorizationRevision++
-        setShowWhenLocked(true)
-        setTurnScreenOn(true)
-        KioskPolicy(this).scheduleNextTransitions()
+        if (!BuildConfig.PLAY_DISTRIBUTION) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+            KioskPolicy(this).scheduleNextTransitions()
+        }
         setContent { HomeworkBuddyApp() }
     }
 
@@ -344,7 +347,7 @@ class MainActivity : ComponentActivity() {
     private fun ensureTeacherConnection() {
         // Clearing the binding removes the config, so an explicit user
         // disconnect is never undone by an Activity lifecycle callback.
-        if (TeacherDeviceStore.config(this) != null) TeacherConnectionService.connect(this)
+        if (!BuildConfig.PLAY_DISTRIBUTION && TeacherDeviceStore.config(this) != null) TeacherConnectionService.connect(this)
     }
 
     override fun onStop() {
@@ -360,7 +363,7 @@ class MainActivity : ComponentActivity() {
         KioskPolicy(this).apply {
             revokeSystemAudioPlaybackAccess()
             markManagedActivityForeground()
-            applyForCurrentTime(this@MainActivity)
+            if (!BuildConfig.PLAY_DISTRIBUTION) applyForCurrentTime(this@MainActivity)
         }
         extendStudyScreenTimeout()
     }
@@ -401,6 +404,7 @@ private fun HomeworkBuddyApp() {
     val context = androidx.compose.ui.platform.LocalContext.current
     val activity = context as? Activity
     val api = remember(context) { HomeworkApi(context) }
+    val demoMode = remember(context) { PlayDemo.enabled(context) }
     val kioskPolicy = remember(context) { KioskPolicy(context) }
     val pendingStore = remember(context) { PendingSubmissionStore(context) }
     val previewRequirementsStore = remember(context) { PreviewRequirementsStore(context) }
@@ -425,7 +429,7 @@ private fun HomeworkBuddyApp() {
     var running by remember { mutableStateOf(tasks.any { it.status == TaskStatus.RUNNING }) }
     var taskStartedAtMillis by remember { mutableLongStateOf(tasks.firstOrNull { it.status == TaskStatus.RUNNING }?.startedAtEpochSeconds?.times(1_000) ?: 0L) }
     var taskElapsedSeconds by remember { mutableIntStateOf(0) }
-    var showNameDialog by remember { mutableStateOf(childName.isBlank()) }
+    var showNameDialog by remember { mutableStateOf(childName.isBlank() && !demoMode) }
     var connected by remember { mutableStateOf(api.isConnected) }
     val tableBindingId = if (connected) api.tableBindingId else null
     var tableTasks by remember(tableBindingId) { mutableStateOf(taskCache.tableTasks(tableBindingId)) }
@@ -440,6 +444,7 @@ private fun HomeworkBuddyApp() {
     var authorizationExpired by remember { mutableStateOf(false) }
     var checkingAuthorization by remember { mutableStateOf(false) }
     var showTrelloVerification by remember { mutableStateOf(false) }
+    var showTrelloDisclosure by remember { mutableStateOf(false) }
     var foreground by remember { mutableStateOf(true) }
     var refreshRequest by remember { mutableIntStateOf(0) }
     var refreshing by remember { mutableStateOf(false) }
@@ -486,7 +491,7 @@ private fun HomeworkBuddyApp() {
     }
 
     LaunchedEffect(Unit) {
-        runCatching { SloganApi.fetch() }.getOrNull()?.let { slogan = it }
+        if (!BuildConfig.PLAY_DISTRIBUTION) runCatching { SloganApi.fetch() }.getOrNull()?.let { slogan = it }
     }
 
     DisposableEffect(remoteNoticeStore) {
@@ -558,7 +563,7 @@ private fun HomeworkBuddyApp() {
     val dayTasks = remember(tableTasks, selectedDate) { homeworkTableForDate(tableTasks, selectedDate) }
 
     LaunchedEffect(tableBindingId, tableLoading, tableTasks) {
-        if (!tableLoading || tableTasks.isNotEmpty()) {
+        if (!demoMode && (!tableLoading || tableTasks.isNotEmpty())) {
             HomeworkReminderScheduler.rescheduleEffortFromTasks(context, tableTasks)
         }
     }
@@ -628,7 +633,7 @@ private fun HomeworkBuddyApp() {
 
     fun advanceAfterCompletion(taskId: String, photoPath: String? = null, isCorrection: Boolean? = null) {
         setDictationAwaitingPhoto(dictationAwaitingPhoto - taskId)
-        HomeworkReminderScheduler.taskCompleted(context, taskId)
+        if (!demoMode) HomeworkReminderScheduler.taskCompleted(context, taskId)
         val completedAt = System.currentTimeMillis() / 1_000
         activityStore.complete(taskId, completedAt)
         fun complete(task: HomeworkTask): HomeworkTask {
@@ -888,7 +893,8 @@ private fun HomeworkBuddyApp() {
         }
     }
     val requestNotificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
-    LaunchedEffect(Unit) {
+    LaunchedEffect(connected) {
+        if (BuildConfig.PLAY_DISTRIBUTION && (!connected || demoMode)) return@LaunchedEffect
         if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestNotificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
@@ -1039,7 +1045,7 @@ private fun HomeworkBuddyApp() {
                             startedAtEpochSeconds = localTask.startedAtEpochSeconds,
                         )
                     }
-                    HomeworkReminderScheduler.rescheduleFromTasks(context, withLocalState)
+                    if (!demoMode) HomeworkReminderScheduler.rescheduleFromTasks(context, withLocalState)
                 }.onFailure { error ->
                     if (error is kotlinx.coroutines.CancellationException) throw error
                     if (error is AuthorizationExpiredException) reportSyncError(error, "")
@@ -1073,7 +1079,10 @@ private fun HomeworkBuddyApp() {
                 } else {
                     val values = api.boards()
                     trelloBoards = values; selectedBoardId = values.firstOrNull()?.id.orEmpty()
-                    connectionError = if (values.isEmpty()) "这个 Trello 账户还没有看板，请先创建看板。" else null
+                    connectionError = if (values.isEmpty()) {
+                        if (BuildConfig.PLAY_DISTRIBUTION) "没有可用的私有看板。请家长在 Trello 创建或加入私有看板后继续。"
+                        else "这个 Trello 账户还没有看板，请先创建看板。"
+                    } else null
                 }
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
@@ -1098,11 +1107,19 @@ private fun HomeworkBuddyApp() {
             kioskPolicy.pause(15, activity, source = "Trello 授权", parentVerified = parentVerified)
             connectionError = "已临时开放 15 分钟，请在浏览器中完成授权。"
         }
-        api.openAuthorization()
+        if (BuildConfig.PLAY_DISTRIBUTION) {
+            runCatching { api.openAuthorization() }.onFailure {
+                authorizationStarted = api.hasAuthorization
+                connectionError = "无法打开浏览器，请安装浏览器后重试。"
+            }
+        } else api.openAuthorization()
     }
 
     HomeTheme {
         if (showNameDialog) NameDialog(
+            onDemo = if (BuildConfig.PLAY_DISTRIBUTION) {
+                { PlayDemo.setEnabled(context, true); activity?.recreate() }
+            } else null,
             onSaved = { name -> context.getSharedPreferences("profile", Context.MODE_PRIVATE).edit().putString("child_name", name).apply(); childName = name; showNameDialog = false; if (!connected) showConnectionDialog = true }
         )
         if (showConnectionDialog) ConnectionDialog(
@@ -1113,10 +1130,21 @@ private fun HomeworkBuddyApp() {
             selectedBoardId = selectedBoardId,
             error = connectionError,
             onConnect = {
-                if (kioskPolicy.isDeviceOwner && kioskPolicy.mode() == KioskMode.STUDY && ParentTotpStore(context).configured) showTrelloVerification = true
+                if (BuildConfig.PLAY_DISTRIBUTION) showTrelloDisclosure = true
+                else if (kioskPolicy.isDeviceOwner && kioskPolicy.mode() == KioskMode.STUDY && ParentTotpStore(context).configured) showTrelloVerification = true
                 else launchTrelloAuthorization()
             },
             onCheck = { checkTrelloAuthorization() },
+            onImportToken = if (BuildConfig.PLAY_DISTRIBUTION && !api.hasAuthorization) {
+                { value ->
+                    runCatching { api.importParentAuthorization(value) }
+                        .onSuccess { checkTrelloAuthorization() }
+                        .onFailure { connectionError = it.message ?: "保存授权码失败" }
+                }
+            } else null,
+            onDemo = if (BuildConfig.PLAY_DISTRIBUTION && !authorizationExpired && !checkingAuthorization) {
+                { PlayDemo.setEnabled(context, true); activity?.recreate() }
+            } else null,
             onSelectBoard = { selectedBoardId = it },
             onFinishSetup = {
                 scope.launch {
@@ -1125,6 +1153,15 @@ private fun HomeworkBuddyApp() {
                         .onFailure { connectionError = it.message ?: "保存看板设置失败" }
                 }
             },
+        )
+        if (showTrelloDisclosure) AlertDialog(
+            onDismissRequest = { showTrelloDisclosure = false },
+            title = { Text("请家长确认 Trello 同步") },
+            text = { Text("请由家长登录自己的 Trello 账号并选择私有看板。应用会读取作业和批改结果，将开始和完成记录以及你确认提交的文字、照片或录音发送到看板。拥有看板访问权限的人可以查看这些内容。请勿提交与作业无关的个人信息。") },
+            confirmButton = {
+                Button(onClick = { showTrelloDisclosure = false; launchTrelloAuthorization() }) { Text("我是家长，继续授权") }
+            },
+            dismissButton = { TextButton(onClick = { showTrelloDisclosure = false }) { Text("取消") } },
         )
         if (showTrelloVerification) ParentCodeDialog(onDismiss = { showTrelloVerification = false }, onVerified = {
             showTrelloVerification = false
@@ -1145,7 +1182,10 @@ private fun HomeworkBuddyApp() {
             }
         }
         HomeworkHome(
-            slogan = slogan,
+            slogan = if (demoMode) "本机示例 · 作业成果不会发送" else slogan,
+            onExitDemo = if (demoMode && submittingTaskId == null) {
+                { PlayDemo.setEnabled(context, false); activity?.recreate() }
+            } else null,
             todayTasks = tasks,
             dayTasks = dayTasks,
             reviewTasks = tableTasks,
@@ -1215,7 +1255,7 @@ private fun HomeworkBuddyApp() {
                         reportSyncError(error, "开始记录已保存在本机，联网后自动同步")
                     }
                 }
-                HomeworkReminderScheduler.taskStarted(context, task.id)
+                if (!demoMode) HomeworkReminderScheduler.taskStarted(context, task.id)
             },
             onPianoRecord = {
                 pianoTaskId?.let { pianoPractice = pianoPracticeStore.record(it) }
@@ -1499,31 +1539,77 @@ private fun CelebrationDialog(taskTitle: String, allTasksComplete: Boolean, comp
 @Composable private fun ConnectionDialog(
     expired: Boolean, checkingAuthorization: Boolean, authorizationStarted: Boolean, boards: List<TrelloOption>, selectedBoardId: String, error: String?,
     onConnect: () -> Unit, onCheck: () -> Unit, onSelectBoard: (String) -> Unit,
-    onFinishSetup: () -> Unit,
+    onImportToken: ((String) -> Unit)?, onDemo: (() -> Unit)?, onFinishSetup: () -> Unit,
 ) {
     val selectingBoard = boards.isNotEmpty()
+    val importingToken = authorizationStarted && !selectingBoard && onImportToken != null
+    var authorizationCode by remember { mutableStateOf("") }
     AlertDialog(onDismissRequest = {}, icon = { Text("🔗", fontSize = 38.sp) }, title = { Text(if (expired) "Trello 授权已过期" else "请家长关联 Trello") }, text = {
         Column(Modifier.heightIn(max = 430.dp).verticalScroll(rememberScrollState())) {
-            Text(when { expired && !selectingBoard -> "授权已失效，请家长重新授权 Trello；应用会尝试恢复原来的看板。授权 token 仅加密保存在平板。"; !authorizationStarted -> "家长授权后，这台平板会直接读取 Trello 作业。授权 token 仅加密保存在平板。"; selectingBoard -> "请选择这台平板使用的看板。系统使用“待完成”“已完成”“待改错”“已改错”四个列表，缺少时会自动创建。"; else -> "浏览器授权后会自动返回，并尝试恢复原有看板；如未自动完成，可点击继续。" })
+            Text(when { expired && !selectingBoard -> "授权已失效，请家长重新授权 Trello；应用会尝试恢复原来的看板。授权 token 仅加密保存在平板。"; !authorizationStarted -> "家长授权后，这台平板会直接读取 Trello 作业。授权 token 仅加密保存在平板。"; selectingBoard -> "请选择这台平板使用的看板。系统使用“待完成”“已完成”“待改错”“已改错”四个列表，缺少时会自动创建。"; importingToken -> "浏览器中的授权由家长完成。"; BuildConfig.PLAY_DISTRIBUTION -> "点继续查看可用的私有看板。"; else -> "浏览器授权后会自动返回，并尝试恢复原有看板；如未自动完成，可点击继续。" })
+            if (importingToken) {
+                Text("请家长复制浏览器中 Trello 显示的授权码，返回这里粘贴。授权码可访问你的看板，请勿发送给他人。")
+                OutlinedTextField(
+                    value = authorizationCode,
+                    onValueChange = { authorizationCode = it.take(256) },
+                    label = { Text("Trello 授权码") },
+                    singleLine = true,
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Password),
+                )
+            }
             if (selectingBoard) boards.forEach { item -> Row(Modifier.fillMaxWidth().clickable { onSelectBoard(item.id) }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) { RadioButton(selectedBoardId == item.id, { onSelectBoard(item.id) }); Text(item.name) } }
             if (error != null) { Spacer(Modifier.height(10.dp)); Text(error, color = MaterialTheme.colorScheme.error) }
         }
     }, confirmButton = { Button(
-        enabled = !checkingAuthorization && (!selectingBoard || selectedBoardId.isNotEmpty()),
-        onClick = when { !authorizationStarted -> onConnect; selectingBoard -> onFinishSetup; else -> onCheck }
+        enabled = !checkingAuthorization && (!selectingBoard || selectedBoardId.isNotEmpty()) &&
+            (!importingToken || authorizationCode.isNotBlank()),
+        onClick = when {
+            !authorizationStarted -> onConnect
+            selectingBoard -> onFinishSetup
+            importingToken -> { { onImportToken?.invoke(authorizationCode); authorizationCode = "" } }
+            else -> onCheck
+        },
     ) { Text(when { checkingAuthorization -> "正在恢复连接…"; !authorizationStarted -> "授权 Trello"; selectingBoard -> "绑定看板"; else -> "继续" }) } },
-        dismissButton = { if (authorizationStarted && !selectingBoard) TextButton(onClick = onConnect, enabled = !checkingAuthorization) { Text("重新授权") } })
+        dismissButton = {
+            when {
+                authorizationStarted && !selectingBoard -> TextButton(onClick = onConnect, enabled = !checkingAuthorization) { Text("重新授权") }
+                onDemo != null && !selectingBoard -> TextButton(onClick = onDemo) { Text("体验示例") }
+            }
+        },
+    )
 }
 
-@Composable private fun NameDialog(onSaved: (String) -> Unit) {
+@Composable
+private fun NameDialog(onDemo: (() -> Unit)?, onSaved: (String) -> Unit) {
     var draft by remember { mutableStateOf("") }
-    AlertDialog(onDismissRequest = {}, icon = { Text("👋", fontSize = 42.sp) }, title = { Text("你好！我怎么称呼你？") }, text = { OutlinedTextField(value = draft, onValueChange = { draft = it.take(12) }, singleLine = true, label = { Text("你的名字") }) }, confirmButton = { Button(enabled = draft.isNotBlank(), onClick = { onSaved(draft.trim()) }) { Text("开始今天的作业") } })
+    val context = androidx.compose.ui.platform.LocalContext.current
+    AlertDialog(
+        onDismissRequest = {},
+        icon = { Text("👋", fontSize = 42.sp) },
+        title = { Text("你好！我怎么称呼你？") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = draft, onValueChange = { draft = it.take(12) }, singleLine = true,
+                    label = { Text(if (BuildConfig.PLAY_DISTRIBUTION) "昵称" else "你的名字") },
+                )
+                if (BuildConfig.PLAY_DISTRIBUTION) TextButton(onClick = { openPlayPrivacyPolicy(context) }) { Text("隐私政策") }
+            }
+        },
+        confirmButton = { Button(enabled = draft.isNotBlank(), onClick = { onSaved(draft.trim()) }) { Text("开始今天的作业") } },
+        dismissButton = { onDemo?.let { TextButton(onClick = it) { Text("体验示例") } } },
+    )
+}
+
+internal fun openPlayPrivacyPolicy(context: Context) {
+    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(PlayDemo.PRIVACY_URL))) }
 }
 
 private data class CachedHomeworkReview(val updatedAtMillis: Long?, val content: HomeworkReviewContent)
 
 @Composable
-private fun HomeworkHome(slogan: String, todayTasks: List<HomeworkTask>, dayTasks: List<HomeworkTask>, reviewTasks: List<HomeworkTask>, reviewBindingId: String?, reviewAuthorizationRevision: Int, detailTask: HomeworkTask?, submissionType: HomeworkTaskType?, onCloseDetail: () -> Unit, selectedDate: LocalDate, onSelectDate: (LocalDate) -> Unit, running: Boolean, taskElapsedSeconds: Int, activeElapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, tableLoading: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, teacherConnection: TeacherConnectionSnapshot, kioskMode: KioskMode, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, vocabularyPhotoRequired: Boolean, onOpenVocabulary: (HomeworkTask, List<String>) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onResubmit: (String) -> Unit, onChoosePhoto: () -> Unit, onChooseAudio: () -> Unit, onChooseText: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photos: List<Uri>, initialPhotoPreviewIndex: Int, audioAttached: Boolean, showSubmissionChoice: Boolean, showTextSubmission: Boolean, submissionText: String, onSubmissionTextChange: (String) -> Unit, onSubmitText: () -> Unit, onAddPhoto: () -> Unit, onRetakePhoto: (Int) -> Unit, onRemovePhoto: (Int) -> Unit, onDismissSubmissionChoice: () -> Unit, onRetake: () -> Unit, onDismissTextSubmission: () -> Unit) {
+private fun HomeworkHome(slogan: String, onExitDemo: (() -> Unit)?, todayTasks: List<HomeworkTask>, dayTasks: List<HomeworkTask>, reviewTasks: List<HomeworkTask>, reviewBindingId: String?, reviewAuthorizationRevision: Int, detailTask: HomeworkTask?, submissionType: HomeworkTaskType?, onCloseDetail: () -> Unit, selectedDate: LocalDate, onSelectDate: (LocalDate) -> Unit, running: Boolean, taskElapsedSeconds: Int, activeElapsedSeconds: Int, pianoPractice: PianoPracticeStatus?, submitting: Boolean, refreshing: Boolean, weekMarks: List<Pair<LocalDate, DayMark>>, tableLoading: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, teacherConnection: TeacherConnectionSnapshot, kioskMode: KioskMode, remoteNotice: RemoteNotice?, syncError: String?, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit, onSelect: (HomeworkTask) -> Unit, vocabularyPhotoRequired: Boolean, onOpenVocabulary: (HomeworkTask, List<String>) -> Unit, onStart: () -> Unit, onPianoRecord: () -> Unit, onFinish: () -> Unit, onResubmit: (String) -> Unit, onChoosePhoto: () -> Unit, onChooseAudio: () -> Unit, onChooseText: () -> Unit, onSubmit: () -> Unit, showCameraConfirm: Boolean, photos: List<Uri>, initialPhotoPreviewIndex: Int, audioAttached: Boolean, showSubmissionChoice: Boolean, showTextSubmission: Boolean, submissionText: String, onSubmissionTextChange: (String) -> Unit, onSubmitText: () -> Unit, onAddPhoto: () -> Unit, onRetakePhoto: (Int) -> Unit, onRemovePhoto: (Int) -> Unit, onDismissSubmissionChoice: () -> Unit, onRetake: () -> Unit, onDismissTextSubmission: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val reviewApi = remember(context) { HomeworkApi(context) }
     val reviewCache = remember(context, reviewBindingId, reviewAuthorizationRevision) {
@@ -1580,6 +1666,7 @@ private fun HomeworkHome(slogan: String, todayTasks: List<HomeworkTask>, dayTask
                     onRefresh()
                 },
                 onParent = onParent,
+                onExitDemo = onExitDemo,
                 onStudyApps = onStudyApps,
                 onBlockedApps = onBlockedApps,
             )
@@ -1602,7 +1689,7 @@ private fun HomeworkHome(slogan: String, todayTasks: List<HomeworkTask>, dayTask
                     onSelectDate = onSelectDate,
                     modifier = Modifier.weight(1f),
                 )
-                HeadPosePanel(
+                if (!BuildConfig.PLAY_DISTRIBUTION) HeadPosePanel(
                     available = detailTask == null && reviewTask == null && !showSubmissionChoice && !showCameraConfirm && !showTextSubmission,
                     modifier = Modifier.width(172.dp),
                 )
@@ -1687,7 +1774,7 @@ private fun HomeworkHome(slogan: String, todayTasks: List<HomeworkTask>, dayTask
         title = { Text(if (submissionType == HomeworkTaskType.PREVIEW) "提交预习成果" else "怎么提交作业？") },
         text = {
             Column {
-                Text("可以拍照、录音或直接提交文字。确认后上传到 Trello。")
+                Text(if (PlayDemo.enabled(context)) "可以拍照、录音或直接提交文字。示例只在本机标记完成。" else "可以拍照、录音或直接提交文字。确认后上传到 Trello。")
                 TextButton(onClick = onChooseText) { Text("✏️ 提交文字") }
             }
         },
@@ -1710,7 +1797,11 @@ private fun HomeworkHome(slogan: String, todayTasks: List<HomeworkTask>, dayTask
         icon = { Text("🎙️", fontSize = 28.sp) },
         title = { Text("上传作业录音") },
         text = {
-            Text(if (submitting) "正在上传作业附件并完成任务…" else "录音已完成，也已保存在系统录音机中，将作为附件上传到 Trello。")
+            Text(when {
+                PlayDemo.enabled(context) -> "录音已完成。示例只在本机标记完成。"
+                submitting -> "正在上传作业附件并完成任务…"
+                else -> "录音已完成，也已保存在系统录音机中，将作为附件上传到 Trello。"
+            })
         },
         confirmButton = {
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1935,17 +2026,25 @@ private fun LocalRecordingButton(localUri: String) {
 }
 
 @OptIn(ExperimentalFoundationApi::class)
-@Composable private fun Header(slogan: String, refreshing: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, teacherConnection: TeacherConnectionSnapshot, kioskMode: KioskMode, onRefresh: () -> Unit, onParent: () -> Unit, onStudyApps: () -> Unit, onBlockedApps: () -> Unit) {
+@Composable private fun Header(slogan: String, refreshing: Boolean, captureStatus: CaptureStatus?, studyActivity: StudyActivity, systemNonAllowedApps: List<SystemAppUsage>, teacherConnection: TeacherConnectionSnapshot, kioskMode: KioskMode, onRefresh: () -> Unit, onParent: () -> Unit, onExitDemo: (() -> Unit)?, onStudyApps: () -> Unit, onBlockedApps: () -> Unit) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f).combinedClickable(onClick = {}, onLongClick = onParent)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("今天的作业", fontSize = 30.sp, fontWeight = FontWeight.Medium)
-                Spacer(Modifier.width(8.dp))
-                TeacherConnectionIcon(teacherConnection)
+                Text("今天的作业", fontSize = if (BuildConfig.PLAY_DISTRIBUTION) 25.sp else 30.sp, fontWeight = FontWeight.Medium)
+                if (!BuildConfig.PLAY_DISTRIBUTION) {
+                    Spacer(Modifier.width(8.dp))
+                    TeacherConnectionIcon(teacherConnection)
+                }
             }
             Text(slogan, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (BuildConfig.PLAY_DISTRIBUTION) {
+                if (onExitDemo != null) TextButton(onClick = onExitDemo) { Text("退出示例") }
+                IconButton(onClick = onParent) { Icon(Icons.Outlined.Settings, "家长设置") }
+                IconButton(onClick = onRefresh, enabled = !refreshing) { Icon(Icons.Outlined.Refresh, "刷新") }
+                return@Row
+            }
             val isStudyMode = kioskMode == KioskMode.STUDY
             Surface(
                 shape = RoundedCornerShape(18.dp),

@@ -12,7 +12,7 @@ import java.time.LocalTime
  * next automatic network refresh.
  */
 class HomeworkCacheStore(context: Context) {
-    private val prefs = context.getSharedPreferences("homework_task_cache", Context.MODE_PRIVATE)
+    private val prefs = PlayDemo.preferences(context, "homework_task_cache")
 
     fun todayTasks(): List<HomeworkTask> = tasksFor("today", LocalDate.now().toString())
 

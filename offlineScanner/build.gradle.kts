@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.zynksoftware.documentscanner"
-    compileSdk = 35
+    compileSdk = 36
     defaultConfig {
         minSdk = 26
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -22,17 +22,18 @@ kotlin {
 }
 
 dependencies {
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
+    val cameraXVersion = "1.4.2"
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
-    implementation("org.opencv:opencv:4.9.0")
+    implementation("org.opencv:opencv:4.12.0")
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("io.reactivex.rxjava3:rxandroid:3.0.0")
-    implementation("androidx.camera:camera-camera2:1.2.3")
-    implementation("androidx.camera:camera-lifecycle:1.2.3")
-    implementation("androidx.camera:camera-view:1.2.3")
+    implementation("androidx.camera:camera-camera2:$cameraXVersion")
+    implementation("androidx.camera:camera-lifecycle:$cameraXVersion")
+    implementation("androidx.camera:camera-view:$cameraXVersion")
     implementation("com.github.fondesa:kpermissions:3.3.0")
     implementation("androidx.exifinterface:exifinterface:1.3.6")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.6.4")

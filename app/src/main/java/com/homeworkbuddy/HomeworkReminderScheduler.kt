@@ -2,6 +2,7 @@ package com.homeworkbuddy
 
 import android.app.AlarmManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import org.json.JSONArray
@@ -138,5 +139,11 @@ object HomeworkReminderScheduler {
                 .put("at", it.atMillis).put("overtime_since", it.overtimeSinceMillis))
         }
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(EVENTS, array.toString()).apply()
+    }
+}
+
+class HomeworkReminderRestoreReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        HomeworkReminderScheduler.rescheduleFromPrefs(context)
     }
 }

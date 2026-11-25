@@ -7,7 +7,7 @@ import java.util.UUID
 
 /** Append-only task events, separate from the replaceable task/date caches. */
 class HomeworkActivityStore(context: Context) {
-    private val prefs = context.getSharedPreferences("homework_activity", Context.MODE_PRIVATE)
+    private val prefs = PlayDemo.preferences(context, "homework_activity")
 
     @Synchronized fun start(task: HomeworkTask, at: Long): HomeworkTask {
         if (task.status.isSubmitted) return task

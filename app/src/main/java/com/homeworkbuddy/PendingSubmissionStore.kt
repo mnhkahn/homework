@@ -21,7 +21,7 @@ data class PendingSubmission(
 )
 
 class PendingSubmissionStore(context: Context) {
-    private val prefs = context.getSharedPreferences("pending_submissions", Context.MODE_PRIVATE)
+    private val prefs = PlayDemo.preferences(context, "pending_submissions")
     fun add(item: PendingSubmission) {
         val items = items().filterNot { it.taskId == item.taskId }.toMutableList(); items += item; save(items)
     }
@@ -73,7 +73,7 @@ class PendingSubmissionStore(context: Context) {
  * concurrent or previously queued no-photo submission.
  */
 class PhotoCompletionGuard(context: Context) {
-    private val prefs = context.getSharedPreferences("photo_completion_guard", Context.MODE_PRIVATE)
+    private val prefs = PlayDemo.preferences(context, "photo_completion_guard")
 
     fun requiredTaskIds(): Set<String> = prefs.getStringSet(REQUIRED_TASK_IDS, emptySet()).orEmpty().toSet()
 

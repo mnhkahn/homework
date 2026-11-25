@@ -8,14 +8,15 @@ plugins {
 
 android {
     namespace = "com.homeworkbuddy"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = providers.gradleProperty("homeworkApplicationId").orNull ?: "com.homeworkbuddy"
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 36
         versionCode = (providers.gradleProperty("releaseVersionCode").orNull ?: "1").toInt()
         versionName = providers.gradleProperty("releaseVersionName").orNull ?: "0.1.0"
+        buildConfigField("boolean", "PLAY_DISTRIBUTION", "false")
         buildConfigField("String", "APP_UPDATE_URL", "\"https://www.cyeam.com/api/apps/homework/update\"")
         // Trello documents application keys as public application identifiers.
         // User tokens are never placed in BuildConfig and stay encrypted on the device.
@@ -24,6 +25,12 @@ android {
 
     buildFeatures { compose = true; buildConfig = true }
     signingConfigs {
+        create("playUpload") {
+            storeFile = file(providers.environmentVariable("HOMEWORK_PLAY_STORE_FILE").orNull ?: "missing-play-upload-keystore")
+            storePassword = providers.environmentVariable("HOMEWORK_PLAY_STORE_PASSWORD").orNull
+            keyAlias = "homework-play-upload"
+            keyPassword = storePassword
+        }
         create("release") {
             storeFile = file(providers.environmentVariable("HOMEWORK_RELEASE_STORE_FILE").orNull ?: "missing-release-keystore")
             storePassword = providers.environmentVariable("HOMEWORK_RELEASE_STORE_PASSWORD").orNull
@@ -35,6 +42,13 @@ android {
         release {
             signingConfig = signingConfigs.getByName("release")
         }
+        create("playRelease") {
+            initWith(getByName("release"))
+            signingConfig = signingConfigs.getByName("playUpload")
+            matchingFallbacks += "release"
+            buildConfigField("boolean", "PLAY_DISTRIBUTION", "true")
+            buildConfigField("String", "APP_UPDATE_URL", "\"\"")
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -45,6 +59,15 @@ android {
 
 kotlin {
     compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) }
+}
+
+// Keep telemetry SDKs out of the Play runtime.
+configurations.matching { it.name.startsWith("playRelease") }.configureEach {
+    exclude(group = "com.google.firebase", module = "firebase-analytics")
+    exclude(group = "com.google.firebase", module = "firebase-crashlytics")
+    if (name.endsWith("RuntimeClasspath")) {
+        exclude(group = "com.google.mlkit", module = "face-detection")
+    }
 }
 
 dependencies {

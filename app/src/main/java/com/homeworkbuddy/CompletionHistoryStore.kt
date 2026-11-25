@@ -27,7 +27,7 @@ data class CompletionRecord(
  * store, so every completion path (photo submit, offline retry) must write here.
  */
 class CompletionHistoryStore(context: Context) {
-    private val prefs = context.getSharedPreferences("completion_history", Context.MODE_PRIVATE)
+    private val prefs = PlayDemo.preferences(context, "completion_history")
     private val taskCodec = HomeworkCacheStore(context)
 
     /** Merges the day's tasks into the history. Existing completions are never dropped. */

@@ -55,7 +55,7 @@ class KioskPolicy(private val context: Context) {
     private val dpm = context.getSystemService(DevicePolicyManager::class.java)
     private val admin = ComponentName(context, HomeworkDeviceAdminReceiver::class.java)
 
-    val isDeviceOwner: Boolean get() = dpm.isDeviceOwnerApp(context.packageName)
+    val isDeviceOwner: Boolean get() = !BuildConfig.PLAY_DISTRIBUTION && dpm.isDeviceOwnerApp(context.packageName)
     val startMinutes: Int get() = prefs.getInt("start_minutes", 17 * 60)
     val endMinutes: Int get() = prefs.getInt("end_minutes", 21 * 60 + 30)
     /** A temporary parent override keeps the device in its ordinary mode. */
@@ -109,6 +109,7 @@ class KioskPolicy(private val context: Context) {
     }
 
     fun mode(now: LocalDateTime = LocalDateTime.now()): KioskMode {
+        if (BuildConfig.PLAY_DISTRIBUTION) return KioskMode.NORMAL
         if (System.currentTimeMillis() < temporaryOpenUntil) return KioskMode.NORMAL
         if (System.currentTimeMillis() < forcedStudyUntil) return KioskMode.STUDY
         val minute = now.hour * 60 + now.minute

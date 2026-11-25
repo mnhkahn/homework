@@ -46,12 +46,13 @@ private class TrelloHttpException(val status: Int, message: String) : IllegalSta
  * the tablet; the user's token never passes through cyeam.com.
  */
 class HomeworkApi(private val context: Context) {
+    private val demo = if (PlayDemo.enabled(context)) PlayDemo(context) else null
     private val correctedListMutex = Mutex()
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     private val token: String? get() = prefs.getString(TOKEN, null)?.let(DeviceTokenCipher::decrypt)
     val hasAuthorization get() = token != null
-    internal val tableBindingId: String? get() = prefs.getString(TODO_LIST, null)
-    val isConnected get() = token != null && prefs.contains(TODO_LIST) && prefs.contains(DONE_LIST) && !prefs.getBoolean(VERIFY_BINDING, false)
+    internal val tableBindingId: String? get() = if (demo != null) PlayDemo.BINDING_ID else prefs.getString(TODO_LIST, null)
+    val isConnected get() = demo != null || (token != null && prefs.contains(TODO_LIST) && prefs.contains(DONE_LIST) && !prefs.getBoolean(VERIFY_BINDING, false))
 
     fun openAuthorization() {
         val url = Uri.Builder()
@@ -59,16 +60,35 @@ class HomeworkApi(private val context: Context) {
             .appendQueryParameter("expiration", "never")
             .appendQueryParameter("scope", "read,write")
             .appendQueryParameter("response_type", "token")
-            .appendQueryParameter("callback_method", "fragment")
-            .appendQueryParameter("return_url", CALLBACK_URL)
+            .appendQueryParameter("name", "作业小伙伴")
             .appendQueryParameter("key", BuildConfig.TRELLO_API_KEY)
-            .build()
-        context.startActivity(Intent(Intent.ACTION_VIEW, url))
+        if (!BuildConfig.PLAY_DISTRIBUTION) {
+            url.appendQueryParameter("callback_method", "fragment")
+                .appendQueryParameter("return_url", CALLBACK_URL)
+        }
+        context.startActivity(Intent(Intent.ACTION_VIEW, url.build()))
     }
 
-    suspend fun boards(): List<TrelloOption> = options("/members/me/boards?fields=id,name")
+    fun importParentAuthorization(value: String) {
+        check(BuildConfig.PLAY_DISTRIBUTION)
+        val token = value.trim()
+        require(token.matches(Regex("[a-zA-Z0-9_-]{32,256}"))) { "请粘贴 Trello 授权页显示的授权码" }
+        storeAuthorization(context, token)
+    }
+
+    suspend fun boards(): List<TrelloOption> {
+        if (!BuildConfig.PLAY_DISTRIBUTION) return options("/members/me/boards?fields=id,name")
+        val boards = requestArray("GET", "/members/me/boards?filter=open&fields=id,name,prefs")
+        return (0 until boards.length()).mapNotNull { index ->
+            val board = boards.getJSONObject(index)
+            if (board.optJSONObject("prefs")?.optString("permissionLevel") == "private") {
+                TrelloOption(board.getString("id"), board.getString("name"))
+            } else null
+        }
+    }
 
     suspend fun initialize(boardId: String) {
+        if (BuildConfig.PLAY_DISTRIBUTION) requirePrivateBoard(boardId)
         val lists = options("/boards/${segment(boardId)}/lists?fields=id,name&filter=open").toMutableList()
         suspend fun listNamed(name: String): TrelloOption {
             return lists.firstOrNull { it.name == name } ?: createList(boardId, name).also(lists::add)
@@ -78,6 +98,17 @@ class HomeworkApi(private val context: Context) {
         val correction = listNamed(CORRECTION_LIST_NAME)
         val corrected = listNamed(CORRECTED_LIST_NAME)
         prefs.edit().putString(BOARD, boardId).putString(TODO_LIST, todo.id).putString(DONE_LIST, done.id).putString(CORRECTION_LIST, correction.id).putString(CORRECTED_LIST, corrected.id).remove(VERIFY_BINDING).apply()
+    }
+
+    private suspend fun isPrivateBoard(boardId: String): Boolean {
+        val board = request("GET", "/boards/${segment(boardId)}?fields=prefs")
+        return board.optJSONObject("prefs")?.optString("permissionLevel") == "private"
+    }
+
+    private suspend fun requirePrivateBoard(boardId: String? = prefs.getString(BOARD, null)) {
+        if (BuildConfig.PLAY_DISTRIBUTION) {
+            check(boardId != null && isPrivateBoard(boardId)) { "请家长将 Trello 作业看板设为私有" }
+        }
     }
 
     /** Keep the board binding when a token expires or is revoked. */
@@ -90,6 +121,7 @@ class HomeworkApi(private val context: Context) {
         return try {
             val board = request("GET", "/lists/${segment(todo)}?fields=idBoard").optString("idBoard")
             if (board.isBlank()) return false
+            if (BuildConfig.PLAY_DISTRIBUTION && !isPrivateBoard(board)) return false
             val lists = options("/boards/${segment(board)}/lists?fields=id,name&filter=open")
             val saved = mapOf(
                 TODO_LIST_NAME to todo,
@@ -114,7 +146,10 @@ class HomeworkApi(private val context: Context) {
 
     /** Stable event IDs make retries safe after a successful request whose reply was lost. */
     suspend fun syncActivity() = activitySyncMutex.withLock {
-        for (event in activityStore.pending()) {
+        if (demo != null) return@withLock
+        val pending = activityStore.pending()
+        if (pending.isNotEmpty()) requirePrivateBoard()
+        for (event in pending) {
             val heading = if (event.optString("event") == "started") "开始做作业" else "作业完成"
             val comment = "$heading\n[homework-activity:v1]\n$event"
             postSubmissionComment(event.getString("task_id"), comment, retry = true)
@@ -123,6 +158,7 @@ class HomeworkApi(private val context: Context) {
     }
 
     suspend fun todayTasks(): List<HomeworkTask> {
+        demo?.let { return it.tasks().map(activityStore::restore) }
         // The 待完成 list is the parent's current-day queue.  Do not use a
         // mutable Trello due date to discard its cards: changing a deadline
         // must never make today's homework disappear from the tablet.
@@ -135,6 +171,7 @@ class HomeworkApi(private val context: Context) {
 
     /** Fast path for the home screen: the 待完成 list is today's live queue. */
     suspend fun activeTasks(): List<HomeworkTask> {
+        demo?.let { return it.tasks().map(activityStore::restore) }
         val today = LocalDate.now(HOMEWORK_ZONE)
         // Trello card IDs are independent random values, so they cannot
         // identify a "第 N 天" batch. The due date is the authoritative
@@ -150,10 +187,14 @@ class HomeworkApi(private val context: Context) {
 
     /** All open future assignments, independent of the currently displayed calendar week. */
     suspend fun reminderTasks(): List<HomeworkTask> =
-        (cards(prefs.getString(TODO_LIST, "") ?: "", TaskStatus.TODO) + correctionTasks()).distinctBy { it.id }
+        if (demo != null) emptyList() else (cards(prefs.getString(TODO_LIST, "") ?: "", TaskStatus.TODO) + correctionTasks()).distinctBy { it.id }
 
     /** Requested Mon–Sun, including completion dates for the reward history. */
     suspend fun weekTasks(date: LocalDate = LocalDate.now(HOMEWORK_ZONE)): List<HomeworkTask> {
+        demo?.let {
+            val tasks = it.tasks().map(activityStore::restore).filter { task -> calendarWeekStart(task.dueDate) == calendarWeekStart(date) }
+            return tasks
+        }
         val todo = cards(prefs.getString(TODO_LIST, "") ?: "", TaskStatus.TODO)
         val done = cards(prefs.getString(DONE_LIST, "") ?: "", TaskStatus.COMPLETED) + correctedTasks()
         val monday = calendarWeekStart(date)
@@ -166,6 +207,10 @@ class HomeworkApi(private val context: Context) {
 
     /** Fast calendar source for scheduled work; it must not wait for historical actions. */
     suspend fun weekScheduledTasks(date: LocalDate = LocalDate.now(HOMEWORK_ZONE)): List<HomeworkTask> {
+        demo?.let {
+            val tasks = it.tasks().map(activityStore::restore).filter { task -> calendarWeekStart(task.dueDate) == calendarWeekStart(date) }
+            return tasks.filterNot { it.status.isSubmitted }
+        }
         val monday = calendarWeekStart(date)
         val sunday = monday.plusDays(6)
         return (correctionTasks() + cards(prefs.getString(TODO_LIST, "") ?: "", TaskStatus.TODO))
@@ -183,6 +228,12 @@ class HomeworkApi(private val context: Context) {
         previewRequirements: String? = null,
         retry: Boolean = false,
     ) = withContext(Dispatchers.IO) {
+        check(attachments.isNotEmpty()) { "需要先拍照或录音再提交作业" }
+        if (demo != null) {
+            demo.complete(taskId)
+            return@withContext
+        }
+        requirePrivateBoard()
         // Trello is the durable record. Submission IDs make attachment retries
         // idempotent: a retry after a partial upload never adds another attachment.
         isOvertime.hashCode()
@@ -195,7 +246,6 @@ class HomeworkApi(private val context: Context) {
                 if (mimeType.startsWith("audio/")) uploadedAudioNames += name
             }
         }
-        check(attachments.isNotEmpty()) { "需要先拍照或录音再提交作业" }
         // The comment makes the media type obvious in the Trello activity log.
         // It is best-effort: an uploaded attachment still must not block a child
         // from completing homework merely because a comment request times out.
@@ -216,6 +266,11 @@ class HomeworkApi(private val context: Context) {
         previewRequirements: String? = null,
     ) = withContext(Dispatchers.IO) {
         require(text.isNotBlank()) { "请先输入文字内容" }
+        if (demo != null) {
+            demo.complete(taskId)
+            return@withContext
+        }
+        requirePrivateBoard()
         val heading = if (isCorrection) "作业订正文字提交：" else "作业文字提交："
         val comment = "$heading\n${text.trim()}\n\n提交编号：$submissionId"
         postSubmissionComment(taskId, comment, retry)
@@ -224,7 +279,12 @@ class HomeworkApi(private val context: Context) {
 
     /** Marks a task complete without uploading a local-only recording. */
     suspend fun completeWithoutAttachment(taskId: String, isCorrection: Boolean = false) = withContext(Dispatchers.IO) {
-        finishSubmission(taskId, isCorrection, previewRequirements = null)
+        if (demo != null) {
+            demo.complete(taskId)
+        } else {
+            requirePrivateBoard()
+            finishSubmission(taskId, isCorrection, previewRequirements = null)
+        }
     }
 
     private suspend fun finishSubmission(taskId: String, isCorrection: Boolean, previewRequirements: String?) {
@@ -341,6 +401,7 @@ class HomeworkApi(private val context: Context) {
     }
 
     internal suspend fun tableTasks(bindingId: String): List<HomeworkTask> {
+        demo?.let { return it.tasks().map(activityStore::restore) }
         val boardId = prefs.getString(BOARD, null) ?: request(
             "GET", "/lists/${segment(bindingId)}?fields=idBoard",
         ).getString("idBoard").also {
@@ -452,6 +513,7 @@ class HomeworkApi(private val context: Context) {
         .toList().distinctBy { it.id }.sortedByDescending { it.date }
 
     suspend fun reviews(cardId: String): HomeworkReviewContent {
+        if (demo != null) return HomeworkReviewContent(emptyList(), emptyMap())
         val reviews = reviewComments(cardId)
         val attachmentIds = reviews.mapNotNullTo(mutableSetOf()) { it.attachmentId }
         if (attachmentIds.isEmpty()) return HomeworkReviewContent(reviews, emptyMap())
@@ -657,10 +719,15 @@ class HomeworkApi(private val context: Context) {
             if (uri?.scheme != "https" || uri.host != "www.cyeam.com" || uri.path != "/homework/trello/android/callback") return false
             val fragment = uri.fragment ?: return false
             val token = Uri.parse("https://callback/?$fragment").getQueryParameter("token")?.takeIf { it.isNotBlank() } ?: return false
+            if (BuildConfig.PLAY_DISTRIBUTION) return false
+            storeAuthorization(context, token)
+            return true
+        }
+
+        private fun storeAuthorization(context: Context, token: String) {
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putString(TOKEN, DeviceTokenCipher.encrypt(token))
                 .putBoolean(VERIFY_BINDING, true).apply()
-            return true
         }
     }
 }

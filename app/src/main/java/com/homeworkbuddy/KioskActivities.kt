@@ -15,6 +15,7 @@ import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -148,7 +149,12 @@ class KioskSettingsActivity : FragmentActivity() {
         super.onCreate(savedInstanceState)
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
         setContent {
-            MaterialTheme { ParentGate(this) }
+            MaterialTheme {
+                val contentModifier = if (BuildConfig.PLAY_DISTRIBUTION) Modifier.systemBarsPadding() else Modifier
+                Box(Modifier.fillMaxSize().then(contentModifier)) {
+                    ParentGate(this@KioskSettingsActivity)
+                }
+            }
         }
     }
 }
@@ -210,7 +216,8 @@ private fun ParentGate(activity: KioskSettingsActivity) {
                 modifier = Modifier.align(Alignment.TopStart).size(58.dp),
                 colors = IconButtonDefaults.filledTonalIconButtonColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
             ) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回", modifier = Modifier.size(32.dp)) }
-            Column(Modifier.fillMaxWidth(.55f), horizontalAlignment = Alignment.CenterHorizontally) {
+            val gateWidth = if (BuildConfig.PLAY_DISTRIBUTION) .78f else .55f
+            Column(Modifier.fillMaxWidth(gateWidth), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(if (totp.configured || hasPin) "家长验证" else "设置家长 PIN", fontSize = 28.sp, fontWeight = FontWeight.Medium)
                 if (hasPin && !totp.configured && systemAuthAvailable) {
                     Spacer(Modifier.height(14.dp))
@@ -242,7 +249,9 @@ private fun ParentGate(activity: KioskSettingsActivity) {
                     }
                 }) { Text(if (hasPin || totp.configured) "进入家长设置" else "保存并进入") }
                 Spacer(Modifier.height(18.dp))
-                AppUpdateActions(activity)
+                if (BuildConfig.PLAY_DISTRIBUTION) {
+                    TextButton(onClick = { openPlayPrivacyPolicy(activity) }) { Text("隐私政策") }
+                } else AppUpdateActions(activity)
             }
         }
     }
@@ -250,6 +259,22 @@ private fun ParentGate(activity: KioskSettingsActivity) {
 
 @Composable
 private fun KioskSettingsScreen(activity: KioskSettingsActivity) {
+    if (BuildConfig.PLAY_DISTRIBUTION) {
+        LazyColumn(
+            Modifier.fillMaxSize().padding(horizontal = 24.dp),
+            contentPadding = PaddingValues(vertical = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            item {
+                TextButton(onClick = activity::finish) { Text("返回作业") }
+                Text("家长设置", fontSize = 28.sp, fontWeight = FontWeight.Medium)
+            }
+            item { ParentTotpSettings(onChanged = { ParentPinStore(activity).clearSession() }) }
+            item { PreviewRequirementsSettings(activity) }
+            item { TextButton(onClick = { openPlayPrivacyPolicy(activity) }) { Text("隐私政策") } }
+        }
+        return
+    }
     val policy = remember { KioskPolicy(activity) }
     var showAppSelection by remember { mutableStateOf(false) }
     var showOpenVerification by remember { mutableStateOf(false) }

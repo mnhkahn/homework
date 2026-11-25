@@ -1,0 +1,48 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" tools:node="remove" />
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" tools:node="remove" />
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:node="remove" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" tools:node="remove" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" tools:node="remove" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" tools:node="remove" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" tools:node="remove" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" tools:node="remove" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" tools:node="remove" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" tools:node="remove" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" tools:node="remove" />
+    <uses-permission android:name="com.google.android.gms.permission.AD_ID" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_ADSERVICES_AD_ID" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_ADSERVICES_ATTRIBUTION" tools:node="remove" />
+
+    <queries tools:node="replace">
+        <intent>
+            <action android:name="android.provider.MediaStore.RECORD_SOUND" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+    <application android:allowBackup="false" android:usesCleartextTraffic="false"
+        tools:replace="android:allowBackup,android:usesCleartextTraffic">
+        <activity android:name=".ChildLauncherActivity" tools:node="remove" />
+        <activity android:name=".TeacherSettingsActivity" tools:node="remove" />
+        <activity android:name=".StudyBlockActivity" tools:node="remove" />
+        <receiver android:name=".HomeworkDeviceAdminReceiver" tools:node="remove" />
+        <receiver android:name=".KioskScheduleReceiver" tools:node="remove" />
+        <receiver android:name=".KioskUnlockReceiver" tools:node="remove" />
+        <receiver android:name=".KioskSystemReceiver" tools:node="remove" />
+        <receiver android:name=".HomeworkReminderRestoreReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+            </intent-filter>
+        </receiver>
+        <service android:name=".ScreenCaptureService" tools:node="remove" />
+        <service android:name=".TeacherConnectionService" tools:node="remove" />
+        <service android:name=".StudySessionService" tools:node="remove" />
+        <service android:name=".MediaVolumeService" tools:node="remove" />
+    </application>
+</manifest>

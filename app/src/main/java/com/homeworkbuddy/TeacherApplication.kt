@@ -7,6 +7,7 @@ import android.content.Context
 class TeacherApplication : Application() {
     override fun onCreate() {
         super.onCreate()
+        if (BuildConfig.PLAY_DISTRIBUTION) return
         removeLegacyGatewayBinding(this)
         TeacherDeviceStore.migrateStandalone(this)
     }
